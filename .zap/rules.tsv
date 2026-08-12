@@ -1,0 +1,3 @@
+10027	IGNORE	(False positive in minified role names; no source comments are shipped)
+10049	IGNORE	(Intentional no-store HTML and immutable hashed static asset cache policies)
+10109	IGNORE	(Informational detection that SecCheck is a modern web application)

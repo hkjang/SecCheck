@@ -22,6 +22,10 @@ func (s SPA) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		http.ServeFile(w, r, file)
 		return
 	}
+	if path.Ext(clean) != "" {
+		http.NotFound(w, r)
+		return
+	}
 	index := path.Join(s.Dir, "index.html")
 	if _, err := os.Stat(index); err != nil {
 		http.Error(w, "SecCheck web assets are not installed", http.StatusServiceUnavailable)

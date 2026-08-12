@@ -182,11 +182,7 @@ func (s *Server) middleware(next http.Handler) http.Handler {
 		}
 		r.Header.Set("X-Request-ID", requestID)
 		w.Header().Set("X-Request-ID", requestID)
-		w.Header().Set("X-Content-Type-Options", "nosniff")
-		w.Header().Set("X-Frame-Options", "DENY")
-		w.Header().Set("Referrer-Policy", "same-origin")
-		w.Header().Set("Permissions-Policy", "camera=(), microphone=(), geolocation=()")
-		w.Header().Set("Content-Security-Policy", "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; connect-src 'self'; font-src 'self'; frame-ancestors 'none'; base-uri 'self'; form-action 'self'")
+		setSecurityHeaders(w.Header())
 		security := s.runtimeSecurity(r.Context())
 		if origin := r.Header.Get("Origin"); origin != "" && contains(security.CORSOrigins, origin) {
 			w.Header().Set("Access-Control-Allow-Origin", origin)
@@ -225,6 +221,17 @@ func (s *Server) middleware(next http.Handler) http.Handler {
 		}()
 		next.ServeHTTP(rw, r)
 	})
+}
+
+func setSecurityHeaders(header http.Header) {
+	header.Set("X-Content-Type-Options", "nosniff")
+	header.Set("X-Frame-Options", "DENY")
+	header.Set("Referrer-Policy", "same-origin")
+	header.Set("Permissions-Policy", "camera=(), microphone=(), geolocation=()")
+	header.Set("Cross-Origin-Embedder-Policy", "require-corp")
+	header.Set("Cross-Origin-Opener-Policy", "same-origin")
+	header.Set("Cross-Origin-Resource-Policy", "same-origin")
+	header.Set("Content-Security-Policy", "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data: blob:; connect-src 'self'; font-src 'self'; frame-ancestors 'none'; base-uri 'self'; form-action 'self'; object-src 'none'; upgrade-insecure-requests")
 }
 
 func (s *Server) runtimeSecurity(ctx context.Context) runtimeSecurity {
