@@ -1,0 +1,11 @@
+.env
+*.tar.gz
+보안성 심의_검토 체크리스트.xlsx
+dist/
+web/dist/
+web/node_modules/
+*.tsbuildinfo
+coverage.out
+data/
+tmp/
+*.log

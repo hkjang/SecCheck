@@ -1,0 +1,102 @@
+name: security-ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+  security-events: write
+
+jobs:
+  test-build-scan:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_PASSWORD: seccheck_ci
+          POSTGRES_DB: seccheck
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres -d seccheck"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+          cache: true
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+      - name: Unit tests and static checks
+        run: |
+          go test -race -coverprofile=coverage.out ./...
+          go vet ./...
+      - name: Go vulnerability scan
+        run: |
+          go install golang.org/x/vuln/cmd/govulncheck@latest
+          govulncheck ./...
+      - name: Frontend build and dependency gate
+        run: |
+          npm ci --prefix web --no-audit --no-fund
+          npm --prefix web run build
+          npm audit --prefix web --audit-level=high
+      - name: Secret scan
+        uses: gitleaks/gitleaks-action@e0c47f4f8be36e29cdc102c57e68cb5cbf0e8d1e # v3.0.0
+      - name: Build release-shaped image
+        run: docker build --build-arg VERSION=0.1.0 -t seccheck:v0.1.0 .
+      - name: Container vulnerability gate
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        with:
+          image-ref: seccheck:v0.1.0
+          format: sarif
+          output: trivy.sarif
+          severity: CRITICAL,HIGH
+          ignore-unfixed: true
+          exit-code: 1
+      - uses: github/codeql-action/upload-sarif@5595ccaf912efad79be6eef63a5619ff05969be3 # v4.37.6
+        if: ${{ always() && hashFiles('trivy.sarif') != '' }}
+        with:
+          sarif_file: trivy.sarif
+      - name: Generate CycloneDX SBOM
+        uses: anchore/sbom-action@e22c389904149dbc22b58101806040fa8d37a610 # v0.24.0
+        with:
+          image: seccheck:v0.1.0
+          format: cyclonedx-json
+          output-file: sbom.cdx.json
+          upload-artifact: false
+          upload-release-assets: false
+      - name: Scan SBOM for fixable vulnerabilities
+        uses: anchore/scan-action@e1165082ffb1fe366ebaf02d8526e7c4989ea9d2 # v7.4.0
+        with:
+          sbom: sbom.cdx.json
+          severity-cutoff: high
+          only-fixed: true
+          fail-build: true
+      - name: Container integration smoke test
+        run: |
+          docker run -d --name seccheck-ci --network host \
+            -e POSTGRES_DSN='postgres://postgres:seccheck_ci@127.0.0.1:5432/seccheck?sslmode=disable' \
+            -e BOOTSTRAP_ADMIN=admin \
+            -e BOOTSTRAP_ADMIN_PASSWORD='CiPassword123!' \
+            -e ENCRYPTION_KEY="$(openssl rand -base64 32)" \
+            seccheck:v0.1.0
+          for i in $(seq 1 30); do curl -fsS http://127.0.0.1:8080/ready && break; sleep 2; done
+          curl -fsS http://127.0.0.1:8080/health | grep '"status":"ok"'
+          curl -fsS -H 'Content-Type: application/json' \
+            -d '{"username":"admin","password":"CiPassword123!"}' \
+            http://127.0.0.1:8080/api/v1/auth/login | grep 'SYSTEM_ADMIN'
+      - name: DAST baseline
+        uses: zaproxy/action-baseline@de8ad967d3548d44ef623df22cf95c3b0baf8b25 # v0.15.0
+        with:
+          target: http://127.0.0.1:8080
+          fail_action: true
+          allow_issue_writing: false

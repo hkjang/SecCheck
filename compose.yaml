@@ -1,0 +1,32 @@
+services:
+  seccheck:
+    image: seccheck:v0.1.0
+    container_name: seccheck
+    restart: unless-stopped
+    stop_grace_period: 25s
+    pids_limit: 256
+    ports:
+      - "8080:8080"
+    environment:
+      POSTGRES_DSN: ${POSTGRES_DSN:?required}
+      BOOTSTRAP_ADMIN: ${BOOTSTRAP_ADMIN:?required}
+      BOOTSTRAP_ADMIN_PASSWORD: ${BOOTSTRAP_ADMIN_PASSWORD:?required}
+      ENCRYPTION_KEY: ${ENCRYPTION_KEY:?required}
+    volumes:
+      - seccheck-data:/app/data
+    read_only: true
+    tmpfs:
+      - /tmp:size=128m,noexec,nosuid,nodev
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    healthcheck:
+      test: ["CMD", "/app/seccheck", "healthcheck"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+
+volumes:
+  seccheck-data:

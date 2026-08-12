@@ -1,0 +1,11 @@
+.git
+.github
+.env
+.idea
+.vscode
+data
+tmp
+*.tar.gz
+보안성 심의_검토 체크리스트.xlsx
+web/node_modules
+web/dist

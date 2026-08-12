@@ -1,0 +1,65 @@
+name: offline-image-release
+
+on:
+  push:
+    tags: ['v*.*.*']
+
+permissions:
+  contents: write
+  id-token: write
+  attestations: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 22
+      - name: Validate release version
+        id: version
+        shell: bash
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          test "$(tr -d '\r\n' < VERSION)" = "$version"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+      - name: Build and test image
+        run: |
+          go test ./...
+          npm ci --prefix web --no-audit --no-fund
+          npm --prefix web run build
+          docker build --build-arg VERSION=${{ steps.version.outputs.version }} \
+            -t seccheck:v${{ steps.version.outputs.version }} .
+      - name: Container security gate
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        with:
+          image-ref: seccheck:v${{ steps.version.outputs.version }}
+          severity: CRITICAL,HIGH
+          ignore-unfixed: true
+          exit-code: 1
+      - name: Package the only release asset
+        run: scripts/package-image.sh "${{ steps.version.outputs.version }}"
+      - name: Attest archive provenance
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-path: seccheck-v${{ steps.version.outputs.version }}.tar.gz
+      - name: Create GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" \
+            "seccheck-v${{ steps.version.outputs.version }}.tar.gz" \
+            --repo hkjang/SecCheck \
+            --verify-tag \
+            --generate-notes \
+            --title "SecCheck $GITHUB_REF_NAME"
+      - name: Verify single release asset
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          test "$(gh release view "$GITHUB_REF_NAME" --repo hkjang/SecCheck --json assets --jq '.assets | length')" = "1"
+          test "$(gh release view "$GITHUB_REF_NAME" --repo hkjang/SecCheck --json assets --jq '.assets[0].name')" = "seccheck-v${{ steps.version.outputs.version }}.tar.gz"
