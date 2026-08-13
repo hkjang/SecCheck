@@ -42,7 +42,7 @@ jobs:
           ignore-unfixed: true
           exit-code: 1
       - name: Package the only release asset
-        run: scripts/package-image.sh "${{ steps.version.outputs.version }}"
+        run: bash scripts/package-image.sh "${{ steps.version.outputs.version }}"
       - name: Attest archive provenance
         uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
         with:
