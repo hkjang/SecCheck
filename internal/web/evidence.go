@@ -10,6 +10,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"mime"
 	"net"
 	"net/http"
 	"os"
@@ -243,19 +244,23 @@ func (s *Server) readAndValidateEvidence(w http.ResponseWriter, r *http.Request)
 	return data, name, mime, r.FormValue("description"), scan, nil
 }
 
-func mimeMatchesExtension(mime, ext string, data []byte) bool {
+func mimeMatchesExtension(detected, ext string, data []byte) bool {
+	mediaType, _, err := mime.ParseMediaType(detected)
+	if err == nil {
+		detected = mediaType
+	}
 	allowed := map[string][]string{"pdf": {"application/pdf"}, "png": {"image/png"}, "jpg": {"image/jpeg"}, "jpeg": {"image/jpeg"}, "xlsx": {"application/zip", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"}, "docx": {"application/zip", "application/vnd.openxmlformats-officedocument.wordprocessingml.document"}, "zip": {"application/zip"}, "txt": {"text/plain", "application/octet-stream"}, "json": {"text/plain", "application/json"}, "xls": {"application/octet-stream", "application/vnd.ms-excel"}}
 	if ext == "xlsx" || ext == "docx" {
 		return bytes.HasPrefix(data, []byte("PK\x03\x04")) && validOfficeArchive(data, ext)
 	}
 	if ext == "json" {
-		return (mime == "text/plain" || mime == "application/json") && json.Valid(data)
+		return (detected == "text/plain" || detected == "application/json") && json.Valid(data)
 	}
 	if ext == "xls" {
 		return len(data) >= 8 && bytes.Equal(data[:8], []byte{0xd0, 0xcf, 0x11, 0xe0, 0xa1, 0xb1, 0x1a, 0xe1})
 	}
 	for _, v := range allowed[ext] {
-		if mime == v {
+		if detected == v {
 			return true
 		}
 	}
