@@ -1,0 +1,93 @@
+# SecCheck API & MCP 연계 가이드 (API & MCP Guide)
+
+`SecCheck`는 시스템 연계 및 CI/CD 자동화를 위한 **REST API**와 AI 에이전트(Claude Desktop, Cursor 등) 연동을 위한 **Model Context Protocol (MCP)** 인터페이스를 제공합니다.
+
+---
+
+## 1. 인증 체계 (Authentication)
+
+모든 API 및 MCP 호출은 개인 키 관리(`/profile/keys`)에서 발급받은 **Bearer API Key** 또는 세션 쿠키를 사용합니다:
+
+```http
+Authorization: Bearer sck_a1b2c3d4_xxxxxxxxxxxxxxxxxxxxxxxxxxxx
+```
+
+---
+
+## 2. REST API 주요 엔드포인트 (`/api/v1`)
+
+### 📋 심의 요청 및 관리 (Review Requests)
+| 메서드 | 경로 | 설명 | 권한 |
+| :--- | :--- | :--- | :--- |
+| `GET` | `/review-requests` | 심의 목록 조회 (필터: `q`, `status`) | `REQUESTER`, `SECURITY_REVIEWER` |
+| `POST` | `/review-requests` | 신규 심의 생성 및 Rule Engine 자동 배정 | `REQUESTER`, `SYSTEM_ADMIN` |
+| `GET` | `/review-requests/{id}` | 심의 상세 정보 및 진행 통계 조회 | 담당자, 검토자, 승인자 |
+| `GET` | `/review-requests/{id}/items` | 심의에 배정된 체크리스트 항목 및 답변 목록 | 담당자, 검토자, 승인자 |
+| `PUT` | `/review-requests/{id}/responses/{itemID}` | 체크리스트 항목 작성 및 자동 저장 | `REQUESTER`, `CONTRIBUTOR` |
+| `POST` | `/review-requests/{id}/submit` | 심의 제출 (서버 검증 실행) | `REQUESTER` |
+| `POST` | `/review-requests/{id}/begin-review` | 보안 검토 시작 (`REVIEWING` 전환) | `SECURITY_REVIEWER` |
+| `PUT` | `/review-requests/{id}/review-results/{itemID}` | 항목별 검토 결과 및 의견 저장 | `SECURITY_REVIEWER` |
+| `POST` | `/review-requests/{id}/approve` | 심의 최종 승인 | `APPROVER` |
+| `POST` | `/review-requests/{id}/reject` | 심의 반려 | `APPROVER` |
+
+### 📎 증적 파일 (Evidences)
+| 메서드 | 경로 | 설명 | 권한 |
+| :--- | :--- | :--- | :--- |
+| `POST` | `/review-requests/{id}/items/{itemID}/evidences` | 증적 파일 암호화 업로드 (`multipart/form-data`) | `REQUESTER`, `CONTRIBUTOR` |
+| `GET` | `/evidences/{id}/download` | 증적 파일 복호화 다운로드 | 권한자 |
+| `POST` | `/evidences/{id}/versions` | 증적 파일 신규 버전 교체 등록 | `REQUESTER`, `CONTRIBUTOR` |
+
+### 🛡️ 통합 Security Controls & 템플릿
+| 메서드 | 경로 | 설명 | 권한 |
+| :--- | :--- | :--- | :--- |
+| `GET` | `/security-controls` | 통합 Security Control 목록 및 영향 통계 | 전체 |
+| `GET` | `/security-controls/{id}/impact` | 특정 Control 변경 시 영향 받는 템플릿/심의 조회 | `TEMPLATE_ADMIN` |
+| `GET` | `/templates` | 체크리스트 템플릿 목록 및 게시 버전 조회 | 전체 |
+
+---
+
+## 3. Model Context Protocol (MCP) 엔드포인트
+
+- **엔드포인트**: `POST /mcp`
+- **프로토콜 버전**: MCP `2026-07-28` Stateless Streamable HTTP (구형 `2025-11-25` 호환)
+- **인증**: `Authorization: Bearer <API_KEY>`
+
+### 🛠️ 제공 도구 목록 (Tools)
+1. `seccheck.dashboard`: 대시보드 통계 및 긴급 처리 건수 조회
+2. `seccheck.list_reviews`: 상태 및 키워드 기반 심의 목록 검색
+3. `seccheck.get_review`: 특정 심의의 상세 정보, 진행률, 체크리스트 항목 조회
+4. `seccheck.search_controls`: Security Control 및 체크리스트 가이드 검색
+5. `seccheck.validate_submission`: 제출 전 누락 항목 및 결함 사전 검증
+
+### 💬 MCP 호출 예시 (JSON-RPC 2.0)
+
+#### 요청: 심의 제출 전 결함 사전 검증
+```json
+{
+  "jsonrpc": "2.0",
+  "id": "req-201",
+  "method": "tools/call",
+  "params": {
+    "name": "seccheck.validate_submission",
+    "arguments": {
+      "review_id": "9b1deb4d-3b7d-4bad-9bdd-2b0d7b3dcb6d"
+    }
+  }
+}
+```
+
+#### 응답
+```json
+{
+  "jsonrpc": "2.0",
+  "id": "req-201",
+  "result": {
+    "content": [
+      {
+        "type": "text",
+        "text": "검증 결과: 제출 가능한 상태입니다. (작성 완료: 45/45, 필수 증적 첨부: 12건)"
+      }
+    ]
+  }
+}
+```

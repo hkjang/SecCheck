@@ -1,0 +1,155 @@
+# SecCheck 기능 및 화면 가이드 (Features & UI Guide)
+
+`SecCheck`는 Excel 기반 보안성 심의 업무를 템플릿·버전·제출 스냅샷·항목별 검토로 체계화한 **엔터프라이즈 오프라인 운영형 보안 검토 플랫폼**입니다.
+
+---
+
+## 📸 전체 메뉴별 주요 화면 및 기능 명세
+
+### 1. 인증 및 로그인 (`/login`)
+![로그인 화면](./screenshots/01_login.png)
+- **로컬 부트스트랩 관리자**: 초기 4대 환경변수(`BOOTSTRAP_ADMIN`, `BOOTSTRAP_ADMIN_PASSWORD`) 기반 보안 로그인
+- **Keycloak OIDC SSO**: 설정 시 `사내 SSO로 로그인` 버튼을 통한 통합 인증 연동
+- **서비스 브랜드 & 버전**: 현재 릴리스 버전(`v0.1.0`) 및 서비스명 실시간 표시
+
+---
+
+### 2. 보안 심의 대시보드 (`/`, `/dashboard`)
+![대시보드](./screenshots/02_dashboard.png)
+- **핵심 KPI 현황 카드**: 진행 중 심의(Active), 신규 검토 대기/미처리 보완 요청(Pending), 14일 내 오픈 예정, 심의 완료 통계
+- **최근 심의 테이블**: 최근 요청된 심의의 심의번호, 서비스명, 상태, 오픈 예정일 요약
+- **업무 흐름 가이드**: 서비스 정보 입력 → 체크리스트 작성·증적 → 검토·보완·재제출 → 승인·결과 보존 4단계 Snapshot 프로세스 안내
+
+---
+
+### 3. 보안성 심의 목록 (`/reviews`)
+![심의 목록](./screenshots/03_reviews_list.png)
+- **다차원 실시간 검색 & 필터링**: 심의번호, 서비스명, 담당 부서 키워드 검색 및 상태 필터(작성 중, 제출 완료, 재제출, 검토 중, 보완 요청, 승인 대기, 심의 완료, 반려)
+- **신규 심의 요청**: 상단 `신규 심의` 버튼을 통한 즉시 요청 생성
+
+---
+
+### 4. 신규 보안성 심의 요청 (`/reviews/new`)
+![신규 심의 요청 폼](./screenshots/04_new_review_form.png)
+- **서비스 기본정보**: 서비스명, 담당 부서, 서비스 설명, 서비스 유형(대내/대외/관리자/배치), 신규·변경 구분, 구축·개발·운영 담당자, 오픈 예정일, 업무 중요도
+- **Rule Engine 적용 조건**:
+  - 관리자 페이지 존재, 개인정보 처리, 개인신용정보 처리, 외부 고객 서비스, 클라우드 사용, Docker 사용, Kubernetes 사용, 외부기관 연계, 인터넷 통신 여부
+- **지능형 스냅샷 자동 배정**: 폼 제출 즉시 Rule Engine이 조건에 부합하는 게시 템플릿의 항목들을 불변 스냅샷으로 배정
+
+---
+
+### 5. 심의 상세 & 체크리스트 작업 공간 (`/reviews/:id`)
+![심의 상세 및 체크리스트](./screenshots/05_review_detail_checklist.png)
+- **작성 진행률 & 검토 집계 바**: 총 항목 대비 작성률(%), 적합/조건부/미흡/N/A 집계 실시간 표시
+- **1클릭 다중 포맷 내보내기**: `Excel (.xlsx)`, `PDF (.pdf)`, `ZIP` 결과물 즉시 다운로드
+- **섹션 네비게이션 & 항목 필터**: 템플릿/섹션별 빠른 이동 및 미작성, N/A, 증적 누락, 보완 요청 항목 필터
+
+---
+
+### 6. 체크리스트 항목 편집 & 증적 암호화 업로드
+![항목 편집기](./screenshots/06_review_item_editor.png)
+- **적용 여부 & 자체 판단**: `Y`, `N`, `N/A` 원클릭 선택 및 적합/미흡 자체 평가
+- **N/A 사유 & 현황 작성**: N/A 선택 시 필수 사유 입력 및 조치 계획 수립
+- **실시간 자동 저장**: 타이핑 시 수초 내 백그라운드 자동 저장 및 상태 알림
+- **증적 첨부 (AES-256-GCM)**: 증적 파일 업로드 시 Magic/MIME 검증, SHA-256 해시 생성, 개인 데이터 키 버전 기반 AES-256-GCM 암호화 보관
+
+---
+
+### 7. 자동 배정 결과 수동 조정 (Rule Override)
+![자동 배정 조정 모달](./screenshots/09_review_rule_override_modal.png)
+- **규칙 예외 처리**: 서비스 특성에 따라 자동 배정된 항목을 제외하거나 미배정 항목을 수동 포함
+- **불변 감사 추적**: 수동 변경 사유, 작업자, 시각을 감사로그에 영구 기록
+
+---
+
+### 8. 보안 검토 Queue (`/security`)
+![보안 검토 대기열](./screenshots/10_security_reviews.png)
+- **보안 담당자 전용 대기열**: 제출(`SUBMITTED`) 및 재제출(`RESUBMITTED`)된 심의 건을 집중 관리하고 `검토 시작` 및 항목별 검토 의견/보완 요청 등록
+
+---
+
+### 9. 통합 Security Controls 카탈로그 (`/controls`)
+![Security Controls](./screenshots/11_controls_catalog.png)
+- **단일 보안 통제 관리**: `SEC-ENC-001` 등 표준 보안 통제 코드와 제목/설명 관리
+- **영향 범위 (Blast Radius) 추적**: 해당 Control이 연결된 체크리스트 템플릿 및 적용된 심의 건수를 실시간 추적
+
+---
+
+### 10. 체크리스트 템플릿 관리 (`/templates`)
+![체크리스트 템플릿 목록](./screenshots/12_templates_list.png)
+- **기본 탑재 템플릿**: 개발보안, 개인(신용)정보보호, 클라우드 보안, Docker/Kubernetes 컨테이너 보안 템플릿 자동 시딩
+- **버전 분리 원칙**: 게시된 버전은 수정 불가능하며, 새 버전 생성을 통해서만 안전하게 변경 관리
+
+---
+
+### 11. 템플릿 상세 및 카테고리/항목 편집 (`/templates/:id`)
+![템플릿 상세](./screenshots/13_template_detail.png)
+- **카테고리 & 항목 구성**: 보안 요건, 질문, 가이드, 작성 예시, 법적 근거, 가중치, 증적 필수 여부 정의
+- **Rule Engine 조건 지정**: 특정 서비스 특성(개인정보, 클라우드, K8s 등)일 때만 자동 배정되도록 조건 규칙 설정
+
+---
+
+### 12. Excel Import Wizard (`/templates/import`)
+![Excel 가져오기 마법사](./screenshots/14_excel_import_wizard.png)
+- **기존 엑셀 자산 변환**: 기존 엑셀 체크리스트 파일을 업로드하고 컬럼(항목코드, 요건명, 질문, 점검기준 등)을 매핑하여 신규 템플릿으로 즉시 변환
+
+---
+
+### 13. 개인 프로필 (`/profile`)
+![개인 프로필](./screenshots/15_personal_profile.png)
+- **계정 정보**: 표시 이름, 이메일, 부서, 인증 원본(로컬/OIDC), 부여된 RBAC 역할 확인 및 정보 변경
+
+---
+
+### 14. 개인 키 관리 & 증적 암호화 키 회전 (`/profile/keys`)
+![개인 키 관리](./screenshots/16_api_keys_and_encryption.png)
+- **개인 Bearer API 키**: 시스템 연동 및 CI/CD 파이프라인용 API 키 발급, 회전 및 폐기
+- **개인 증적 암호화 키 회전 (Zero-Downtime Data Key Rotation)**: 개인 암호화 키를 회전하여 새 증적부터 신규 버전을 적용하며, 이전 키는 기존 증적 복호화를 위해 안전 보관
+
+---
+
+### 15. 인앱 알림 센터 (`/notifications`)
+![알림](./screenshots/17_notifications.png)
+- **심의 이벤트 피드**: 심의 제출, 검토자 배정, 보완 요청, 승인/반려 알림 열람 및 읽음 처리
+
+---
+
+### 16. API · MCP 연계 가이드 (`/integrations`)
+![API 및 MCP 연계](./screenshots/18_integrations_mcp.png)
+- **REST API & OpenAPI 3.1**: 엔드포인트 명세 및 Bearer 인증 가이드
+- **Model Context Protocol (MCP)**: `2026-07-28` Stateless Streamable HTTP 지원 및 5대 도구 연동 안내
+
+---
+
+### 17. 서비스 관리자: 사용자 및 역할 관리 (`/admin/users`)
+![사용자 관리](./screenshots/19_admin_users.png)
+- **RBAC 7대 역할 체계**: `SYSTEM_ADMIN`, `TEMPLATE_ADMIN`, `SECURITY_REVIEWER`, `REQUESTER`, `CONTRIBUTOR`, `APPROVER`, `AUDITOR` 조합 및 활성/비활성 즉시 제어
+
+---
+
+### 18. 서비스 관리자: 시스템 설정 (`/admin/settings`)
+![관리자 설정 - 일반](./screenshots/20_admin_settings_general.png)
+![관리자 설정 - OIDC](./screenshots/21_admin_settings_oidc.png)
+![관리자 설정 - 보안](./screenshots/22_admin_settings_security.png)
+![관리자 설정 - 알림](./screenshots/22_admin_settings_smtp.png)
+![관리자 설정 - 워크플로](./screenshots/23_admin_settings_workflow.png)
+![관리자 설정 - 파일보안](./screenshots/24_admin_settings_upload.png)
+- **일반 설정**: 세션 시간, 데이터 보존 기간(일), 표시 시간대
+- **검토·승인 워크플로**: 팀장/승인자 최종 승인 프로세스 On/Off, 검토자 배정 필수 정책
+- **Keycloak OIDC SSO**: Issuer Discovery, Client Secret(암호화 보관), 그룹 매핑, 연결 테스트
+- **파일 보안 & ClamAV**: 최대 파일 크기, 허용 확장자 화이트리스트, ClamAV 데몬 주소 및 악성코드 차단
+- **접근 보안**: HTTPS Secure Cookie, Rate Limiting, 장기 미접속 관리자 잠금, CORS Origin
+- **알림 (SMTP)**: 호스트, 포트, STARTTLS/TLS, SMTP 인증 정보 및 발신 주소
+
+---
+
+### 19. 서비스 관리자: 해시 체인 불변 감사로그 (`/admin/audit`)
+![감사로그](./screenshots/25_admin_audit_hashchain.png)
+- **암호학적 해시 체인 (Hash Chaining)**: 이전 이벤트 해시(`prev_hash`)를 연결하여 위변조를 원천 차단
+- **원클릭 체인 검증 (`체인 검증`)**: 전체 감사 이벤트의 무결성을 실시간으로 검증
+
+---
+
+### 20. 서비스 관리자: 구조화 서버 로그 (`/admin/logs`)
+![서버 로그](./screenshots/26_admin_logs.png)
+- **민감정보 마스킹 구조화 로그**: 요청 ID(Request ID), 레벨(INFO/WARN/ERROR), 구성요소별 로그 실시간 조회

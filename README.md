@@ -1,75 +1,126 @@
-# SecCheck
+<div align="center">
 
-SecCheck는 Excel 기반 보안성 심의를 템플릿·버전·제출 스냅샷·항목별 검토로 분리한 오프라인 운영형 보안 검토 플랫폼입니다. 원본 체크리스트에서 정규화한 개발보안, 개인(신용)정보, 클라우드, Docker, Kubernetes 기본 데이터를 첫 구동 시 게시 템플릿으로 자동 등록합니다. 원본 XLSX는 소스 저장소나 컨테이너 이미지에 포함하지 않습니다.
+# SecCheck (Enterprise Security Review Platform)
 
-## 핵심 기능
+<p>
+  <img src="https://img.shields.io/badge/Go-1.26-00ADD8?style=flat-square&logo=go&logoColor=white" alt="Go 1.26" />
+  <img src="https://img.shields.io/badge/React-19-61DAFB?style=flat-square&logo=react&logoColor=black" alt="React 19" />
+  <img src="https://img.shields.io/badge/PostgreSQL-17-4169E1?style=flat-square&logo=postgresql&logoColor=white" alt="PostgreSQL" />
+  <img src="https://img.shields.io/badge/Docker-Ready-2496ED?style=flat-square&logo=docker&logoColor=white" alt="Docker" />
+  <img src="https://img.shields.io/badge/MCP-2026--07--28-8A2BE2?style=flat-square" alt="MCP" />
+  <img src="https://img.shields.io/badge/Release-v0.1.0-success?style=flat-square" alt="v0.1.0" />
+</p>
 
-- 게시 후 불변인 체크리스트 버전과 제출 시점 Snapshot
-- 서비스 특성 기반 Rule Engine과 수동 변경 사유
-- 통합 Security Control과 템플릿·기존 심의 영향 범위 추적
-- 임시/자동 저장, N/A 사유, 증적 누락을 포함한 서버 제출 검증
-- 항목별 검토, 무제한 보완·재제출, 설정형 최종 승인
-- UUID 파일명, Magic/MIME 검증, SHA-256, AES-256-GCM, 파일 버전과 선택형 ClamAV
-- Keycloak 등 표준 OIDC SSO, 로컬 bootstrap 관리자, Backend RBAC/객체 권한
-- 사용자별 API 키 및 증적 암호화 키 버전·회전
-- 해시 체인 감사로그, 구조화 서버 로그, `/health`, `/ready`, `/metrics`
-- PostgreSQL `SKIP LOCKED` 작업 큐 기반 SMTP 알림·재시도와 인앱 알림
-- Excel/PDF/JSON/ZIP 결과 내보내기, Excel Import Wizard
-- REST/OpenAPI 및 MCP `2026-07-28` Stateless Streamable HTTP (구형 `2025-11-25` 초기화 호환)
+<h3>Excel 보안 심의를 넘어 추적 가능한 Security Control로.</h3>
 
-## 배포
+<p align="center">
+  <b>SecCheck</b>는 Excel 기반 보안성 심의를 템플릿·버전·제출 스냅샷·항목별 검토로 분리하고,<br>
+  Rule Engine 자동 배정과 암호학적 해시 체인 감사로그를 지원하는 엔터프라이즈 오프라인 운영형 보안 검토 플랫폼입니다.
+</p>
 
-서비스 컨테이너에는 런타임 인터넷 연결이 필요하지 않습니다. PostgreSQL과 TLS 종료 Reverse Proxy는 운영망에 별도로 준비합니다.
+[**📕 종합 기술 매뉴얼 완본 (PDF)**](docs/seccheck_complete_manual.pdf) · [**🌐 인터랙티브 웹 쇼케이스**](docs/index.html) · [**📚 문서 허브**](docs/README.md) · [**📸 기능 가이드**](docs/features.md)
 
-```bash
-docker load < seccheck-v0.1.0.tar.gz
-cp .env.example .env
-# .env의 네 값 설정
-docker compose up -d
+</div>
+
+---
+
+## 📸 주요 화면 둘러보기
+
+<div align="center">
+
+### 📊 보안 심의 현황 대시보드
+![대시보드](docs/screenshots/02_dashboard.png)
+
+### 📋 체크리스트 & 실시간 진행 집계
+![체크리스트 상세](docs/screenshots/05_review_detail_checklist.png)
+
+<details>
+<summary><b>👉 더 많은 기능 화면 스크린샷 접기/펼치기</b></summary>
+<br/>
+
+| 화면명 | 캡처 이미지 | 설명 |
+| :--- | :--- | :--- |
+| **로그인 & SSO** | ![로그인](docs/screenshots/01_login.png) | 부트스트랩 관리자 및 Keycloak OIDC 통합 로그인 |
+| **심의 목록** | ![심의 목록](docs/screenshots/03_reviews_list.png) | 다차원 상태 필터링 및 심의 현황 테이블 |
+| **신규 심의 요청** | ![신규 심의](docs/screenshots/04_new_review_form.png) | 서비스 정보 및 Rule Engine 9대 적용 조건 |
+| **항목 편집 & 증적** | ![항목 편집](docs/screenshots/06_review_item_editor.png) | 자체 판단, N/A 사유, AES-256 증적 첨부 |
+| **배정 조정 모달** | ![배정 조정](docs/screenshots/09_review_rule_override_modal.png) | Rule Engine 결과 수동 제외/포함 조정 |
+| **보안 검토 Queue** | ![보안 검토](docs/screenshots/10_security_reviews.png) | 보안 담당자 전용 제출/재제출 심의 대기열 |
+| **Security Controls** | ![통합 Controls](docs/screenshots/11_controls_catalog.png) | 통제 코드 관리 및 템플릿/심의 영향 범위 추적 |
+| **템플릿 관리** | ![템플릿](docs/screenshots/12_templates_list.png) | 개발보안, 개인정보, 클라우드, K8s 기본 탑재 |
+| **템플릿 상세/규칙** | ![템플릿 상세](docs/screenshots/13_template_detail.png) | 카테고리, 항목, 가중치 및 자동 배정 조건 |
+| **Excel 가져오기** | ![Excel 마법사](docs/screenshots/14_excel_import_wizard.png) | 기존 엑셀 체크리스트 업로드 및 컬럼 매핑 |
+| **개인 키 & 암호화** | ![키 관리](docs/screenshots/16_api_keys_and_encryption.png) | Bearer API 키 발급 및 증적 암호화 키 회전 |
+| **API · MCP 연계** | ![MCP 연계](docs/screenshots/18_integrations_mcp.png) | REST API 명세 및 MCP `2026-07-28` 도구 규격 |
+| **사용자 및 역할** | ![사용자 관리](docs/screenshots/19_admin_users.png) | RBAC 7대 역할 체계 및 활성 제어 |
+| **해시 체인 감사로그** | ![감사로그](docs/screenshots/25_admin_audit_hashchain.png) | SHA-256 해시 체인 무결성 전수 검증 |
+| **구조화 서버 로그** | ![서버 로그](docs/screenshots/26_admin_logs.png) | 민감정보 마스킹 요청 ID 기반 서버 로그 |
+
+</details>
+
+</div>
+
+---
+
+## 🏗️ 시스템 아키텍처
+
+```
+      ┌─────────────────────────────────────────────────────────────┐
+      │           Web Browser / Keycloak OIDC Client                │
+      │        - React + TypeScript + Lucide UI                     │
+      │        - Checklist Editor with Auto-Save & Evidence Upload  │
+      │        - Hash Chain Verification & Multi-format Export      │
+      └──────────────┬──────────────────────────────▲───────────────┘
+                     │ REST API (/api/v1)           │ Static Assets &
+                     │ JSON-RPC 2.0 (/mcp)          │ OpenAPI Spec
+      ┌──────────────▼──────────────────────────────┴───────────────┐
+      │                  SecCheck Daemon (Go 1.26)                  │
+      │  - HTTP Server & Static Bundle Embed                        │
+      │  - Rule Engine (Service Characteristic Evaluation)          │
+      │  - Evidence Encryption Engine (AES-256-GCM Envelope)        │
+      │  - Hash-Chaining Audit Engine (SHA-256 Immutability)        │
+      │  - Background SMTP Worker (SKIP LOCKED Queue)               │
+      └──────────────┬──────────────────────────────┬───────────────┘
+                     │                              │
+                     ▼                              ▼
+      ┌─────────────────────────────┐┌──────────────────────────────┐
+      │     PostgreSQL Database     ││   Encrypted Evidence Store   │
+      │ - review_requests / items   ││ - UUID Filename Storage      │
+      │ - templates / controls      ││ - Magic/MIME Validated       │
+      │ - audit_logs (hash chained) ││ - AES-256-GCM Encrypted      │
+      │ - notify_jobs (SKIP LOCKED) ││ - Multi-versioned            │
+      └─────────────────────────────┘└──────────────────────────────┘
 ```
 
-SecCheck 서비스가 받는 환경변수는 다음 네 개뿐입니다.
+---
 
-| 변수 | 설명 |
-|---|---|
-| `POSTGRES_DSN` | PostgreSQL DSN. 운영에서는 `sslmode=verify-full` 권장 |
-| `BOOTSTRAP_ADMIN` | 최초 로컬 관리자 사용자명 |
-| `BOOTSTRAP_ADMIN_PASSWORD` | 최초 관리자 비밀번호. 최소 12자 이상의 임의값 권장 |
-| `ENCRYPTION_KEY` | 32 raw byte 또는 32 byte를 Base64로 인코딩한 Master Key |
+## 📖 공식 기술 문서 (PDF)
 
-그 밖의 OIDC client ID/secret, 승인 절차, 업로드/ClamAV, 세션, SMTP 알림, CORS와 보안 설정은 서비스 관리자 화면에서 관리합니다. OIDC Client Secret과 SMTP 비밀번호는 Master Key로 암호화됩니다.
+| 문서명 | 설명 | PDF 다운로드 / 바로보기 |
+| :--- | :--- | :--- |
+| **📕 종합 기술 매뉴얼 완본** | 모든 아키텍처·기능·실무·운영·API 통합 기술 완본 (A4 인쇄용) | [**docs/seccheck_complete_manual.pdf**](docs/seccheck_complete_manual.pdf) |
+| **📸 기능 및 화면 가이드** | 25개 전체 메뉴별 캡처 스크린샷과 CRU 동작 가이드 | [**PDF 바로보기**](docs/seccheck_features_guide.pdf) · [MD](docs/features.md) |
+| **👤 사용자 실무 가이드** | 심의 생성, Rule Engine, 체크리스트 작성, N/A, 증적 첨부, 승인 | [**PDF 바로보기**](docs/seccheck_user_guide.pdf) · [MD](docs/user-guide.md) |
+| **🛠️ 관리자 운영 가이드** | 4대 환경변수, Keycloak SSO, ClamAV, RBAC 역할, 체인 검증 | [**PDF 바로보기**](docs/seccheck_admin_guide.pdf) · [MD](docs/admin-guide.md) |
+| **🔌 API & MCP 가이드** | REST API 명세, Model Context Protocol(MCP) `2026-07-28` 스펙 | [**PDF 바로보기**](docs/seccheck_api_guide.pdf) · [MD](docs/api-guide.md) |
+| **🏗️ 시스템 아키텍처** | 3계층 불변 모델, AES-256-GCM 증적 암호화, 해시 체인 감사로그 | [**PDF 바로보기**](docs/seccheck_architecture.pdf) · [MD](docs/architecture.md) |
+| **🌐 웹 쇼케이스** | 인터랙티브 깃허브 홍보 및 기능 둘러보기 웹페이지 | [**쇼케이스 열기**](docs/index.html) |
+| **📚 문서 허브** | 전체 공식 기술 문서 목차 및 시작 가이드 | [**문서 허브 열기**](docs/README.md) |
 
-새 키 생성 예시:
+---
+
+## 🚀 빠른 시작 (Quick Start)
+
+`SecCheck`가 런타임으로 요구하는 환경변수는 정확히 4개뿐입니다:
 
 ```bash
-openssl rand -base64 32
+docker run -d --name seccheck --restart unless-stopped \
+  -p 8080:8080 \
+  -e POSTGRES_DSN='postgres://seccheck:password@postgres.internal:5432/seccheck?sslmode=require' \
+  -e BOOTSTRAP_ADMIN='admin' \
+  -e BOOTSTRAP_ADMIN_PASSWORD='your-strong-password' \
+  -e ENCRYPTION_KEY='your-32-char-random-encryption-key' \
+  seccheck:v0.1.0
 ```
 
-`ENCRYPTION_KEY`를 분실하면 암호화된 설정과 사용자 증적 키를 복구할 수 없습니다. 데이터와 분리된 비밀 관리 시스템 및 암호화 백업에 보관하십시오.
-
-## 로컬 개발
-
-```bash
-npm ci --prefix web
-npm --prefix web run build
-go test ./...
-go run -ldflags '-X main.version=0.1.0' ./cmd/seccheck
-```
-
-개발 실행도 동일한 네 환경변수와 접근 가능한 PostgreSQL이 필요합니다.
-
-## 운영 보안
-
-- TLS는 Reverse Proxy에서 종료하고 관리자 설정의 Secure Cookie를 켭니다.
-- 증적 볼륨 `/app/data`는 실행 불가(noexec) 정책, 최소권한 UID 10001, 별도 암호화 백업을 적용합니다.
-- PostgreSQL은 정기 Full/PITR 백업을 구성하고, 증적 볼륨과 설정 DB를 같은 복구 시점으로 보존합니다.
-- 분기별 복구 훈련에서 별도 격리 환경에 DB/증적/Master Key를 복구하고 증적 SHA-256 다운로드 검증 결과를 변경관리 시스템에 기록합니다.
-- ClamAV를 사용할 때 관리자 설정에 `host:port`를 입력합니다. 검사 장애 시 파일 업로드는 fail-closed 됩니다.
-- `/metrics`는 내부 Monitoring allowlist에서만 접근하도록 Reverse Proxy에서 제한합니다.
-- Bootstrap 관리자는 SSO 관리자가 준비된 뒤 비활성화할 수 있습니다. 비활성화 시 기존 세션도 삭제됩니다.
-
-자세한 구성과 운영 절차는 [운영 가이드](docs/operations.md), API/MCP는 [연계 가이드](docs/integrations.md)를 참고하세요.
-
-## 릴리스
-
-`v0.1.0`과 같은 tag를 push하면 GitHub Actions가 테스트·의존성/비밀/컨테이너/DAST Gate, SBOM 생성·검사, provenance attestation을 수행합니다. GitHub Release에는 요청한 형식의 단일 자산 `seccheck-v0.1.0.tar.gz`만 첨부되며 내부 Docker image 이름은 `seccheck:v0.1.0`입니다.
+- **접속 주소**: `http://localhost:8080` (초기 관리자 계정: `admin`)
