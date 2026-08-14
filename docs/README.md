@@ -9,7 +9,8 @@
 > [!TIP]
 > 모든 문서는 인쇄 및 가독성에 최적화된 **고품질 A4 PDF 문서**로 제공됩니다.
 
-### 🌟 종합 완본
+### 🌟 종합 완본 및 시연 영상
+- 🎬 **[SecCheck 3분 서비스 시연 영상 (MP4)](seccheck_overview.mp4)**: 플랫폼 핵심 업무 흐름 및 CRU 시연 (1080p FHD, 3분 06초)
 - 📕 **[SecCheck 종합 기술 매뉴얼 완본 (Complete Manual PDF)](seccheck_complete_manual.pdf)**: 아키텍처, 전체 기능, 사용자 실무, 관리자 운영, API & MCP 가이드가 통합된 종합 기술 완본 (A4 인쇄용)
 
 ### 1. 사용자 및 기능 가이드

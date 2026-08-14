@@ -18,7 +18,7 @@
   Rule Engine 자동 배정과 암호학적 해시 체인 감사로그를 지원하는 엔터프라이즈 오프라인 운영형 보안 검토 플랫폼입니다.
 </p>
 
-[**📕 종합 기술 매뉴얼 완본 (PDF)**](docs/seccheck_complete_manual.pdf) · [**🌐 인터랙티브 웹 쇼케이스**](docs/index.html) · [**📚 문서 허브**](docs/README.md) · [**📸 기능 가이드**](docs/features.md)
+[**🎬 3분 서비스 시연 영상 (MP4)**](docs/seccheck_overview.mp4) · [**📕 종합 기술 매뉴얼 완본 (PDF)**](docs/seccheck_complete_manual.pdf) · [**🌐 인터랙티브 웹 쇼케이스**](docs/index.html) · [**📚 문서 허브**](docs/README.md)
 
 </div>
 
@@ -98,6 +98,7 @@
 
 | 문서명 | 설명 | PDF 다운로드 / 바로보기 |
 | :--- | :--- | :--- |
+| **🎬 3분 서비스 시연 영상** | 플랫폼 핵심 업무 흐름 및 실시간 CRU 시연 (1080p FHD, 3분 06초) | [**docs/seccheck_overview.mp4**](docs/seccheck_overview.mp4) |
 | **📕 종합 기술 매뉴얼 완본** | 모든 아키텍처·기능·실무·운영·API 통합 기술 완본 (A4 인쇄용) | [**docs/seccheck_complete_manual.pdf**](docs/seccheck_complete_manual.pdf) |
 | **📸 기능 및 화면 가이드** | 25개 전체 메뉴별 캡처 스크린샷과 CRU 동작 가이드 | [**PDF 바로보기**](docs/seccheck_features_guide.pdf) · [MD](docs/features.md) |
 | **👤 사용자 실무 가이드** | 심의 생성, Rule Engine, 체크리스트 작성, N/A, 증적 첨부, 승인 | [**PDF 바로보기**](docs/seccheck_user_guide.pdf) · [MD](docs/user-guide.md) |

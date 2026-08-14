@@ -1,0 +1,111 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8">
+  <title>SecCheck Intro</title>
+  <link href="https://fonts.googleapis.com/css2?family=Pretendard:wght@400;600;800;900&display=swap" rel="stylesheet">
+  <style>
+    body {
+      margin: 0;
+      background: radial-gradient(circle at center, #115e59 0%, #042f2e 100%);
+      color: #fff;
+      font-family: 'Pretendard', sans-serif;
+      height: 100vh;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      text-align: center;
+      overflow: hidden;
+    }
+    .badge {
+      background: rgba(45, 212, 191, 0.15);
+      border: 1px solid #2dd4bf;
+      color: #5eead4;
+      padding: 8px 22px;
+      border-radius: 999px;
+      font-weight: 800;
+      font-size: 16px;
+      letter-spacing: 1px;
+      margin-bottom: 24px;
+      animation: pulse 2s infinite ease-in-out;
+    }
+    @keyframes pulse {
+      0%, 100% { transform: scale(1); }
+      50% { transform: scale(1.04); }
+    }
+    .logo-wrap {
+      display: flex;
+      align-items: center;
+      gap: 18px;
+      margin-bottom: 20px;
+    }
+    .logo-icon {
+      width: 68px;
+      height: 68px;
+      background: #0f766e;
+      color: #ffffff;
+      font-size: 32px;
+      font-weight: 900;
+      display: grid;
+      place-items: center;
+      border-radius: 16px;
+      box-shadow: 0 10px 30px rgba(15, 118, 110, 0.5);
+      border: 2px solid #2dd4bf;
+    }
+    .logo-text {
+      font-size: 64px;
+      font-weight: 900;
+      letter-spacing: -2px;
+    }
+    .tagline {
+      font-size: 32px;
+      font-weight: 850;
+      color: #f0fdfa;
+      margin-bottom: 16px;
+    }
+    .desc {
+      font-size: 20px;
+      color: #ccfbf1;
+      max-width: 900px;
+      line-height: 1.6;
+    }
+    .pillars {
+      display: flex;
+      gap: 24px;
+      margin-top: 40px;
+    }
+    .pillar {
+      background: rgba(255, 255, 255, 0.08);
+      border: 1px solid rgba(255, 255, 255, 0.16);
+      padding: 16px 28px;
+      border-radius: 12px;
+      font-weight: 700;
+      font-size: 16px;
+      color: #f0fdfa;
+    }
+    .pillar span {
+      color: #2dd4bf;
+      margin-right: 6px;
+    }
+  </style>
+</head>
+<body>
+  <div class="badge">✦ Excel 보안 심의를 넘어 추적 가능한 Security Control로</div>
+  <div class="logo-wrap">
+    <div class="logo-icon">SC</div>
+    <div class="logo-text">SecCheck</div>
+  </div>
+  <div class="tagline">Enterprise Security Review Platform</div>
+  <div class="desc">
+    Excel 기반 보안성 심의를 템플릿·버전·제출 스냅샷·항목별 검토로 분리하고,<br>
+    <b>Rule Engine</b> 자동 배정과 <b>암호학적 해시 체인 감사로그</b>로 완벽한 추적성을 제공합니다.
+  </div>
+  <div class="pillars">
+    <div class="pillar"><span>⚡</span> Rule Engine Auto-Assignment</div>
+    <div class="pillar"><span>🔐</span> AES-256 Evidence Encryption</div>
+    <div class="pillar"><span>🛡️</span> Security Controls Blast Radius</div>
+    <div class="pillar"><span>⛓️</span> SHA-256 Hash Chained Audit</div>
+  </div>
+</body>
+</html>

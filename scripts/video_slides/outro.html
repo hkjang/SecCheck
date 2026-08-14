@@ -1,0 +1,96 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8">
+  <title>SecCheck Outro</title>
+  <link href="https://fonts.googleapis.com/css2?family=Pretendard:wght@400;600;800;900&family=JetBrains+Mono:wght@500;700&display=swap" rel="stylesheet">
+  <style>
+    body {
+      margin: 0;
+      background: radial-gradient(circle at center, #115e59 0%, #042f2e 100%);
+      color: #fff;
+      font-family: 'Pretendard', sans-serif;
+      height: 100vh;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      text-align: center;
+      overflow: hidden;
+    }
+    .logo-wrap {
+      display: flex;
+      align-items: center;
+      gap: 16px;
+      margin-bottom: 20px;
+    }
+    .logo-icon {
+      width: 58px;
+      height: 58px;
+      background: #0f766e;
+      color: #ffffff;
+      font-size: 28px;
+      font-weight: 900;
+      display: grid;
+      place-items: center;
+      border-radius: 14px;
+      box-shadow: 0 10px 30px rgba(15, 118, 110, 0.5);
+      border: 2px solid #2dd4bf;
+    }
+    .logo-text {
+      font-size: 54px;
+      font-weight: 900;
+      letter-spacing: -1.5px;
+    }
+    .tagline {
+      font-size: 28px;
+      font-weight: 800;
+      color: #f0fdfa;
+      margin-bottom: 28px;
+    }
+    .cmd-box {
+      background: #022c22;
+      border: 1px solid #0f766e;
+      border-radius: 12px;
+      padding: 16px 28px;
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 15px;
+      color: #ccfbf1;
+      text-align: left;
+      line-height: 1.6;
+      box-shadow: 0 12px 30px rgba(0, 0, 0, 0.4);
+      margin-bottom: 30px;
+    }
+    .links {
+      display: flex;
+      gap: 24px;
+      font-size: 16px;
+      font-weight: 700;
+      color: #ccfbf1;
+    }
+    .links span {
+      color: #2dd4bf;
+    }
+  </style>
+</head>
+<body>
+  <div class="logo-wrap">
+    <div class="logo-icon">SC</div>
+    <div class="logo-text">SecCheck</div>
+  </div>
+  <div class="tagline">Excel 보안 심의를 넘어 추적 가능한 Security Control로.</div>
+  <div class="cmd-box">
+    docker run -d --name seccheck -p 8080:8080 \<br>
+    &nbsp;&nbsp;-e POSTGRES_DSN='postgres://seccheck:pass@postgres:5432/seccheck' \<br>
+    &nbsp;&nbsp;-e BOOTSTRAP_ADMIN='admin' \<br>
+    &nbsp;&nbsp;-e BOOTSTRAP_ADMIN_PASSWORD='password1234' \<br>
+    &nbsp;&nbsp;-e ENCRYPTION_KEY='01234567890123456789012345678901' \<br>
+    &nbsp;&nbsp;seccheck:v0.1.0
+  </div>
+  <div class="links">
+    <div><span>📕</span> docs/seccheck_complete_manual.pdf (종합 매뉴얼)</div>
+    <div><span>🌐</span> docs/index.html (웹 쇼케이스)</div>
+    <div><span>🐙</span> github.com/hkjang/SecCheck</div>
+  </div>
+</body>
+</html>
