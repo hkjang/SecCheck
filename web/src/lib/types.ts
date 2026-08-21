@@ -10,6 +10,8 @@ export type User = {
   locked_until?: string | null
   failed_login_count?: number
   totp_enabled?: boolean
+  last_login_at?: string | null
+  created_at?: string
 }
 
 export type DirectoryUser = Pick<User, 'id' | 'username' | 'display_name' | 'department'>

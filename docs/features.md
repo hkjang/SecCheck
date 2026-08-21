@@ -125,6 +125,7 @@
 ### 17. 서비스 관리자: 사용자 및 역할 관리 (`/admin/users`)
 ![사용자 관리](./screenshots/19_admin_users.png)
 - **RBAC 7대 역할 체계**: `SYSTEM_ADMIN`, `TEMPLATE_ADMIN`, `SECURITY_REVIEWER`, `REQUESTER`, `CONTRIBUTOR`, `APPROVER`, `AUDITOR` 조합 및 활성/비활성 즉시 제어
+- **마지막 접속과 접근 검토**: 계정별 마지막 로그인 일시와 경과 일수를 표시. 권한 계정이 `장기 미접속 관리자 잠금` 기준일에 근접하면 경고, 초과하면 `잠금 대상`으로 표시하며, `N일 이상 미접속` 필터로 접근 검토 대상을 한 번에 조회
 
 ---
 

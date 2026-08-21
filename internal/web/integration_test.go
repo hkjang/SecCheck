@@ -1962,3 +1962,35 @@ func TestEvidenceReplacedByAnotherPersonStillDecrypts(t *testing.T) {
 		t.Errorf("evidence records key owner %s at version %d, want %s at 2", keyOwner, version, helper)
 	}
 }
+
+// The user list is where an access review happens, so it has to carry the
+// last sign-in. The column was missing even though the value was served.
+func TestUserListCarriesTheLastSignIn(t *testing.T) {
+	h := newHarness(t)
+	admin := h.login(adminOf(h))
+	h.user("never-signed-in", "REQUESTER")
+	users := []map[string]any{}
+	if err := json.Unmarshal([]byte(admin.do(http.MethodGet, "/api/v1/admin/users", nil).body), &users); err != nil {
+		t.Fatal(err)
+	}
+	seen := map[string]any{}
+	for _, u := range users {
+		if name, _ := u["username"].(string); name != "" {
+			seen[name] = u["last_login_at"]
+		}
+		if _, ok := u["created_at"]; !ok {
+			t.Fatalf("a user row carries no created_at: %v", u)
+		}
+	}
+	if _, ok := seen["integration-admin"]; !ok {
+		t.Fatal("the signed-in administrator is missing from the list")
+	}
+	if at := seen["integration-admin"]; at == nil {
+		t.Error("the administrator has signed in but the list reports no last sign-in")
+	}
+	if at, ok := seen["never-signed-in"]; !ok {
+		t.Error("a user who never signed in is missing from the list")
+	} else if at != nil {
+		t.Errorf("a user who never signed in reports a last sign-in of %v", at)
+	}
+}
