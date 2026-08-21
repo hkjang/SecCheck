@@ -83,6 +83,52 @@ func (s *Server) exportedAt() string {
 	return time.Now().In(zone).Format("2006-01-02 15:04") + " (" + zone.String() + ")"
 }
 
+type exportEvidence struct {
+	Filename string `json:"filename"`
+	SHA256   string `json:"sha256"`
+	Version  int    `json:"version"`
+}
+
+// itemEvidence reads the evidence list that loadExportData already fetched.
+// The report is the artefact that circulates, and until now it recorded the
+// answers but never what was attached to support them, so a reader could not
+// tell evidence from an assertion.
+func itemEvidence(item map[string]any) []exportEvidence {
+	raw, ok := item["evidences"].([]any)
+	if !ok {
+		return nil
+	}
+	out := make([]exportEvidence, 0, len(raw))
+	for _, entry := range raw {
+		record, ok := entry.(map[string]any)
+		if !ok {
+			continue
+		}
+		version := 1
+		if v, ok := record["version"].(float64); ok {
+			version = int(v)
+		}
+		out = append(out, exportEvidence{
+			Filename: fmt.Sprint(record["filename"]),
+			SHA256:   fmt.Sprint(record["sha256"]),
+			Version:  version,
+		})
+	}
+	return out
+}
+
+func evidenceSummary(item map[string]any) string {
+	files := itemEvidence(item)
+	if len(files) == 0 {
+		return ""
+	}
+	names := make([]string, 0, len(files))
+	for _, f := range files {
+		names = append(names, f.Filename)
+	}
+	return strings.Join(names, ", ")
+}
+
 func (s *Server) writeJSONExport(w http.ResponseWriter, data exportData, base string) {
 	w.Header().Set("Content-Type", "application/json; charset=utf-8")
 	w.Header().Set("Content-Disposition", `attachment; filename*=UTF-8''`+urlEncode(base+".json"))
@@ -104,7 +150,7 @@ func (s *Server) writeExcelExport(w http.ResponseWriter, data exportData, base s
 	}
 	itemsSheet := "항목별 결과"
 	_, _ = f.NewSheet(itemsSheet)
-	headers := []string{"템플릿", "버전", "항목코드", "구분", "분류", "보안요건", "점검질문", "중요도", "적용여부", "자체판단", "현황 및 증적", "N/A 사유", "조치내용", "검토결과", "검토의견", "증적 적정성", "후속조치"}
+	headers := []string{"템플릿", "버전", "항목코드", "구분", "분류", "보안요건", "점검질문", "중요도", "적용여부", "자체판단", "현황 및 증적", "N/A 사유", "조치내용", "검토결과", "검토의견", "증적 적정성", "후속조치", "첨부 증적"}
 	for x, h := range headers {
 		cell, _ := excelize.CoordinatesToCellName(x+1, 1)
 		_ = f.SetCellValue(itemsSheet, cell, h)
@@ -115,9 +161,30 @@ func (s *Server) writeExcelExport(w http.ResponseWriter, data exportData, base s
 			cell, _ := excelize.CoordinatesToCellName(x+1, y+2)
 			_ = f.SetCellValue(itemsSheet, cell, item[k])
 		}
+		if cell, err := excelize.CoordinatesToCellName(len(keys)+1, y+2); err == nil {
+			_ = f.SetCellValue(itemsSheet, cell, evidenceSummary(item))
+		}
 	}
-	_ = f.SetColWidth(itemsSheet, "A", "Q", 20)
+	_ = f.SetColWidth(itemsSheet, "A", "R", 20)
 	_ = f.SetColWidth(itemsSheet, "F", "G", 42)
+
+	// A separate sheet lists every attachment with its hash, so the report can
+	// be checked against the files without opening the archive.
+	evidenceSheet := "증적 목록"
+	if _, err := f.NewSheet(evidenceSheet); err == nil {
+		evidenceRows := [][]any{{"항목코드", "보안요건", "파일명", "버전", "SHA-256"}}
+		for _, item := range data.Items {
+			for _, file := range itemEvidence(item) {
+				evidenceRows = append(evidenceRows, []any{item["item_code"], item["title"], file.Filename, file.Version, file.SHA256})
+			}
+		}
+		if len(evidenceRows) == 1 {
+			evidenceRows = append(evidenceRows, []any{"", "첨부된 증적이 없습니다.", "", "", ""})
+		}
+		writeSheetRows(f, evidenceSheet, evidenceRows, 1)
+		_ = f.SetColWidth(evidenceSheet, "A", "E", 24)
+		_ = f.SetColWidth(evidenceSheet, "E", "E", 68)
+	}
 	buf, err := f.WriteToBuffer()
 	if err != nil {
 		problem(w, 500, "EXPORT_FAILED", "Excel 파일을 생성하지 못했습니다.", nil)
@@ -157,6 +224,11 @@ func (s *Server) writePDFExport(w http.ResponseWriter, data exportData, base str
 		pdf.MultiCell(0, 6, title, "", "L", false)
 		pdf.SetFont("kr", "", 8)
 		detail := fmt.Sprintf("템플릿 %v %v | 적용여부 %v | 자체판단 %v | 검토결과 %v\n현황: %v\n검토의견: %v", item["template_name"], item["template_version"], item["applicability"], item["self_assessment"], item["review_result"], item["current_state"], item["review_opinion"])
+		if files := itemEvidence(item); len(files) > 0 {
+			for _, file := range files {
+				detail += fmt.Sprintf("\n증적: %s (v%d, SHA-256 %s)", file.Filename, file.Version, file.SHA256)
+			}
+		}
 		pdf.MultiCell(0, 5, detail, "B", "L", false)
 		pdf.Ln(2)
 	}

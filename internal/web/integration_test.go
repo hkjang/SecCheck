@@ -1,6 +1,7 @@
 package web_test
 
 import (
+	"archive/zip"
 	"bytes"
 	"context"
 	"encoding/json"
@@ -1530,4 +1531,76 @@ func TestPublishedVersionsAreImmutableAndSnapshotsAreStable(t *testing.T) {
 	if !reported {
 		t.Error("a newer published version exists but no template is reported as outdated")
 	}
+}
+
+// The exported report is the artefact that circulates. It recorded the answers
+// but never what was attached to support them, so a reader could not tell
+// evidence from an assertion.
+func TestExportedReportRecordsTheEvidence(t *testing.T) {
+	h := newHarness(t)
+	h.user("export-author", "REQUESTER")
+	author := h.login("export-author")
+	reviewID := author.createReview("내보내기 서비스")
+
+	items := []map[string]any{}
+	_ = json.Unmarshal([]byte(author.do(http.MethodGet, "/api/v1/review-requests/"+reviewID+"/items", nil).body), &items)
+	itemID, _ := items[0]["id"].(string)
+	itemCode, _ := items[0]["item_code"].(string)
+	if res := author.upload(fmt.Sprintf("/api/v1/review-requests/%s/items/%s/evidences", reviewID, itemID), "증적자료.txt", "증적 본문입니다"); res.status != http.StatusCreated {
+		t.Fatalf("upload evidence: %d %s", res.status, res.body)
+	}
+	// JSON keeps the structured record.
+	jsonExport := author.do(http.MethodGet, "/api/v1/review-requests/"+reviewID+"/export/json", nil)
+	if !strings.Contains(jsonExport.body, "증적자료.txt") {
+		t.Error("the JSON export does not mention the attachment")
+	}
+
+	// The workbook must name the file and carry its hash on the evidence sheet.
+	req, _ := http.NewRequest(http.MethodGet, h.server.URL+"/api/v1/review-requests/"+reviewID+"/export/xlsx", nil)
+	book := author.send(req)
+	if book.status != http.StatusOK || !strings.HasPrefix(book.body, "PK\x03\x04") {
+		t.Fatalf("xlsx export returned %d (%d bytes)", book.status, len(book.body))
+	}
+	strings_, err := readXLSXStrings([]byte(book.body))
+	if err != nil {
+		t.Fatalf("read workbook: %v", err)
+	}
+	for _, want := range []string{"증적자료.txt", "증적 목록", "첨부 증적", "SHA-256", itemCode} {
+		if want == "" {
+			continue
+		}
+		if !strings.Contains(strings_, want) {
+			t.Errorf("the workbook does not contain %q", want)
+		}
+	}
+
+	// And the PDF names it too.
+	req, _ = http.NewRequest(http.MethodGet, h.server.URL+"/api/v1/review-requests/"+reviewID+"/export/pdf", nil)
+	pdf := author.send(req)
+	if pdf.status != http.StatusOK || !strings.HasPrefix(pdf.body, "%PDF") {
+		t.Errorf("pdf export returned %d", pdf.status)
+	}
+}
+
+// readXLSXStrings returns the workbook parts that carry text: the shared
+// string table, the sheets, and the workbook itself where sheet names live.
+func readXLSXStrings(body []byte) (string, error) {
+	reader, err := zip.NewReader(bytes.NewReader(body), int64(len(body)))
+	if err != nil {
+		return "", err
+	}
+	var out strings.Builder
+	for _, file := range reader.File {
+		if !strings.HasPrefix(file.Name, "xl/sharedStrings") && !strings.HasPrefix(file.Name, "xl/worksheets") && file.Name != "xl/workbook.xml" {
+			continue
+		}
+		rc, err := file.Open()
+		if err != nil {
+			continue
+		}
+		content, _ := io.ReadAll(rc)
+		rc.Close()
+		out.Write(content)
+	}
+	return out.String(), nil
 }
