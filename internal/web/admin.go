@@ -277,6 +277,25 @@ func validateSetting(key string, m map[string]any) string {
 		if role != "" && !contains([]string{"REQUESTER", "CONTRIBUTOR", "AUDITOR"}, role) {
 			return "OIDC 기본 역할을 확인하세요."
 		}
+		if mappings, ok := m["role_mappings"].([]any); ok {
+			seen := map[string]bool{}
+			for _, raw := range mappings {
+				entry, _ := raw.(map[string]any)
+				group := strings.TrimSpace(stringValue(entry["group"]))
+				mapped := stringValue(entry["role"])
+				if group == "" {
+					return "그룹 매핑의 그룹 이름을 입력하세요."
+				}
+				if !contains(auth.AssignableOIDCRoles(), mapped) {
+					return "그룹 매핑에는 시스템 관리자를 제외한 역할만 지정할 수 있습니다."
+				}
+				key := strings.ToLower(group) + "\x00" + mapped
+				if seen[key] {
+					return "같은 그룹과 역할을 두 번 지정했습니다."
+				}
+				seen[key] = true
+			}
+		}
 	case "upload":
 		if n := numericSetting(m["max_size_mb"]); n < 1 || n > 1024 {
 			return "업로드 제한은 1~1024MB여야 합니다."

@@ -135,7 +135,12 @@ type OIDCSettings struct {
 	Scopes        []string `json:"scopes"`
 	UsernameClaim string   `json:"username_claim"`
 	DefaultRole   string   `json:"default_role"`
-	ClientSecret  string   `json:"client_secret,omitempty"`
+	GroupsClaim   string   `json:"groups_claim"`
+	RoleMappings  []struct {
+		Group string `json:"group"`
+		Role  string `json:"role"`
+	} `json:"role_mappings"`
+	ClientSecret string `json:"client_secret,omitempty"`
 }
 
 type Provider struct {
@@ -591,7 +596,12 @@ func (a *Service) CompleteOIDC(ctx context.Context, state, code, ip, userAgent s
 	if err != nil {
 		return u, "", "", time.Time{}, "", err
 	}
-	if len(u.Roles) == 0 {
+	if len(cfg.RoleMappings) > 0 {
+		if err = a.syncOIDCRoles(ctx, u.ID, rolesFromGroups(cfg, claims)); err != nil {
+			return u, "", "", time.Time{}, "", err
+		}
+		u, _ = a.Store.GetUser(ctx, u.ID)
+	} else if len(u.Roles) == 0 {
 		_, err = a.Store.Pool.Exec(ctx, `INSERT INTO user_roles(user_id,role_code) VALUES($1,$2) ON CONFLICT DO NOTHING`, u.ID, cfg.DefaultRole)
 		if err != nil {
 			return u, "", "", time.Time{}, "", err
@@ -601,6 +611,88 @@ func (a *Service) CompleteOIDC(ctx context.Context, state, code, ip, userAgent s
 	token, csrf, expires, err := a.NewSession(ctx, u.ID, ip, userAgent)
 	return u, token, csrf, expires, returnTo, err
 }
+
+// rolesFromGroups reads the group claim and returns the roles it maps to.
+// Keycloak writes realm groups with a leading slash, so both forms match, and
+// the comparison ignores case because directory exports rarely agree on it.
+func rolesFromGroups(cfg OIDCSettings, claims map[string]any) []string {
+	claim := strings.TrimSpace(cfg.GroupsClaim)
+	if claim == "" {
+		claim = "groups"
+	}
+	member := map[string]bool{}
+	switch value := claims[claim].(type) {
+	case string:
+		member[normalizeGroup(value)] = true
+	case []any:
+		for _, entry := range value {
+			if name, ok := entry.(string); ok {
+				member[normalizeGroup(name)] = true
+			}
+		}
+	case []string:
+		for _, name := range value {
+			member[normalizeGroup(name)] = true
+		}
+	}
+	seen := map[string]bool{}
+	roles := []string{}
+	for _, mapping := range cfg.RoleMappings {
+		if !member[normalizeGroup(mapping.Group)] || seen[mapping.Role] {
+			continue
+		}
+		seen[mapping.Role] = true
+		roles = append(roles, mapping.Role)
+	}
+	// Somebody who matches no mapped group still has to be able to work, so
+	// they get the same role a first-time sign-in would have given them.
+	if len(roles) == 0 && cfg.DefaultRole != "" {
+		roles = append(roles, cfg.DefaultRole)
+	}
+	return roles
+}
+
+func normalizeGroup(name string) string {
+	return strings.ToLower(strings.TrimPrefix(strings.TrimSpace(name), "/"))
+}
+
+// syncOIDCRoles makes the directory the source of truth for this account: a
+// role that no mapped group grants is removed. Without that, taking somebody
+// out of a group in the IdP left their access here untouched. Roles the
+// mapping never mentions are left alone, so an administrator can still grant
+// something by hand that the directory does not know about.
+func (a *Service) syncOIDCRoles(ctx context.Context, userID string, roles []string) error {
+	governed := map[string]bool{}
+	for _, role := range assignableOIDCRoles {
+		governed[role] = true
+	}
+	tx, err := a.Store.Pool.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	for _, role := range roles {
+		if !governed[role] {
+			continue
+		}
+		if _, err = tx.Exec(ctx, `INSERT INTO user_roles(user_id,role_code) VALUES($1,$2) ON CONFLICT DO NOTHING`, userID, role); err != nil {
+			return err
+		}
+	}
+	if _, err = tx.Exec(ctx, `DELETE FROM user_roles WHERE user_id=$1 AND role_code=ANY($2) AND NOT (role_code=ANY($3))`, userID, assignableOIDCRoles, roles); err != nil {
+		return err
+	}
+	return tx.Commit(ctx)
+}
+
+// SYSTEM_ADMIN is deliberately absent. Role sync runs at every sign-in with
+// nobody in the loop, so mapping it would let anyone who can edit a directory
+// group become an administrator of the audit system without leaving a trace
+// here first. Administrators stay a deliberate in-app assignment.
+var assignableOIDCRoles = []string{"TEMPLATE_ADMIN", "SECURITY_REVIEWER", "REQUESTER", "CONTRIBUTOR", "APPROVER", "AUDITOR"}
+
+// AssignableOIDCRoles is the set a group mapping may grant.
+func AssignableOIDCRoles() []string { return append([]string(nil), assignableOIDCRoles...) }
 
 func (a *Service) enforceInactiveAdminLock(ctx context.Context, u store.User) error {
 	privileged := false
