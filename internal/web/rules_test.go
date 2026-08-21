@@ -28,7 +28,7 @@ func TestEvaluateRuleExistsNotAndNumeric(t *testing.T) {
 }
 
 func TestEvidenceContentValidation(t *testing.T) {
-	if !mimeMatchesExtension("application/json", "json", []byte(`{"ok":true}`)) || mimeMatchesExtension("application/json", "json", []byte(`not-json`)) {
+	if !matches("application/json", "json", []byte(`{"ok":true}`)) || matches("application/json", "json", []byte(`not-json`)) {
 		t.Fatal("JSON content validation failed")
 	}
 	var valid bytes.Buffer
@@ -38,7 +38,7 @@ func TestEvidenceContentValidation(t *testing.T) {
 		_, _ = f.Write([]byte("x"))
 	}
 	_ = zw.Close()
-	if !mimeMatchesExtension("application/zip", "xlsx", valid.Bytes()) {
+	if !matches("application/zip", "xlsx", valid.Bytes()) {
 		t.Fatal("valid XLSX structure was rejected")
 	}
 	var generic bytes.Buffer
@@ -46,7 +46,7 @@ func TestEvidenceContentValidation(t *testing.T) {
 	f, _ := zw.Create("payload.txt")
 	_, _ = f.Write([]byte("x"))
 	_ = zw.Close()
-	if mimeMatchesExtension("application/zip", "xlsx", generic.Bytes()) {
+	if matches("application/zip", "xlsx", generic.Bytes()) {
 		t.Fatal("generic ZIP was accepted as XLSX")
 	}
 }

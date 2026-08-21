@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"net/netip"
 	"runtime/debug"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -17,6 +18,7 @@ import (
 	"github.com/hkjang/SecCheck/internal/auth"
 	"github.com/hkjang/SecCheck/internal/cryptox"
 	"github.com/hkjang/SecCheck/internal/store"
+	"github.com/hkjang/SecCheck/internal/vault"
 )
 
 type Options struct {
@@ -28,6 +30,7 @@ type Options struct {
 
 type Server struct {
 	Options
+	blobs        *vault.Vault
 	mux          *http.ServeMux
 	limiter      *rateLimiter
 	loginLimiter *rateLimiter
@@ -50,7 +53,7 @@ const sessionKey ctxKey = "session"
 const clientIPKey ctxKey = "client_ip"
 
 func NewServer(o Options) http.Handler {
-	s := &Server{Options: o, mux: http.NewServeMux(), limiter: newRateLimiter(), loginLimiter: newRateLimiter()}
+	s := &Server{Options: o, blobs: vault.New(o.DataDir, o.Box, o.Store), mux: http.NewServeMux(), limiter: newRateLimiter(), loginLimiter: newRateLimiter()}
 	s.routes()
 	return s.middleware(s.mux)
 }
@@ -70,6 +73,13 @@ func (s *Server) routes() {
 	s.mux.Handle("GET /api/v1/me", s.require(nil, http.HandlerFunc(s.me)))
 	s.mux.Handle("PATCH /api/v1/me", s.require(nil, http.HandlerFunc(s.updateMe)))
 	s.mux.Handle("PUT /api/v1/me/password", s.require(nil, http.HandlerFunc(s.changePassword)))
+	s.mux.Handle("GET /api/v1/me/security", s.require(nil, http.HandlerFunc(s.accountSecurity)))
+	s.mux.Handle("GET /api/v1/me/sessions", s.require(nil, http.HandlerFunc(s.listSessions)))
+	s.mux.Handle("DELETE /api/v1/me/sessions/{id}", s.require(nil, http.HandlerFunc(s.revokeSession)))
+	s.mux.Handle("POST /api/v1/me/sessions/revoke-others", s.require(nil, http.HandlerFunc(s.revokeOtherSessions)))
+	s.mux.Handle("POST /api/v1/me/totp/setup", s.require(nil, http.HandlerFunc(s.startTOTPEnrollment)))
+	s.mux.Handle("POST /api/v1/me/totp/enable", s.require(nil, http.HandlerFunc(s.enableTOTP)))
+	s.mux.Handle("POST /api/v1/me/totp/disable", s.require(nil, http.HandlerFunc(s.disableTOTP)))
 	s.mux.Handle("GET /api/v1/dashboard", s.require(nil, http.HandlerFunc(s.dashboard)))
 	s.mux.Handle("GET /api/v1/search", s.require(nil, http.HandlerFunc(s.search)))
 	s.mux.Handle("GET /api/v1/notifications", s.require(nil, http.HandlerFunc(s.notifications)))
@@ -83,6 +93,7 @@ func (s *Server) routes() {
 	s.mux.Handle("PATCH /api/v1/review-requests/{id}", s.require(nil, http.HandlerFunc(s.updateReviewRequest)))
 	s.mux.Handle("GET /api/v1/review-requests/{id}/items", s.require(nil, http.HandlerFunc(s.listSubmissionItems)))
 	s.mux.Handle("PUT /api/v1/review-requests/{id}/responses/{itemID}", s.require(nil, http.HandlerFunc(s.saveResponse)))
+	s.mux.Handle("POST /api/v1/review-requests/{id}/responses/bulk", s.require(nil, http.HandlerFunc(s.bulkSaveResponses)))
 	s.mux.Handle("POST /api/v1/review-requests/{id}/submit", s.require(nil, http.HandlerFunc(s.submitReview)))
 	s.mux.Handle("POST /api/v1/review-requests/{id}/begin-review", s.require([]string{"SECURITY_REVIEWER"}, http.HandlerFunc(s.beginReview)))
 	s.mux.Handle("PUT /api/v1/review-requests/{id}/review-results/{itemID}", s.require([]string{"SECURITY_REVIEWER"}, http.HandlerFunc(s.saveReviewResult)))
@@ -143,6 +154,7 @@ func (s *Server) routes() {
 	s.mux.Handle("POST /api/v1/admin/users/{id}/active", s.require([]string{"SYSTEM_ADMIN"}, http.HandlerFunc(s.setUserActive)))
 	s.mux.Handle("POST /api/v1/admin/users/{id}/unlock", s.require([]string{"SYSTEM_ADMIN"}, http.HandlerFunc(s.unlockUser)))
 	s.mux.Handle("POST /api/v1/admin/users/{id}/password", s.require([]string{"SYSTEM_ADMIN"}, http.HandlerFunc(s.resetUserPassword)))
+	s.mux.Handle("POST /api/v1/admin/users/{id}/totp/reset", s.require([]string{"SYSTEM_ADMIN"}, http.HandlerFunc(s.resetUserTOTP)))
 	s.mux.Handle("GET /api/v1/admin/settings", s.require([]string{"SYSTEM_ADMIN"}, http.HandlerFunc(s.listSettings)))
 	s.mux.Handle("PUT /api/v1/admin/settings/{key}", s.require([]string{"SYSTEM_ADMIN"}, http.HandlerFunc(s.updateSetting)))
 	s.mux.Handle("POST /api/v1/admin/settings/oidc/test", s.require([]string{"SYSTEM_ADMIN"}, http.HandlerFunc(s.testOIDC)))
@@ -168,6 +180,12 @@ func (s *Server) require(roles []string, next http.Handler) http.Handler {
 			problem(w, http.StatusForbidden, "FORBIDDEN", "이 작업을 수행할 권한이 없습니다.", nil)
 			return
 		}
+		// A privileged account that policy requires to hold a one-time code can
+		// reach only the enrolment endpoints until it has one.
+		if sess.EnrollTOTP && !totpEnrollmentPath(r.URL.Path) {
+			problem(w, http.StatusForbidden, "TOTP_ENROLLMENT_REQUIRED", "보안 정책에 따라 일회용 코드를 먼저 등록해야 합니다.", nil)
+			return
+		}
 		if sess.APIKey && r.Method != http.MethodGet && r.Method != http.MethodHead && r.Method != http.MethodOptions && r.URL.Path != "/mcp" && !contains(sess.Scopes, "read:write") {
 			problem(w, http.StatusForbidden, "API_SCOPE_FORBIDDEN", "이 API 키에는 쓰기 범위가 없습니다.", nil)
 			return
@@ -183,6 +201,19 @@ func (s *Server) require(roles []string, next http.Handler) http.Handler {
 }
 
 func session(r *http.Request) auth.Session { return r.Context().Value(sessionKey).(auth.Session) }
+
+// totpEnrollmentPath lists what a half-enrolled account may still call: read
+// its own profile, complete enrolment, and sign out.
+func totpEnrollmentPath(path string) bool {
+	switch path {
+	case "/api/v1/me", "/api/v1/me/security", "/api/v1/auth/logout",
+		"/api/v1/me/totp/setup", "/api/v1/me/totp/enable":
+		return true
+	}
+	return false
+}
+
+func (s *Server) vault() *vault.Vault { return s.blobs }
 
 func (s *Server) middleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -402,6 +433,21 @@ func hasAnyRole(u store.User, roles ...string) bool {
 	}
 	return false
 }
+
+// parsePage reads limit/offset for the paginated list endpoints. Lists used to
+// return a hard-coded first 200 rows with no total, so older records simply
+// disappeared from the UI.
+func parsePage(r *http.Request) (int, int) {
+	limit, offset := 50, 0
+	if v, err := strconv.Atoi(r.URL.Query().Get("limit")); err == nil && v > 0 {
+		limit = min(v, 200)
+	}
+	if v, err := strconv.Atoi(r.URL.Query().Get("offset")); err == nil && v > 0 {
+		offset = min(v, 1_000_000)
+	}
+	return limit, offset
+}
+
 func parseLimit(r *http.Request) int {
 	var n int
 	if _, err := fmt.Sscanf(r.URL.Query().Get("limit"), "%d", &n); err != nil || n < 1 {

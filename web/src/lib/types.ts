@@ -9,6 +9,7 @@ export type User = {
   roles: string[]
   locked_until?: string | null
   failed_login_count?: number
+  totp_enabled?: boolean
 }
 
 export type DirectoryUser = Pick<User, 'id' | 'username' | 'display_name' | 'department'>
@@ -32,8 +33,20 @@ export type Review = {
   final_result?: string
   final_opinion?: string
   progress?: { total: number; answered: number; evidence: number }
+  open_change_requests?: number
+  overdue_change_requests?: number
   [key: string]: unknown
 }
+
+export type Page<T> = { items: T[]; total: number; limit: number; offset: number; has_more: boolean }
+
+export type QueueEntry = { id: string; review_number: string; service_name: string; status: string; planned_open_date?: string; updated_at: string; action: string }
+
+export type DueChange = { id: string; review_request_id: string; review_number: string; service_name: string; item_code: string; title: string; due_date: string; status: string; overdue: boolean }
+
+export type SessionInfo = { id: string; source_ip: string; user_agent: string; created_at: string; last_seen_at: string; expires_at: string; current: boolean }
+
+export type AccountSecurity = { totp_enabled: boolean; totp_enrolled_at?: string; totp_required: boolean; active_sessions: number; auth_source: string }
 
 export type ChecklistItem = {
   id: string

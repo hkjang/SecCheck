@@ -162,49 +162,68 @@ func findKoreanFont() string {
 	return ""
 }
 
+// writeZIPExport streams the archive to the client. A review with many large
+// evidence files used to be assembled in memory in full before the first byte
+// was sent.
 func (s *Server) writeZIPExport(w http.ResponseWriter, r *http.Request, data exportData, base string) {
-	var out bytes.Buffer
-	zw := zip.NewWriter(&out)
-	manifest, _ := zw.Create("result.json")
-	_ = json.NewEncoder(manifest).Encode(data)
 	reviewID := r.PathValue("id")
-	rows, err := s.Store.Pool.Query(r.Context(), `SELECT e.id,e.original_filename,e.stored_filename,e.key_owner_id,e.key_version,e.current_version FROM evidences e JOIN submission_items si ON si.id=e.submission_item_id JOIN submissions sub ON sub.id=si.submission_id WHERE sub.review_request_id=$1 AND e.deleted_at IS NULL ORDER BY e.created_at`, reviewID)
-	if err == nil {
-		defer rows.Close()
-		used := map[string]int{}
-		for rows.Next() {
-			var id, name, stored, owner string
-			var keyVersion, version int
-			if rows.Scan(&id, &name, &stored, &owner, &keyVersion, &version) != nil {
-				continue
-			}
-			encoded, err := os.ReadFile(s.evidencePath(stored))
-			if err != nil {
-				continue
-			}
-			key, err := s.userKey(r.Context(), owner, keyVersion)
-			if err != nil {
-				continue
-			}
-			plain, err := decryptWithKey(key, string(encoded), []byte(fmt.Sprintf("evidence:%s:%d", id, version)))
-			if err != nil {
-				continue
-			}
-			safe := sanitizeFilename(name)
-			used[safe]++
-			if used[safe] > 1 {
-				ext := filepath.Ext(safe)
-				safe = strings.TrimSuffix(safe, ext) + "-" + strconv.Itoa(used[safe]) + ext
-			}
-			entry, _ := zw.Create("evidence/" + safe)
-			_, _ = io.Copy(entry, bytes.NewReader(plain))
-		}
+	rows, err := s.Store.Pool.Query(r.Context(), `SELECT e.id,e.original_filename,e.stored_filename,e.key_owner_id,e.key_version,e.current_version,e.scan_status FROM evidences e JOIN submission_items si ON si.id=e.submission_item_id JOIN submissions sub ON sub.id=si.submission_id WHERE sub.review_request_id=$1 AND e.deleted_at IS NULL ORDER BY e.created_at`, reviewID)
+	if err != nil {
+		problem(w, 500, "EXPORT_FAILED", "증적 목록을 불러오지 못했습니다.", nil)
+		return
 	}
-	_ = zw.Close()
+	defer rows.Close()
+
 	w.Header().Set("Content-Type", "application/zip")
 	w.Header().Set("Content-Disposition", `attachment; filename*=UTF-8''`+urlEncode(base+".zip"))
-	w.Header().Set("Content-Length", strconv.Itoa(out.Len()))
-	_, _ = w.Write(out.Bytes())
+	zw := zip.NewWriter(w)
+	defer zw.Close()
+	manifest, err := zw.Create("result.json")
+	if err != nil {
+		return
+	}
+	if err = json.NewEncoder(manifest).Encode(data); err != nil {
+		return
+	}
+	used := map[string]int{}
+	var skipped []string
+	for rows.Next() {
+		var id, name, stored, owner, scanStatus string
+		var keyVersion, version int
+		if rows.Scan(&id, &name, &stored, &owner, &keyVersion, &version, &scanStatus) != nil {
+			continue
+		}
+		// Unscanned or infected files are withheld here for the same reason the
+		// download endpoint refuses them.
+		if scanStatus != scanClean && scanStatus != scanSkipped {
+			skipped = append(skipped, name+" ("+scanStatus+")")
+			continue
+		}
+		key, keyErr := s.userKey(r.Context(), owner, keyVersion)
+		if keyErr != nil {
+			skipped = append(skipped, name+" (KEY_UNAVAILABLE)")
+			continue
+		}
+		safe := sanitizeFilename(name)
+		used[safe]++
+		if used[safe] > 1 {
+			ext := filepath.Ext(safe)
+			safe = strings.TrimSuffix(safe, ext) + "-" + strconv.Itoa(used[safe]) + ext
+		}
+		entry, createErr := zw.Create("evidence/" + safe)
+		if createErr != nil {
+			return
+		}
+		if _, _, readErr := s.readEvidenceStream(entry, stored, key, []byte(fmt.Sprintf("evidence:%s:%d", id, version))); readErr != nil {
+			s.Store.Log(r.Context(), "ERROR", requestID(r), "export", "evidence could not be added to the archive", map[string]any{"evidence_id": id, "error": readErr.Error()})
+			return
+		}
+	}
+	if len(skipped) > 0 {
+		if note, noteErr := zw.Create("evidence/EXCLUDED.txt"); noteErr == nil {
+			_, _ = io.WriteString(note, "다음 증적은 악성코드 검사 상태 또는 키 문제로 포함되지 않았습니다.\n\n"+strings.Join(skipped, "\n")+"\n")
+		}
+	}
 }
 
 var _ = time.Now

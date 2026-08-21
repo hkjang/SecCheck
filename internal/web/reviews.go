@@ -42,31 +42,123 @@ type reviewInput struct {
 	ManualRuleOverrideReason string  `json:"manual_rule_override_reason"`
 }
 
-func (s *Server) listReviewRequests(w http.ResponseWriter, r *http.Request) {
+var reviewColumns = []string{"id", "review_number", "service_name", "service_type", "change_type", "department", "status", "planned_open_date", "requester_id", "reviewer_id", "approver_id", "requester_name", "reviewer_name", "open_change_requests", "overdue_change_requests", "created_at", "updated_at"}
+
+// reviewSorts is an allowlist: the sort key never reaches SQL as free text.
+var reviewSorts = map[string]string{
+	"updated":   "review_requests.updated_at DESC, review_requests.id DESC",
+	"created":   "review_requests.created_at DESC, review_requests.id DESC",
+	"open_date": "review_requests.planned_open_date ASC NULLS LAST, review_requests.id DESC",
+	"number":    "review_requests.review_number DESC, review_requests.id DESC",
+	"service":   "review_requests.service_name ASC, review_requests.id DESC",
+	"status":    "review_requests.status ASC, review_requests.updated_at DESC, review_requests.id DESC",
+}
+
+// reviewFilter turns the query string into a WHERE clause. It is shared by the
+// list, the CSV export and the total count so the three can never disagree.
+func (s *Server) reviewFilter(r *http.Request) (string, []any) {
 	sess := session(r)
 	where, args := accessFilter(sess, 1)
 	if hasAnyRole(sess.User, "SECURITY_REVIEWER", "AUDITOR") {
 		where = "TRUE"
 		args = nil
 	}
-	n := len(args) + 1
-	filter := strings.TrimSpace(r.URL.Query().Get("status"))
-	if filter != "" {
-		where += fmt.Sprintf(" AND review_requests.status=$%d", n)
-		args = append(args, filter)
-		n++
+	query := r.URL.Query()
+	add := func(clause string, value any) {
+		args = append(args, value)
+		where += fmt.Sprintf(" AND "+clause, len(args))
 	}
-	q := strings.TrimSpace(r.URL.Query().Get("q"))
-	if q != "" {
-		where += fmt.Sprintf(" AND (review_number ILIKE $%d OR service_name ILIKE $%d OR department ILIKE $%d)", n, n, n)
-		args = append(args, "%"+q+"%")
+	if v := strings.TrimSpace(query.Get("status")); v != "" {
+		if statuses := strings.Split(v, ","); len(statuses) > 1 {
+			add("review_requests.status = ANY($%d)", statuses)
+		} else {
+			add("review_requests.status=$%d", v)
+		}
 	}
-	rows, err := s.Store.Pool.Query(r.Context(), `SELECT id,review_number,service_name,service_type,change_type,department,status,planned_open_date,requester_id,reviewer_id,approver_id,created_at,updated_at FROM review_requests WHERE `+where+` ORDER BY updated_at DESC LIMIT 200`, args...)
+	if v := strings.TrimSpace(query.Get("q")); v != "" {
+		args = append(args, "%"+v+"%")
+		n := len(args)
+		where += fmt.Sprintf(" AND (review_number ILIKE $%d OR service_name ILIKE $%d OR review_requests.department ILIKE $%d)", n, n, n)
+	}
+	if v := strings.TrimSpace(query.Get("department")); v != "" {
+		add("review_requests.department=$%d", v)
+	}
+	if v := strings.TrimSpace(query.Get("requester_id")); v != "" {
+		add("review_requests.requester_id=$%d", v)
+	}
+	if v := strings.TrimSpace(query.Get("reviewer_id")); v != "" {
+		add("review_requests.reviewer_id=$%d", v)
+	}
+	if v := strings.TrimSpace(query.Get("from")); v != "" {
+		add("review_requests.created_at >= $%d::date", v)
+	}
+	if v := strings.TrimSpace(query.Get("to")); v != "" {
+		add("review_requests.created_at < $%d::date + 1", v)
+	}
+	if strings.TrimSpace(query.Get("overdue")) == "1" {
+		where += " AND EXISTS(SELECT 1 FROM change_requests oc WHERE oc.review_request_id=review_requests.id AND oc.status<>'VERIFIED' AND oc.due_date < current_date)"
+	}
+	if v := strings.TrimSpace(query.Get("mine")); v != "" {
+		where += " AND " + myTurnClause(sess, len(args)+1)
+		args = append(args, sess.User.ID)
+	}
+	return where, args
+}
+
+const reviewSelect = `SELECT review_requests.id,review_number,service_name,service_type,change_type,review_requests.department,review_requests.status,planned_open_date,requester_id,reviewer_id,approver_id,
+        requester.display_name,COALESCE(reviewer.display_name,''),
+        (SELECT count(*) FROM change_requests c WHERE c.review_request_id=review_requests.id AND c.status<>'VERIFIED'),
+        (SELECT count(*) FROM change_requests c WHERE c.review_request_id=review_requests.id AND c.status<>'VERIFIED' AND c.due_date < current_date),
+        review_requests.created_at,review_requests.updated_at
+        FROM review_requests JOIN users requester ON requester.id=review_requests.requester_id LEFT JOIN users reviewer ON reviewer.id=review_requests.reviewer_id WHERE `
+
+func (s *Server) listReviewRequests(w http.ResponseWriter, r *http.Request) {
+	where, args := s.reviewFilter(r)
+	order := reviewSorts["updated"]
+	if v := reviewSorts[strings.TrimSpace(r.URL.Query().Get("sort"))]; v != "" {
+		order = v
+	}
+	if r.URL.Query().Get("format") == "csv" {
+		rows, err := s.Store.Pool.Query(r.Context(), reviewSelect+where+` ORDER BY `+order+` LIMIT 50000`, args...)
+		if err != nil {
+			problem(w, 500, "QUERY_FAILED", "심의 목록을 불러오지 못했습니다.", nil)
+			return
+		}
+		records := scanDynamic(rows, reviewColumns)
+		_ = s.Store.Audit(r.Context(), auditFrom(r, "EXPORT_REVIEW_LIST", "REVIEW_REQUEST", "", nil, map[string]any{"rows": len(records)}))
+		writeCSV(w, "seccheck-reviews", reviewColumns, records)
+		return
+	}
+
+	limit, offset := parsePage(r)
+	var total int64
+	if err := s.Store.Pool.QueryRow(r.Context(), `SELECT count(*) FROM review_requests WHERE `+where, args...).Scan(&total); err != nil {
+		problem(w, 500, "QUERY_FAILED", "심의 목록을 불러오지 못했습니다.", nil)
+		return
+	}
+	paged := append(append([]any{}, args...), limit, offset)
+	rows, err := s.Store.Pool.Query(r.Context(), reviewSelect+where+fmt.Sprintf(` ORDER BY %s LIMIT $%d OFFSET $%d`, order, len(args)+1, len(args)+2), paged...)
 	if err != nil {
 		problem(w, 500, "QUERY_FAILED", "심의 목록을 불러오지 못했습니다.", nil)
 		return
 	}
-	jsonResponse(w, 200, scanDynamic(rows, []string{"id", "review_number", "service_name", "service_type", "change_type", "department", "status", "planned_open_date", "requester_id", "reviewer_id", "approver_id", "created_at", "updated_at"}))
+	items := scanDynamic(rows, reviewColumns)
+	jsonResponse(w, 200, map[string]any{"items": items, "total": total, "limit": limit, "offset": offset, "has_more": int64(offset+len(items)) < total})
+}
+
+// myTurnClause selects the reviews that are waiting on this specific person,
+// which is what the dashboard queue and the "내 차례" filter both mean.
+func myTurnClause(sess auth.Session, n int) string {
+	var branches []string
+	branches = append(branches, fmt.Sprintf(`(review_requests.status IN ('DRAFT','CHANGE_REQUESTED') AND (review_requests.requester_id=$%d OR review_requests.builder_id=$%d OR review_requests.developer_id=$%d OR EXISTS(SELECT 1 FROM review_participants rp WHERE rp.review_request_id=review_requests.id AND rp.user_id=$%d)))`, n, n, n, n))
+	if hasAnyRole(sess.User, "SECURITY_REVIEWER") {
+		branches = append(branches, fmt.Sprintf(`(review_requests.status IN ('SUBMITTED','RESUBMITTED') AND (review_requests.reviewer_id IS NULL OR review_requests.reviewer_id=$%d))`, n))
+		branches = append(branches, fmt.Sprintf(`(review_requests.status='REVIEWING' AND review_requests.reviewer_id=$%d)`, n))
+	}
+	if hasAnyRole(sess.User, "APPROVER") {
+		branches = append(branches, fmt.Sprintf(`(review_requests.status='APPROVAL_PENDING' AND (review_requests.approver_id IS NULL OR review_requests.approver_id=$%d))`, n))
+	}
+	return "(" + strings.Join(branches, " OR ") + ")"
 }
 
 func validateReviewInput(in reviewInput) map[string]string {

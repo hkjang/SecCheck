@@ -31,12 +31,12 @@ func (s *Server) ready(w http.ResponseWriter, r *http.Request) {
 	jsonResponse(w, 200, map[string]any{"status": "ready"})
 }
 func (s *Server) metrics(w http.ResponseWriter, r *http.Request) {
-	var users, reviews, pending, failedJobs, requests, requestErrors, loginOK, loginFail, storageBytes, scanFailures, submissionFailures, sessions, lockedAccounts int64
+	var users, reviews, pending, failedJobs, requests, requestErrors, loginOK, loginFail, storageBytes, scanFailures, submissionFailures, sessions, lockedAccounts, pendingScans int64
 	var avgDuration float64
-	_ = s.Store.Pool.QueryRow(r.Context(), `SELECT (SELECT count(*) FROM users),(SELECT count(*) FROM review_requests),(SELECT count(*) FROM jobs WHERE status='PENDING'),(SELECT count(*) FROM jobs WHERE status='FAILED'),(SELECT count(*) FROM application_logs WHERE component='http' AND timestamp>now()-interval '5 minutes'),(SELECT count(*) FROM application_logs WHERE component='http' AND timestamp>now()-interval '5 minutes' AND (fields->>'status')::int>=500),(SELECT COALESCE(avg((fields->>'duration_ms')::numeric),0) FROM application_logs WHERE component='http' AND timestamp>now()-interval '5 minutes' AND fields->>'duration_ms' ~ '^[0-9]+$'),(SELECT count(*) FROM audit_logs WHERE event_type='LOGIN' AND timestamp>now()-interval '24 hours'),(SELECT count(*) FROM audit_logs WHERE event_type='LOGIN_FAIL' AND timestamp>now()-interval '24 hours'),(SELECT COALESCE(sum(size_bytes),0) FROM evidence_versions),(SELECT count(*) FROM evidences WHERE scan_status NOT IN ('CLEAN','SKIPPED')),(SELECT count(*) FROM application_logs WHERE component='http' AND timestamp>now()-interval '24 hours' AND fields->>'path' LIKE '%/submit' AND (fields->>'status')::int>=400),(SELECT count(*) FROM sessions WHERE expires_at>now()),(SELECT count(*) FROM users WHERE locked_until>now())`).Scan(&users, &reviews, &pending, &failedJobs, &requests, &requestErrors, &avgDuration, &loginOK, &loginFail, &storageBytes, &scanFailures, &submissionFailures, &sessions, &lockedAccounts)
+	_ = s.Store.Pool.QueryRow(r.Context(), `SELECT (SELECT count(*) FROM users),(SELECT count(*) FROM review_requests),(SELECT count(*) FROM jobs WHERE status='PENDING'),(SELECT count(*) FROM jobs WHERE status='FAILED'),(SELECT count(*) FROM application_logs WHERE component='http' AND timestamp>now()-interval '5 minutes'),(SELECT count(*) FROM application_logs WHERE component='http' AND timestamp>now()-interval '5 minutes' AND (fields->>'status')::int>=500),(SELECT COALESCE(avg((fields->>'duration_ms')::numeric),0) FROM application_logs WHERE component='http' AND timestamp>now()-interval '5 minutes' AND fields->>'duration_ms' ~ '^[0-9]+$'),(SELECT count(*) FROM audit_logs WHERE event_type='LOGIN' AND timestamp>now()-interval '24 hours'),(SELECT count(*) FROM audit_logs WHERE event_type='LOGIN_FAIL' AND timestamp>now()-interval '24 hours'),(SELECT COALESCE(sum(size_bytes),0) FROM evidence_versions),(SELECT count(*) FROM evidences WHERE scan_status NOT IN ('CLEAN','SKIPPED')),(SELECT count(*) FROM application_logs WHERE component='http' AND timestamp>now()-interval '24 hours' AND fields->>'path' LIKE '%/submit' AND (fields->>'status')::int>=400),(SELECT count(*) FROM sessions WHERE expires_at>now()),(SELECT count(*) FROM users WHERE locked_until>now()),(SELECT count(*) FROM evidences WHERE scan_status='PENDING' AND deleted_at IS NULL)`).Scan(&users, &reviews, &pending, &failedJobs, &requests, &requestErrors, &avgDuration, &loginOK, &loginFail, &storageBytes, &scanFailures, &submissionFailures, &sessions, &lockedAccounts, &pendingScans)
 	pool := s.Store.Pool.Stat()
 	w.Header().Set("Content-Type", "text/plain; version=0.0.4")
-	fmt.Fprintf(w, "# HELP seccheck_info SecCheck build information\n# TYPE seccheck_info gauge\nseccheck_info{version=%q} 1\n# TYPE seccheck_users_total gauge\nseccheck_users_total %d\n# TYPE seccheck_reviews_total gauge\nseccheck_reviews_total %d\n# TYPE seccheck_jobs_pending gauge\nseccheck_jobs_pending %d\n# TYPE seccheck_jobs_failed gauge\nseccheck_jobs_failed %d\n# TYPE seccheck_http_requests_5m gauge\nseccheck_http_requests_5m %d\n# TYPE seccheck_http_errors_5m gauge\nseccheck_http_errors_5m %d\n# TYPE seccheck_http_duration_ms_5m gauge\nseccheck_http_duration_ms_5m %.3f\n# TYPE seccheck_login_success_24h gauge\nseccheck_login_success_24h %d\n# TYPE seccheck_login_failure_24h gauge\nseccheck_login_failure_24h %d\n# TYPE seccheck_evidence_version_bytes gauge\nseccheck_evidence_version_bytes %d\n# TYPE seccheck_scan_failures gauge\nseccheck_scan_failures %d\n# TYPE seccheck_submission_failures_24h gauge\nseccheck_submission_failures_24h %d\n# TYPE seccheck_sessions_active gauge\nseccheck_sessions_active %d\n# TYPE seccheck_accounts_locked gauge\nseccheck_accounts_locked %d\n# TYPE seccheck_db_connections gauge\nseccheck_db_connections{state=\"total\"} %d\nseccheck_db_connections{state=\"acquired\"} %d\nseccheck_db_connections{state=\"idle\"} %d\n", s.Version, users, reviews, pending, failedJobs, requests, requestErrors, avgDuration, loginOK, loginFail, storageBytes, scanFailures, submissionFailures, sessions, lockedAccounts, pool.TotalConns(), pool.AcquiredConns(), pool.IdleConns())
+	fmt.Fprintf(w, "# HELP seccheck_info SecCheck build information\n# TYPE seccheck_info gauge\nseccheck_info{version=%q} 1\n# TYPE seccheck_users_total gauge\nseccheck_users_total %d\n# TYPE seccheck_reviews_total gauge\nseccheck_reviews_total %d\n# TYPE seccheck_jobs_pending gauge\nseccheck_jobs_pending %d\n# TYPE seccheck_jobs_failed gauge\nseccheck_jobs_failed %d\n# TYPE seccheck_http_requests_5m gauge\nseccheck_http_requests_5m %d\n# TYPE seccheck_http_errors_5m gauge\nseccheck_http_errors_5m %d\n# TYPE seccheck_http_duration_ms_5m gauge\nseccheck_http_duration_ms_5m %.3f\n# TYPE seccheck_login_success_24h gauge\nseccheck_login_success_24h %d\n# TYPE seccheck_login_failure_24h gauge\nseccheck_login_failure_24h %d\n# TYPE seccheck_evidence_version_bytes gauge\nseccheck_evidence_version_bytes %d\n# TYPE seccheck_scan_failures gauge\nseccheck_scan_failures %d\n# TYPE seccheck_submission_failures_24h gauge\nseccheck_submission_failures_24h %d\n# TYPE seccheck_sessions_active gauge\nseccheck_sessions_active %d\n# TYPE seccheck_accounts_locked gauge\nseccheck_accounts_locked %d\n# TYPE seccheck_evidence_scan_pending gauge\nseccheck_evidence_scan_pending %d\n# TYPE seccheck_db_connections gauge\nseccheck_db_connections{state=\"total\"} %d\nseccheck_db_connections{state=\"acquired\"} %d\nseccheck_db_connections{state=\"idle\"} %d\n", s.Version, users, reviews, pending, failedJobs, requests, requestErrors, avgDuration, loginOK, loginFail, storageBytes, scanFailures, submissionFailures, sessions, lockedAccounts, pendingScans, pool.TotalConns(), pool.AcquiredConns(), pool.IdleConns())
 }
 
 func (s *Server) publicConfig(w http.ResponseWriter, r *http.Request) {
@@ -48,7 +48,11 @@ func (s *Server) publicConfig(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) login(w http.ResponseWriter, r *http.Request) {
-	var in struct{ Username, Password string }
+	var in struct {
+		Username string `json:"username"`
+		Password string `json:"password"`
+		TOTPCode string `json:"totp_code"`
+	}
 	if !decodeJSON(w, r, &in) {
 		return
 	}
@@ -61,9 +65,20 @@ func (s *Server) login(w http.ResponseWriter, r *http.Request) {
 		problem(w, 429, "LOGIN_RATE_LIMITED", "로그인 시도가 너무 많습니다. 잠시 후 다시 시도하세요.", nil)
 		return
 	}
-	u, token, csrf, expires, err := s.Auth.PasswordLogin(r.Context(), in.Username, in.Password, clientIP(r), r.UserAgent())
+	u, token, csrf, expires, err := s.Auth.PasswordLogin(r.Context(), auth.Credentials{Username: in.Username, Password: in.Password, TOTPCode: in.TOTPCode, IP: clientIP(r), UserAgent: r.UserAgent()})
+	// A correct password that is merely missing its one-time code is not a
+	// failed attempt and must not spend the throttle budget.
+	if errors.Is(err, auth.ErrTOTPRequired) {
+		problem(w, 401, "TOTP_REQUIRED", "인증 앱의 6자리 코드를 입력하세요.", nil)
+		return
+	}
 	if err != nil {
 		s.loginLimiter.record(clientIP(r))
+	}
+	if errors.Is(err, auth.ErrTOTPInvalid) {
+		_ = s.Store.Audit(r.Context(), store.AuditEvent{UserID: u.ID, UserName: in.Username, SourceIP: clientIP(r), EventType: "LOGIN_FAIL", TargetType: "USER", TargetID: u.ID, RequestID: requestID(r), Result: "FAILURE", After: map[string]any{"reason": "totp"}})
+		problem(w, 401, "TOTP_INVALID", "일회용 코드가 올바르지 않습니다.", nil)
+		return
 	}
 	var locked *auth.LockedError
 	if errors.As(err, &locked) {
@@ -127,10 +142,14 @@ func (s *Server) oidcCallback(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) me(w http.ResponseWriter, r *http.Request) {
 	sess := session(r)
-	jsonResponse(w, 200, map[string]any{"user": publicUser(sess.User), "csrf_token": sess.CSRF, "version": s.Version})
+	jsonResponse(w, 200, map[string]any{"user": publicUser(sess.User), "csrf_token": sess.CSRF, "version": s.Version, "totp_enrollment_required": sess.EnrollTOTP})
 }
 func (s *Server) updateMe(w http.ResponseWriter, r *http.Request) {
-	var in struct{ DisplayName, Email, Department string }
+	var in struct {
+		DisplayName string `json:"display_name"`
+		Email       string `json:"email"`
+		Department  string `json:"department"`
+	}
 	if !decodeJSON(w, r, &in) {
 		return
 	}
@@ -235,7 +254,47 @@ func (s *Server) dashboard(w http.ResponseWriter, r *http.Request) {
 		analytics["unassigned"] = unassigned
 		analytics["long_pending"] = longPending
 	}
-	jsonResponse(w, 200, map[string]any{"status_counts": counts, "opening_soon": overdue, "open_change_requests": openChanges, "security_analytics": analytics})
+	jsonResponse(w, 200, map[string]any{"status_counts": counts, "opening_soon": overdue, "open_change_requests": openChanges, "security_analytics": analytics, "my_queue": s.myQueue(r), "due_soon": s.dueChangeRequests(r)})
+}
+
+// myQueue lists the reviews that are actually waiting on the signed-in person,
+// so the dashboard opens on work rather than on statistics.
+func (s *Server) myQueue(r *http.Request) []map[string]any {
+	sess := session(r)
+	where := myTurnClause(sess, 1)
+	rows, err := s.Store.Pool.Query(r.Context(), `SELECT review_requests.id,review_number,service_name,review_requests.status,planned_open_date,review_requests.updated_at,
+                CASE
+                  WHEN review_requests.status IN ('DRAFT','CHANGE_REQUESTED') THEN '작성·보완'
+                  WHEN review_requests.status IN ('SUBMITTED','RESUBMITTED') THEN '검토 시작'
+                  WHEN review_requests.status='REVIEWING' THEN '검토 진행'
+                  ELSE '승인'
+                END
+                FROM review_requests WHERE `+where+` ORDER BY planned_open_date ASC NULLS LAST, review_requests.updated_at ASC LIMIT 12`, sess.User.ID)
+	if err != nil {
+		return []map[string]any{}
+	}
+	return scanDynamic(rows, []string{"id", "review_number", "service_name", "status", "planned_open_date", "updated_at", "action"})
+}
+
+// dueChangeRequests surfaces the change requests whose due date has passed or
+// is about to. The due date was previously captured and then never used.
+func (s *Server) dueChangeRequests(r *http.Request) []map[string]any {
+	sess := session(r)
+	where, args := accessFilter(sess, 1)
+	if hasAnyRole(sess.User, "SECURITY_REVIEWER", "SYSTEM_ADMIN", "AUDITOR") {
+		where = "TRUE"
+		args = nil
+	}
+	rows, err := s.Store.Pool.Query(r.Context(), `SELECT c.id,c.review_request_id,review_requests.review_number,review_requests.service_name,si.item_code,si.title,c.due_date,c.status,(c.due_date < current_date) AS overdue
+                FROM change_requests c
+                JOIN review_requests ON review_requests.id=c.review_request_id
+                JOIN submission_items si ON si.id=c.submission_item_id
+                WHERE c.status<>'VERIFIED' AND c.due_date IS NOT NULL AND c.due_date <= current_date+7 AND `+where+`
+                ORDER BY c.due_date ASC LIMIT 12`, args...)
+	if err != nil {
+		return []map[string]any{}
+	}
+	return scanDynamic(rows, []string{"id", "review_request_id", "review_number", "service_name", "item_code", "title", "due_date", "status", "overdue"})
 }
 
 func (s *Server) search(w http.ResponseWriter, r *http.Request) {
@@ -351,27 +410,11 @@ func (s *Server) systemInfo(w http.ResponseWriter, r *http.Request) {
 	var users, reviews, templates, evidences, logs int64
 	var dbSize string
 	_ = s.Store.Pool.QueryRow(r.Context(), `SELECT (SELECT count(*) FROM users),(SELECT count(*) FROM review_requests),(SELECT count(*) FROM checklist_templates),(SELECT count(*) FROM evidences WHERE deleted_at IS NULL),(SELECT count(*) FROM application_logs),pg_size_pretty(pg_database_size(current_database()))`).Scan(&users, &reviews, &templates, &evidences, &logs, &dbSize)
-	jsonResponse(w, 200, map[string]any{"version": s.Version, "go_version": runtime.Version(), "users": users, "reviews": reviews, "templates": templates, "evidences": evidences, "logs": logs, "database_size": dbSize, "now": time.Now()})
+	jsonResponse(w, 200, map[string]any{"version": s.Version, "schema_version": s.Store.SchemaVersion(r.Context()), "go_version": runtime.Version(), "users": users, "reviews": reviews, "templates": templates, "evidences": evidences, "logs": logs, "database_size": dbSize, "now": time.Now()})
 }
 
 func (s *Server) ensureUserDataKey(ctx context.Context, userID string) error {
-	var n int
-	if err := s.Store.Pool.QueryRow(ctx, `SELECT count(*) FROM user_data_keys WHERE user_id=$1`, userID).Scan(&n); err != nil {
-		return err
-	}
-	if n > 0 {
-		return nil
-	}
-	key, err := cryptox.RandomBytes(32)
-	if err != nil {
-		return err
-	}
-	encrypted, err := s.Box.Encrypt(key, []byte("user-key:"+userID+":1"))
-	if err != nil {
-		return err
-	}
-	_, err = s.Store.Pool.Exec(ctx, `INSERT INTO user_data_keys(user_id,version,encrypted_key) VALUES($1,1,$2)`, userID, encrypted)
-	return err
+	return s.vault().EnsureUserKey(ctx, userID)
 }
 
 func (s *Server) listAPIKeys(w http.ResponseWriter, r *http.Request) {

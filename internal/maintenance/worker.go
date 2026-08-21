@@ -6,6 +6,7 @@ package maintenance
 
 import (
 	"context"
+	"fmt"
 	"time"
 
 	"github.com/hkjang/SecCheck/internal/store"
@@ -56,6 +57,7 @@ func (w *Worker) Sweep(ctx context.Context) map[string]int64 {
 	if err == nil {
 		removed["expired_lockouts"] = tag.RowsAffected()
 	}
+	removed["due_reminders"] = w.remindDueChangeRequests(ctx)
 	total := int64(0)
 	for _, n := range removed {
 		total += n
@@ -64,6 +66,56 @@ func (w *Worker) Sweep(ctx context.Context) map[string]int64 {
 		w.Store.Log(ctx, "INFO", "", "maintenance", "retention sweep completed", map[string]any{"retention_days": retention, "removed": removed})
 	}
 	return removed
+}
+
+// remindDueChangeRequests notifies the assignee once when a change request is
+// close to its due date or already late. The due date was captured from the
+// start but nothing ever acted on it.
+func (w *Worker) remindDueChangeRequests(ctx context.Context) int64 {
+	rows, err := w.Store.Pool.Query(ctx, `
+                UPDATE change_requests SET reminded_at=now()
+                WHERE id IN (
+                  SELECT c.id FROM change_requests c
+                  WHERE c.status<>'VERIFIED' AND c.due_date IS NOT NULL
+                    AND c.due_date <= current_date+2
+                    AND (c.reminded_at IS NULL OR c.reminded_at < now()-interval '3 days')
+                  LIMIT 200)
+                RETURNING id,review_request_id,COALESCE(assignee_id,requester_id),due_date`)
+	if err != nil {
+		w.Store.Log(ctx, "ERROR", "", "maintenance", "due-date reminder query failed", map[string]any{"error": err.Error()})
+		return 0
+	}
+	type reminder struct {
+		id, reviewID, recipient string
+		due                     time.Time
+	}
+	var pending []reminder
+	for rows.Next() {
+		var item reminder
+		if err = rows.Scan(&item.id, &item.reviewID, &item.recipient, &item.due); err != nil {
+			continue
+		}
+		pending = append(pending, item)
+	}
+	rows.Close()
+
+	var sent int64
+	for _, item := range pending {
+		var number, service string
+		if err = w.Store.Pool.QueryRow(ctx, `SELECT review_number,service_name FROM review_requests WHERE id=$1`, item.reviewID).Scan(&number, &service); err != nil {
+			continue
+		}
+		title := "보완 조치 기한 임박"
+		body := fmt.Sprintf("%s(%s)의 보완 요청 기한이 %s입니다. 조치 후 재제출하세요.", number, service, item.due.Format("2006-01-02"))
+		if item.due.Before(time.Now().Truncate(24 * time.Hour)) {
+			title = "보완 조치 기한 초과"
+			body = fmt.Sprintf("%s(%s)의 보완 요청이 %s 기한을 넘겼습니다.", number, service, item.due.Format("2006-01-02"))
+		}
+		if _, err = w.Store.Pool.Exec(ctx, `INSERT INTO notifications(id,recipient_id,event_type,title,body) VALUES($1,$2,'CHANGE_REQUEST_DUE',$3,$4)`, store.NewID(), item.recipient, title, body); err == nil {
+			sent++
+		}
+	}
+	return sent
 }
 
 func (w *Worker) retentionDays(ctx context.Context) int {

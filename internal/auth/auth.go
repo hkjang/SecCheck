@@ -37,7 +37,23 @@ var decoyHash = func() []byte {
 	return h
 }()
 
-var ErrInvalidCredentials = errors.New("invalid credentials")
+var (
+	ErrInvalidCredentials = errors.New("invalid credentials")
+	// ErrTOTPRequired tells the sign-in screen to ask for the six digit code
+	// rather than reporting a wrong password.
+	ErrTOTPRequired = errors.New("one-time code required")
+	ErrTOTPInvalid  = errors.New("one-time code is not valid")
+)
+
+// Credentials is the sign-in payload. It is a struct because the one-time code
+// made the positional argument list unreadable.
+type Credentials struct {
+	Username  string
+	Password  string
+	TOTPCode  string
+	IP        string
+	UserAgent string
+}
 
 // LockedError reports that an account is temporarily closed to password logins
 // after repeated failures.
@@ -54,6 +70,7 @@ type SecurityPolicy struct {
 	MaxLoginFailures        int // zero disables account lockout
 	LockoutMinutes          int
 	IdleTimeoutMinutes      int
+	RequireTOTPForAdmins    bool
 }
 
 // securitySettings mirrors the stored JSON. MaxLoginFailures is a pointer so a
@@ -65,12 +82,13 @@ type securitySettings struct {
 	MaxLoginFailures        *int `json:"max_login_failures"`
 	LockoutMinutes          int  `json:"lockout_minutes"`
 	IdleTimeoutMinutes      int  `json:"idle_timeout_minutes"`
+	RequireTOTPForAdmins    bool `json:"require_totp_for_admins"`
 }
 
 // policy applies the supported ranges, replacing every out-of-range or missing
 // value with its default.
 func (c securitySettings) policy() SecurityPolicy {
-	p := SecurityPolicy{LoginRateLimitPerMinute: c.LoginRateLimitPerMinute, MaxLoginFailures: 5, LockoutMinutes: c.LockoutMinutes, IdleTimeoutMinutes: c.IdleTimeoutMinutes}
+	p := SecurityPolicy{LoginRateLimitPerMinute: c.LoginRateLimitPerMinute, MaxLoginFailures: 5, LockoutMinutes: c.LockoutMinutes, IdleTimeoutMinutes: c.IdleTimeoutMinutes, RequireTOTPForAdmins: c.RequireTOTPForAdmins}
 	if p.LoginRateLimitPerMinute < 1 || p.LoginRateLimitPerMinute > 600 {
 		p.LoginRateLimitPerMinute = 30
 	}
@@ -103,6 +121,10 @@ type Session struct {
 	ExpiresAt time.Time
 	APIKey    bool
 	Scopes    []string
+	// EnrollTOTP is set when policy requires this account to hold a one-time
+	// code but it has not enrolled yet. The HTTP layer then allows only the
+	// enrolment endpoints.
+	EnrollTOTP bool
 }
 
 type OIDCSettings struct {
@@ -152,28 +174,110 @@ func PasswordHash(password string) (string, error) {
 	return string(h), err
 }
 
-func (a *Service) PasswordLogin(ctx context.Context, username, password, ip, userAgent string) (store.User, string, string, time.Time, error) {
+func (a *Service) PasswordLogin(ctx context.Context, in Credentials) (store.User, string, string, time.Time, error) {
 	policy := a.Policy(ctx)
-	u, err := a.Store.GetUserByUsername(ctx, strings.TrimSpace(username))
+	u, err := a.Store.GetUserByUsername(ctx, strings.TrimSpace(in.Username))
 	if err != nil {
-		_ = bcrypt.CompareHashAndPassword(decoyHash, []byte(password))
+		_ = bcrypt.CompareHashAndPassword(decoyHash, []byte(in.Password))
 		return u, "", "", time.Time{}, ErrInvalidCredentials
 	}
 	if until, locked := a.lockedUntil(ctx, u.ID); locked {
 		return u, "", "", time.Time{}, &LockedError{Until: until}
 	}
-	passwordOK := bcrypt.CompareHashAndPassword([]byte(u.PasswordHash), []byte(password)) == nil
+	passwordOK := bcrypt.CompareHashAndPassword([]byte(u.PasswordHash), []byte(in.Password)) == nil
 	if !passwordOK || !u.Active || u.AuthSource != "local" {
 		if until, locked := a.registerLoginFailure(ctx, u.ID, policy); locked {
 			return u, "", "", time.Time{}, &LockedError{Until: until}
 		}
 		return u, "", "", time.Time{}, ErrInvalidCredentials
 	}
-	token, csrf, expires, err := a.NewSession(ctx, u.ID, ip, userAgent)
+	secret, enabled, err := a.totpSecret(ctx, u.ID)
+	if err != nil {
+		return u, "", "", time.Time{}, err
+	}
+	if enabled {
+		if strings.TrimSpace(in.TOTPCode) == "" {
+			// The password was right, so this is not a failed attempt; it is a
+			// prompt for the second factor.
+			return u, "", "", time.Time{}, ErrTOTPRequired
+		}
+		if !VerifyTOTP(secret, in.TOTPCode, time.Now()) {
+			if until, locked := a.registerLoginFailure(ctx, u.ID, policy); locked {
+				return u, "", "", time.Time{}, &LockedError{Until: until}
+			}
+			return u, "", "", time.Time{}, ErrTOTPInvalid
+		}
+	}
+	token, csrf, expires, err := a.NewSession(ctx, u.ID, in.IP, in.UserAgent)
 	if err == nil {
 		_, _ = a.Store.Pool.Exec(ctx, `UPDATE users SET last_login_at=now(),failed_login_count=0,locked_until=NULL,updated_at=now() WHERE id=$1`, u.ID)
 	}
 	return u, token, csrf, expires, err
+}
+
+// totpSecret returns the account's decrypted one-time-password secret.
+func (a *Service) totpSecret(ctx context.Context, userID string) (string, bool, error) {
+	var encrypted string
+	var enabled bool
+	if err := a.Store.Pool.QueryRow(ctx, `SELECT totp_secret,totp_enabled FROM users WHERE id=$1`, userID).Scan(&encrypted, &enabled); err != nil {
+		return "", false, err
+	}
+	if encrypted == "" {
+		return "", false, nil
+	}
+	plain, err := a.Box.Decrypt(encrypted, []byte("totp:"+userID))
+	if err != nil {
+		return "", enabled, err
+	}
+	return string(plain), enabled, nil
+}
+
+// StoreTOTPSecret saves an enrolment secret encrypted under the master key.
+// The secret is written before it is enabled, so a half-finished enrolment
+// never locks anybody out.
+func (a *Service) StoreTOTPSecret(ctx context.Context, userID, secret string) error {
+	encrypted, err := a.Box.Encrypt([]byte(secret), []byte("totp:"+userID))
+	if err != nil {
+		return err
+	}
+	_, err = a.Store.Pool.Exec(ctx, `UPDATE users SET totp_secret=$2,totp_enabled=false,totp_enrolled_at=NULL,updated_at=now() WHERE id=$1`, userID, encrypted)
+	return err
+}
+
+// EnableTOTP turns on the second factor once the user has proved they can
+// generate a code from the stored secret.
+func (a *Service) EnableTOTP(ctx context.Context, userID, code string) error {
+	secret, _, err := a.totpSecret(ctx, userID)
+	if err != nil {
+		return err
+	}
+	if secret == "" {
+		return errors.New("no enrolment in progress")
+	}
+	if !VerifyTOTP(secret, code, time.Now()) {
+		return ErrTOTPInvalid
+	}
+	_, err = a.Store.Pool.Exec(ctx, `UPDATE users SET totp_enabled=true,totp_enrolled_at=now(),updated_at=now() WHERE id=$1`, userID)
+	return err
+}
+
+func (a *Service) DisableTOTP(ctx context.Context, userID string) error {
+	_, err := a.Store.Pool.Exec(ctx, `UPDATE users SET totp_secret='',totp_enabled=false,totp_enrolled_at=NULL,updated_at=now() WHERE id=$1`, userID)
+	return err
+}
+
+// RequiresTOTPEnrollment reports whether policy expects this account to hold a
+// second factor that it has not set up yet.
+func RequiresTOTPEnrollment(policy SecurityPolicy, u store.User, enabled bool) bool {
+	if !policy.RequireTOTPForAdmins || enabled || u.AuthSource != "local" {
+		return false
+	}
+	for _, role := range u.Roles {
+		if role == "SYSTEM_ADMIN" || role == "TEMPLATE_ADMIN" || role == "SECURITY_REVIEWER" || role == "APPROVER" {
+			return true
+		}
+	}
+	return false
 }
 
 func (a *Service) lockedUntil(ctx context.Context, userID string) (time.Time, bool) {
@@ -267,6 +371,9 @@ func (a *Service) Authenticate(r *http.Request) (Session, error) {
 	if err != nil || !sess.User.Active {
 		return Session{}, errors.New("authentication required")
 	}
+	var totpEnabled bool
+	_ = a.Store.Pool.QueryRow(r.Context(), `SELECT totp_enabled FROM users WHERE id=$1`, uid).Scan(&totpEnabled)
+	sess.EnrollTOTP = RequiresTOTPEnrollment(a.Policy(r.Context()), sess.User, totpEnabled)
 	if idle >= lastSeenWriteInterval {
 		_, _ = a.Store.Pool.Exec(r.Context(), `UPDATE sessions SET last_seen_at=now() WHERE id=$1`, sess.ID)
 	}

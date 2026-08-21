@@ -17,7 +17,9 @@ import (
 	"github.com/hkjang/SecCheck/internal/cryptox"
 	"github.com/hkjang/SecCheck/internal/maintenance"
 	"github.com/hkjang/SecCheck/internal/notify"
+	"github.com/hkjang/SecCheck/internal/scanner"
 	"github.com/hkjang/SecCheck/internal/store"
+	"github.com/hkjang/SecCheck/internal/vault"
 	api "github.com/hkjang/SecCheck/internal/web"
 	"golang.org/x/crypto/bcrypt"
 )
@@ -71,12 +73,14 @@ func main() {
 	if err != nil {
 		fatal(err)
 	}
-	if err = ensureBootstrapKey(ctx, db, box, cfg.BootstrapAdmin); err != nil {
+	if err = vault.New(cfg.DataDir, box, db).EnsureUserKey(ctx, bootstrap.ID); err != nil {
 		fatal(err)
 	}
 	authService := auth.New(db, box)
+	blobs := vault.New(cfg.DataDir, box, db)
 	go notify.New(db, box).Run(ctx)
 	go maintenance.New(db).Run(ctx)
+	go scanner.New(db, blobs).Run(ctx)
 	handler := api.NewServer(api.Options{Store: db, Auth: authService, Box: box, Version: version, WebDir: cfg.WebDir, DataDir: cfg.DataDir})
 	srv := &http.Server{Addr: cfg.ListenAddr, Handler: handler, ReadHeaderTimeout: 10 * time.Second, ReadTimeout: 30 * time.Second, WriteTimeout: 2 * time.Minute, IdleTimeout: 60 * time.Second, MaxHeaderBytes: 1 << 20}
 	go func() {
@@ -90,30 +94,6 @@ func main() {
 	if err != nil && !errors.Is(err, http.ErrServerClosed) {
 		fatal(err)
 	}
-}
-
-func ensureBootstrapKey(ctx context.Context, s *store.Store, box *cryptox.Box, username string) error {
-	u, err := s.GetUserByUsername(ctx, username)
-	if err != nil {
-		return err
-	}
-	var n int
-	if err = s.Pool.QueryRow(ctx, `SELECT count(*) FROM user_data_keys WHERE user_id=$1`, u.ID).Scan(&n); err != nil {
-		return err
-	}
-	if n > 0 {
-		return nil
-	}
-	key, err := cryptox.RandomBytes(32)
-	if err != nil {
-		return err
-	}
-	encrypted, err := box.Encrypt(key, []byte("user-key:"+u.ID+":1"))
-	if err != nil {
-		return err
-	}
-	_, err = s.Pool.Exec(ctx, `INSERT INTO user_data_keys(user_id,version,encrypted_key) VALUES($1,1,$2)`, u.ID, encrypted)
-	return err
 }
 
 func fatal(err error) { slog.Error("SecCheck failed", "error", err); os.Exit(1) }

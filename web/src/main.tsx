@@ -20,6 +20,7 @@ import AuditPage from './pages/Audit'
 import LogsPage from './pages/Logs'
 import ProfilePage from './pages/Profile'
 import KeysPage from './pages/Keys'
+import SecurityPage from './pages/Security'
 import Integrations from './pages/Integrations'
 import Notifications from './pages/Notifications'
 import ControlsPage from './pages/Controls'
@@ -29,13 +30,18 @@ export function useAuth() { const value = useContext(AuthContext); if (!value) t
 
 function App() {
   const [publicConfig, setPublicConfig] = useState({ service_name: 'SecCheck', version: 'dev', oidc_enabled: false })
-  const [me, setMe] = useState<{ user: User; version: string } | null | undefined>(undefined)
-  const refresh = async () => { try { const value = await get<{ user: User; csrf_token: string; version: string }>('/api/v1/me'); setCSRF(value.csrf_token); setMe(value) } catch { setCSRF(''); setMe(null) } }
+  const [me, setMe] = useState<{ user: User; version: string; totp_enrollment_required?: boolean } | null | undefined>(undefined)
+  const refresh = async () => { try { const value = await get<{ user: User; csrf_token: string; version: string; totp_enrollment_required?: boolean }>('/api/v1/me'); setCSRF(value.csrf_token); setMe(value) } catch { setCSRF(''); setMe(null) } }
   useEffect(() => { get<typeof publicConfig>('/api/v1/public/config').then(setPublicConfig).catch(() => undefined); refresh() }, [])
   if (me === undefined) return <Loading />
   if (!me) return <Login config={publicConfig} onLogin={(user) => setMe({ user, version: publicConfig.version })} />
   const logout = async () => { try { await post('/api/v1/auth/logout') } finally { setCSRF(''); setMe(null) } }
-  return <AuthContext.Provider value={{ user: me.user, version: me.version, refresh, logout }}><Routes><Route element={<Layout />}><Route index element={<Dashboard />} /><Route path="reviews" element={<Reviews />} /><Route path="reviews/new" element={<NewReview />} /><Route path="reviews/:id" element={<ReviewDetail />} /><Route path="security" element={<Reviews security />} /><Route path="controls" element={<ControlsPage />} /><Route path="templates" element={<Templates />} /><Route path="templates/import" element={<ImportWizard />} /><Route path="templates/:id" element={<TemplateDetail />} /><Route path="admin/users" element={<UsersPage />} /><Route path="admin/settings" element={<SettingsPage />} /><Route path="admin/audit" element={<AuditPage />} /><Route path="admin/logs" element={<LogsPage />} /><Route path="profile" element={<ProfilePage />} /><Route path="profile/keys" element={<KeysPage />} /><Route path="integrations" element={<Integrations />} /><Route path="notifications" element={<Notifications />} /><Route path="*" element={<Navigate to="/" replace />} /></Route></Routes></AuthContext.Provider>
+  // Policy can require a second factor before anything else is reachable, so
+  // the router collapses to the enrolment screen until it exists.
+  if (me.totp_enrollment_required) {
+    return <AuthContext.Provider value={{ user: me.user, version: me.version, refresh, logout }}><Routes><Route element={<Layout />}><Route path="*" element={<SecurityPage />} /></Route></Routes></AuthContext.Provider>
+  }
+  return <AuthContext.Provider value={{ user: me.user, version: me.version, refresh, logout }}><Routes><Route element={<Layout />}><Route index element={<Dashboard />} /><Route path="reviews" element={<Reviews />} /><Route path="reviews/new" element={<NewReview />} /><Route path="reviews/:id" element={<ReviewDetail />} /><Route path="security" element={<Reviews security />} /><Route path="controls" element={<ControlsPage />} /><Route path="templates" element={<Templates />} /><Route path="templates/import" element={<ImportWizard />} /><Route path="templates/:id" element={<TemplateDetail />} /><Route path="admin/users" element={<UsersPage />} /><Route path="admin/settings" element={<SettingsPage />} /><Route path="admin/audit" element={<AuditPage />} /><Route path="admin/logs" element={<LogsPage />} /><Route path="profile" element={<ProfilePage />} /><Route path="profile/keys" element={<KeysPage />} /><Route path="profile/security" element={<SecurityPage />} /><Route path="integrations" element={<Integrations />} /><Route path="notifications" element={<Notifications />} /><Route path="*" element={<Navigate to="/" replace />} /></Route></Routes></AuthContext.Provider>
 }
 
 ReactDOM.createRoot(document.getElementById('root')!).render(<React.StrictMode><BrowserRouter><ToastProvider><App /></ToastProvider></BrowserRouter></React.StrictMode>)

@@ -8,6 +8,8 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -15,7 +17,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
-//go:embed schema.sql
+//go:embed migrations/*.sql
 var migrations embed.FS
 
 type Store struct{ Pool *pgxpool.Pool }
@@ -45,23 +47,100 @@ func Open(ctx context.Context, dsn string) (*Store, error) {
 
 func (s *Store) Close() { s.Pool.Close() }
 
+// Migrate applies every embedded migration that this database has not seen
+// yet, in file-name order and one transaction each. Installations created
+// before numbered migrations existed already recorded version 1, so the
+// baseline is skipped for them and only the newer files run.
 func (s *Store) Migrate(ctx context.Context) error {
-	b, err := migrations.ReadFile("schema.sql")
+	files, err := MigrationFiles()
 	if err != nil {
 		return err
 	}
-	tx, err := s.Pool.Begin(ctx)
+	if _, err = s.Pool.Exec(ctx, `CREATE TABLE IF NOT EXISTS schema_migrations (version integer PRIMARY KEY, applied_at timestamptz NOT NULL DEFAULT now())`); err != nil {
+		return fmt.Errorf("create schema_migrations: %w", err)
+	}
+	applied, err := s.appliedMigrations(ctx)
 	if err != nil {
 		return err
 	}
-	defer tx.Rollback(ctx)
-	if _, err = tx.Exec(ctx, string(b)); err != nil {
-		return fmt.Errorf("migration 1: %w", err)
+	for _, file := range files {
+		if applied[file.Version] {
+			continue
+		}
+		body, err := migrations.ReadFile("migrations/" + file.Name)
+		if err != nil {
+			return err
+		}
+		if err = pgx.BeginFunc(ctx, s.Pool, func(tx pgx.Tx) error {
+			if _, err := tx.Exec(ctx, string(body)); err != nil {
+				return err
+			}
+			_, err := tx.Exec(ctx, `INSERT INTO schema_migrations(version) VALUES($1) ON CONFLICT DO NOTHING`, file.Version)
+			return err
+		}); err != nil {
+			return fmt.Errorf("migration %s: %w", file.Name, err)
+		}
 	}
-	if _, err = tx.Exec(ctx, `INSERT INTO schema_migrations(version) VALUES(1) ON CONFLICT DO NOTHING`); err != nil {
-		return err
+	return nil
+}
+
+// Migration is one embedded SQL file. Names must start with a zero-padded
+// version, for example 002_indexes.sql.
+type Migration struct {
+	Version int
+	Name    string
+}
+
+func MigrationFiles() ([]Migration, error) {
+	entries, err := migrations.ReadDir("migrations")
+	if err != nil {
+		return nil, err
 	}
-	return tx.Commit(ctx)
+	out := make([]Migration, 0, len(entries))
+	for _, entry := range entries {
+		name := entry.Name()
+		if entry.IsDir() || !strings.HasSuffix(name, ".sql") {
+			continue
+		}
+		prefix, _, found := strings.Cut(name, "_")
+		version, convErr := strconv.Atoi(prefix)
+		if !found || convErr != nil || version < 1 {
+			return nil, fmt.Errorf("migration %q must start with a version number", name)
+		}
+		out = append(out, Migration{Version: version, Name: name})
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Version < out[j].Version })
+	for i := 1; i < len(out); i++ {
+		if out[i].Version == out[i-1].Version {
+			return nil, fmt.Errorf("duplicate migration version %d", out[i].Version)
+		}
+	}
+	return out, nil
+}
+
+func (s *Store) appliedMigrations(ctx context.Context) (map[int]bool, error) {
+	rows, err := s.Pool.Query(ctx, `SELECT version FROM schema_migrations`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	applied := map[int]bool{}
+	for rows.Next() {
+		var version int
+		if err = rows.Scan(&version); err != nil {
+			return nil, err
+		}
+		applied[version] = true
+	}
+	return applied, rows.Err()
+}
+
+// SchemaVersion reports the highest applied migration, for /api/v1/admin/system
+// and for deciding whether an image may be rolled back.
+func (s *Store) SchemaVersion(ctx context.Context) int {
+	var version int
+	_ = s.Pool.QueryRow(ctx, `SELECT COALESCE(max(version),0) FROM schema_migrations`).Scan(&version)
+	return version
 }
 
 func (s *Store) GetUserByUsername(ctx context.Context, username string) (User, error) {

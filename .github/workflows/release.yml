@@ -51,11 +51,20 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
+          notes=$(mktemp)
+          # The curated upgrade notes for this version, followed by the
+          # generated commit list.
+          awk -v want="## $GITHUB_REF_NAME" '
+            $0 == want {found=1; next}
+            found && /^## v/ {exit}
+            found {print}
+          ' CHANGELOG.md > "$notes"
           gh release create "$GITHUB_REF_NAME" \
             "seccheck-v${{ steps.version.outputs.version }}.tar.gz" \
             --repo hkjang/SecCheck \
             --verify-tag \
             --generate-notes \
+            --notes-file "$notes" \
             --title "SecCheck $GITHUB_REF_NAME"
       - name: Verify single release asset
         env:

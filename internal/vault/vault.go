@@ -1,0 +1,157 @@
+// Package vault stores evidence blobs encrypted at rest under per-user data
+// keys. Blobs are written and read as chunked streams so neither an upload nor
+// a download has to fit in memory; blobs written before the chunked format
+// existed are single-shot base64 and still open.
+package vault
+
+import (
+	"bufio"
+	"context"
+	"crypto/sha256"
+	"encoding/hex"
+	"fmt"
+	"io"
+	"os"
+	"path/filepath"
+
+	"github.com/hkjang/SecCheck/internal/cryptox"
+	"github.com/hkjang/SecCheck/internal/store"
+)
+
+type Vault struct {
+	Dir   string
+	Box   *cryptox.Box
+	Store *store.Store
+}
+
+func New(dir string, box *cryptox.Box, s *store.Store) *Vault {
+	return &Vault{Dir: dir, Box: box, Store: s}
+}
+
+// AAD binds a blob to the evidence record and version it belongs to.
+func AAD(evidenceID string, version int) []byte {
+	return []byte(fmt.Sprintf("evidence:%s:%d", evidenceID, version))
+}
+
+func (v *Vault) Path(name string) string {
+	if len(name) < 2 {
+		return filepath.Join(v.Dir, "evidence", "invalid")
+	}
+	return filepath.Join(v.Dir, "evidence", name[:2], filepath.Base(name))
+}
+
+// Write encrypts src chunk by chunk straight to disk and returns the plaintext
+// size and its SHA-256.
+func (v *Vault) Write(name string, key, aad []byte, src io.Reader) (int64, string, error) {
+	dir := filepath.Join(v.Dir, "evidence", name[:2])
+	if err := os.MkdirAll(dir, 0700); err != nil {
+		return 0, "", err
+	}
+	path := filepath.Join(dir, name)
+	f, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0600)
+	if err != nil {
+		return 0, "", err
+	}
+	buffered := bufio.NewWriterSize(f, 1<<20)
+	size, digest, err := cryptox.SealStream(buffered, src, key, aad)
+	if err == nil {
+		err = buffered.Flush()
+	}
+	if err == nil {
+		err = f.Sync()
+	}
+	if closeErr := f.Close(); err == nil {
+		err = closeErr
+	}
+	if err != nil {
+		_ = os.Remove(path)
+		return 0, "", err
+	}
+	return size, hex.EncodeToString(digest), nil
+}
+
+// Read decrypts a stored blob into dst and returns the plaintext size and its
+// SHA-256.
+func (v *Vault) Read(dst io.Writer, name string, key, aad []byte) (int64, string, error) {
+	f, err := os.Open(v.Path(name))
+	if err != nil {
+		return 0, "", err
+	}
+	defer f.Close()
+	header := make([]byte, cryptox.StreamHeaderSize())
+	n, err := io.ReadFull(f, header)
+	if err != nil && err != io.ErrUnexpectedEOF && err != io.EOF {
+		return 0, "", err
+	}
+	if _, err = f.Seek(0, io.SeekStart); err != nil {
+		return 0, "", err
+	}
+	if cryptox.IsStream(header[:n]) {
+		size, digest, streamErr := cryptox.OpenStream(dst, bufio.NewReaderSize(f, 1<<20), key, aad)
+		return size, hex.EncodeToString(digest), streamErr
+	}
+	encoded, err := io.ReadAll(f)
+	if err != nil {
+		return 0, "", err
+	}
+	// Legacy blobs are sealed in one shot with the owner's data key.
+	plain, err := decryptWithKey(key, string(encoded), aad)
+	if err != nil {
+		return 0, "", err
+	}
+	digest := sha256.Sum256(plain)
+	written, err := dst.Write(plain)
+	return int64(written), hex.EncodeToString(digest[:]), err
+}
+
+// EnsureUserKey creates the caller's first data key if they do not have one.
+func (v *Vault) EnsureUserKey(ctx context.Context, userID string) error {
+	var n int
+	if err := v.Store.Pool.QueryRow(ctx, `SELECT count(*) FROM user_data_keys WHERE user_id=$1`, userID).Scan(&n); err != nil {
+		return err
+	}
+	if n > 0 {
+		return nil
+	}
+	key, err := cryptox.RandomBytes(32)
+	if err != nil {
+		return err
+	}
+	encrypted, err := v.Box.Encrypt(key, []byte("user-key:"+userID+":1"))
+	if err != nil {
+		return err
+	}
+	_, err = v.Store.Pool.Exec(ctx, `INSERT INTO user_data_keys(user_id,version,encrypted_key) VALUES($1,1,$2) ON CONFLICT DO NOTHING`, userID, encrypted)
+	return err
+}
+
+func (v *Vault) ActiveUserKey(ctx context.Context, userID string) ([]byte, int, error) {
+	if err := v.EnsureUserKey(ctx, userID); err != nil {
+		return nil, 0, err
+	}
+	var encrypted string
+	var version int
+	err := v.Store.Pool.QueryRow(ctx, `SELECT encrypted_key,version FROM user_data_keys WHERE user_id=$1 AND active ORDER BY version DESC LIMIT 1`, userID).Scan(&encrypted, &version)
+	if err != nil {
+		return nil, 0, err
+	}
+	plain, err := v.Box.Decrypt(encrypted, []byte(fmt.Sprintf("user-key:%s:%d", userID, version)))
+	return plain, version, err
+}
+
+func (v *Vault) UserKey(ctx context.Context, userID string, version int) ([]byte, error) {
+	var encrypted string
+	err := v.Store.Pool.QueryRow(ctx, `SELECT encrypted_key FROM user_data_keys WHERE user_id=$1 AND version=$2`, userID, version).Scan(&encrypted)
+	if err != nil {
+		return nil, err
+	}
+	return v.Box.Decrypt(encrypted, []byte(fmt.Sprintf("user-key:%s:%d", userID, version)))
+}
+
+func decryptWithKey(key []byte, encoded string, aad []byte) ([]byte, error) {
+	box, err := cryptox.New(key)
+	if err != nil {
+		return nil, err
+	}
+	return box.Decrypt(encoded, aad)
+}
