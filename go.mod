@@ -1,6 +1,6 @@
 module github.com/hkjang/SecCheck
 
-go 1.25.12
+go 1.26.6
 
 require (
 	github.com/coreos/go-oidc/v3 v3.16.0
