@@ -425,7 +425,11 @@ func (s *Server) systemInfo(w http.ResponseWriter, r *http.Request) {
 	var users, reviews, templates, evidences, logs int64
 	var dbSize string
 	_ = s.Store.Pool.QueryRow(r.Context(), `SELECT (SELECT count(*) FROM users),(SELECT count(*) FROM review_requests),(SELECT count(*) FROM checklist_templates),(SELECT count(*) FROM evidences WHERE deleted_at IS NULL),(SELECT count(*) FROM application_logs),pg_size_pretty(pg_database_size(current_database()))`).Scan(&users, &reviews, &templates, &evidences, &logs, &dbSize)
-	jsonResponse(w, 200, map[string]any{"version": s.Version, "schema_version": s.Store.SchemaVersion(r.Context()), "go_version": runtime.Version(), "users": users, "reviews": reviews, "templates": templates, "evidences": evidences, "logs": logs, "database_size": dbSize, "now": time.Now()})
+	// PDF export needs a Korean font from the host image. Reporting it here
+	// means an operator running a customised image finds out before a user
+	// does.
+	pdfFont := findKoreanFont()
+	jsonResponse(w, 200, map[string]any{"version": s.Version, "schema_version": s.Store.SchemaVersion(r.Context()), "go_version": runtime.Version(), "users": users, "reviews": reviews, "templates": templates, "evidences": evidences, "logs": logs, "database_size": dbSize, "pdf_font": pdfFont, "pdf_export_available": pdfFont != "", "now": time.Now()})
 }
 
 func (s *Server) ensureUserDataKey(ctx context.Context, userID string) error {
