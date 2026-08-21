@@ -36,6 +36,7 @@ var auditEventLabels = map[string]string{
 	"COPY_SUBMISSION":                "재심의 복사",
 	"UPDATE_RESPONSE":                "체크리스트 작성",
 	"BULK_UPDATE_RESPONSE":           "체크리스트 일괄 작성",
+	"BULK_REVIEW_RESULT":             "검토 결과 일괄 판정",
 	"ASSIGN_ITEMS":                   "항목 담당자 배정",
 	"ADD_PARTICIPANT":                "참여자 추가",
 	"CREATE_COMMENT":                 "코멘트 작성",

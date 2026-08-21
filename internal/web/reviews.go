@@ -945,6 +945,79 @@ func (s *Server) beginReview(w http.ResponseWriter, r *http.Request) {
 	jsonResponse(w, 200, map[string]string{"status": "REVIEWING"})
 }
 
+// bulkSaveReviewResults judges several items at once. The person filling a
+// checklist in has had this since the beginning; the reviewer, who works
+// through every one of the same items, had to open each in turn. Long runs of
+// the same verdict are exactly what makes a review take an afternoon.
+// reviewResults is the shared vocabulary of the single and bulk judgements,
+// so the two cannot drift apart.
+var reviewResults = map[string]bool{"COMPLIANT": true, "CONDITIONAL": true, "INSUFFICIENT": true, "NON_COMPLIANT": true, "NA_ACCEPTED": true, "RECHECK": true}
+
+func (s *Server) bulkSaveReviewResults(w http.ResponseWriter, r *http.Request) {
+	reviewID := r.PathValue("id")
+	if !s.canReview(r.Context(), session(r), reviewID) {
+		problem(w, 403, "FORBIDDEN", "이 심의를 검토할 수 없습니다.", nil)
+		return
+	}
+	var in struct {
+		ItemIDs            []string `json:"item_ids"`
+		Result             string   `json:"result"`
+		FinalApplicability string   `json:"final_applicability"`
+		EvidenceAdequacy   string   `json:"evidence_adequacy"`
+		Opinion            string   `json:"opinion"`
+		Overwrite          bool     `json:"overwrite"`
+	}
+	if !decodeJSON(w, r, &in) {
+		return
+	}
+	if len(in.ItemIDs) == 0 {
+		problem(w, 422, "VALIDATION_FAILED", "판정할 항목을 선택하세요.", nil)
+		return
+	}
+	if len(in.ItemIDs) > 1000 {
+		problem(w, 422, "VALIDATION_FAILED", "한 번에 1000개까지 판정할 수 있습니다.", nil)
+		return
+	}
+	if !reviewResults[in.Result] {
+		problem(w, 422, "VALIDATION_FAILED", "검토 결과를 선택하세요.", nil)
+		return
+	}
+	if in.FinalApplicability != "" && !contains([]string{"Y", "N", "N/A"}, in.FinalApplicability) {
+		problem(w, 422, "VALIDATION_FAILED", "최종 적용 여부는 Y, N 또는 N/A여야 합니다.", nil)
+		return
+	}
+	var status string
+	if err := s.Store.Pool.QueryRow(r.Context(), `SELECT status FROM review_requests WHERE id=$1`, reviewID).Scan(&status); err != nil {
+		problem(w, 404, "NOT_FOUND", "심의를 찾을 수 없습니다.", nil)
+		return
+	}
+	if status != "REVIEWING" {
+		problem(w, 409, "STATE_CONFLICT", "검토 중인 심의에서만 판정할 수 있습니다.", nil)
+		return
+	}
+	// Without overwrite an item that already carries a verdict is left alone,
+	// so a bulk judgement cannot quietly replace one made item by item.
+	conflict := `ON CONFLICT(submission_item_id) DO NOTHING`
+	if in.Overwrite {
+		conflict = `ON CONFLICT(submission_item_id) DO UPDATE SET reviewer_id=EXCLUDED.reviewer_id,final_applicability=EXCLUDED.final_applicability,result=EXCLUDED.result,opinion=EXCLUDED.opinion,evidence_adequacy=EXCLUDED.evidence_adequacy,updated_at=now()`
+	}
+	tag, err := s.Store.Pool.Exec(r.Context(), `
+                INSERT INTO review_results(id,submission_item_id,reviewer_id,final_applicability,result,opinion,evidence_adequacy)
+                SELECT gen_random_uuid()::text,si.id,$1,$2,$3,$4,$5
+                FROM submission_items si
+                JOIN submissions sub ON sub.id=si.submission_id
+                WHERE si.id = ANY($6) AND sub.review_request_id=$7
+                  AND sub.revision=(SELECT max(revision) FROM submissions WHERE review_request_id=$7)
+                `+conflict,
+		session(r).User.ID, in.FinalApplicability, in.Result, in.Opinion, in.EvidenceAdequacy, in.ItemIDs, reviewID)
+	if err != nil {
+		problem(w, 500, "UPDATE_FAILED", "일괄 판정에 실패했습니다.", nil)
+		return
+	}
+	_ = s.Store.Audit(r.Context(), auditFrom(r, "BULK_REVIEW_RESULT", "REVIEW_REQUEST", reviewID, nil, map[string]any{"items": len(in.ItemIDs), "applied": tag.RowsAffected(), "result": in.Result, "overwrite": in.Overwrite}))
+	jsonResponse(w, 200, map[string]any{"requested": len(in.ItemIDs), "applied": tag.RowsAffected(), "skipped": int64(len(in.ItemIDs)) - tag.RowsAffected()})
+}
+
 func (s *Server) saveReviewResult(w http.ResponseWriter, r *http.Request) {
 	id, itemID := r.PathValue("id"), r.PathValue("itemID")
 	if !s.canReview(r.Context(), session(r), id) {
@@ -963,8 +1036,7 @@ func (s *Server) saveReviewResult(w http.ResponseWriter, r *http.Request) {
 	if !decodeJSON(w, r, &in) {
 		return
 	}
-	valid := map[string]bool{"COMPLIANT": true, "CONDITIONAL": true, "INSUFFICIENT": true, "NON_COMPLIANT": true, "NA_ACCEPTED": true, "RECHECK": true}
-	if !valid[in.Result] {
+	if !reviewResults[in.Result] {
 		problem(w, 422, "VALIDATION_FAILED", "검토 결과를 선택하세요.", nil)
 		return
 	}

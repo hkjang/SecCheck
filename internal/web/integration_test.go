@@ -1994,3 +1994,76 @@ func TestUserListCarriesTheLastSignIn(t *testing.T) {
 		t.Errorf("a user who never signed in reports a last sign-in of %v", at)
 	}
 }
+
+// A reviewer works through the same items the author filled in, and the
+// author has had a bulk action from the beginning while the reviewer judged
+// one at a time.
+func TestReviewersCanJudgeItemsInBulk(t *testing.T) {
+	h := newHarness(t)
+	author := h.login(adminOf(h))
+	reviewID := author.createReview("일괄 판정 서비스")
+	items := []map[string]any{}
+	if err := json.Unmarshal([]byte(author.do(http.MethodGet, "/api/v1/review-requests/"+reviewID+"/items", nil).body), &items); err != nil {
+		t.Fatal(err)
+	}
+	ids := []string{}
+	for _, item := range items {
+		if id, _ := item["id"].(string); id != "" && len(ids) < 5 {
+			ids = append(ids, id)
+		}
+	}
+	if len(ids) < 5 {
+		t.Fatalf("only %d items to judge", len(ids))
+	}
+	bulk := "/api/v1/review-requests/" + reviewID + "/review-results/bulk"
+
+	ctx := context.Background()
+	var reviewerID string
+	if err := h.db.Pool.QueryRow(ctx, `SELECT id FROM users WHERE username='integration-admin'`).Scan(&reviewerID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := h.db.Pool.Exec(ctx, `UPDATE review_requests SET reviewer_id=$2 WHERE id=$1`, reviewID, reviewerID); err != nil {
+		t.Fatal(err)
+	}
+	// Judging is only possible once the review is actually under review.
+	if res := author.do(http.MethodPost, bulk, map[string]any{"item_ids": ids, "result": "COMPLIANT"}); res.errorCode() != "STATE_CONFLICT" {
+		t.Fatalf("judging a draft returned %d %s", res.status, res.body)
+	}
+	if _, err := h.db.Pool.Exec(ctx, `UPDATE review_requests SET status='REVIEWING' WHERE id=$1`, reviewID); err != nil {
+		t.Fatal(err)
+	}
+	if res := author.do(http.MethodPost, bulk, map[string]any{"item_ids": ids, "result": "NOT_A_RESULT"}); res.errorCode() != "VALIDATION_FAILED" {
+		t.Errorf("an unknown verdict was accepted: %s", res.body)
+	}
+
+	first := author.do(http.MethodPost, bulk, map[string]any{"item_ids": ids[:3], "result": "COMPLIANT", "opinion": "일괄 적합"})
+	if applied, _ := first.json()["applied"].(float64); int(applied) != 3 {
+		t.Fatalf("first bulk judgement applied %v: %s", first.json()["applied"], first.body)
+	}
+	// Without overwrite an existing verdict has to survive.
+	again := author.do(http.MethodPost, bulk, map[string]any{"item_ids": ids, "result": "INSUFFICIENT"})
+	if applied, _ := again.json()["applied"].(float64); int(applied) != 2 {
+		t.Errorf("the second pass applied %v, want 2 (the already-judged three skipped): %s", again.json()["applied"], again.body)
+	}
+	var verdict string
+	if err := h.db.Pool.QueryRow(ctx, `SELECT result FROM review_results WHERE submission_item_id=$1`, ids[0]).Scan(&verdict); err != nil {
+		t.Fatal(err)
+	}
+	if verdict != "COMPLIANT" {
+		t.Errorf("an existing verdict was replaced without overwrite: %s", verdict)
+	}
+	if res := author.do(http.MethodPost, bulk, map[string]any{"item_ids": ids, "result": "INSUFFICIENT", "overwrite": true}); res.status != http.StatusOK {
+		t.Fatalf("overwrite returned %d %s", res.status, res.body)
+	}
+	if err := h.db.Pool.QueryRow(ctx, `SELECT result FROM review_results WHERE submission_item_id=$1`, ids[0]).Scan(&verdict); err != nil {
+		t.Fatal(err)
+	}
+	if verdict != "INSUFFICIENT" {
+		t.Errorf("overwrite left the verdict at %s", verdict)
+	}
+
+	h.user("not-the-reviewer", "SECURITY_REVIEWER")
+	if res := h.login("not-the-reviewer").do(http.MethodPost, bulk, map[string]any{"item_ids": ids, "result": "COMPLIANT"}); res.status != http.StatusForbidden {
+		t.Errorf("a reviewer who is not assigned judged the items: %d", res.status)
+	}
+}

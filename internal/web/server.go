@@ -123,6 +123,7 @@ func (s *Server) routes() {
 	s.handle("POST", "/api/v1/review-requests/{id}/responses/bulk", "심의", "체크리스트 항목 일괄 작성 또는 담당자 일괄 배정", nil, false, s.bulkSaveResponses)
 	s.handle("POST", "/api/v1/review-requests/{id}/submit", "워크플로", "서버 검증 후 제출 또는 재제출", nil, false, s.submitReview)
 	s.handle("POST", "/api/v1/review-requests/{id}/begin-review", "워크플로", "보안 담당자 검토 시작", []string{"SECURITY_REVIEWER"}, false, s.beginReview)
+	s.handle("POST", "/api/v1/review-requests/{id}/review-results/bulk", "워크플로", "선택한 항목 일괄 판정", []string{"SECURITY_REVIEWER"}, false, s.bulkSaveReviewResults)
 	s.handle("PUT", "/api/v1/review-requests/{id}/review-results/{itemID}", "워크플로", "항목별 검토 결과 저장", []string{"SECURITY_REVIEWER"}, false, s.saveReviewResult)
 	s.handle("POST", "/api/v1/review-requests/{id}/change-requests", "워크플로", "항목 보완 요청 등록", []string{"SECURITY_REVIEWER"}, false, s.createChangeRequest)
 	s.handle("PATCH", "/api/v1/change-requests/{id}", "워크플로", "보완 조치 답변 또는 조치 검증", nil, false, s.updateChangeRequest)
