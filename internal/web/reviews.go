@@ -150,7 +150,7 @@ func (s *Server) listReviewRequests(w http.ResponseWriter, r *http.Request) {
 // which is what the dashboard queue and the "내 차례" filter both mean.
 func myTurnClause(sess auth.Session, n int) string {
 	var branches []string
-	branches = append(branches, fmt.Sprintf(`(review_requests.status IN ('DRAFT','CHANGE_REQUESTED') AND (review_requests.requester_id=$%d OR review_requests.builder_id=$%d OR review_requests.developer_id=$%d OR EXISTS(SELECT 1 FROM review_participants rp WHERE rp.review_request_id=review_requests.id AND rp.user_id=$%d)))`, n, n, n, n))
+	branches = append(branches, fmt.Sprintf(`(review_requests.status IN ('DRAFT','CHANGE_REQUESTED') AND (review_requests.requester_id=$%d OR review_requests.builder_id=$%d OR review_requests.developer_id=$%d OR EXISTS(SELECT 1 FROM review_participants rp WHERE rp.review_request_id=review_requests.id AND rp.user_id=$%d AND rp.participant_role='CONTRIBUTOR')))`, n, n, n, n))
 	if hasAnyRole(sess.User, "SECURITY_REVIEWER") {
 		branches = append(branches, fmt.Sprintf(`(review_requests.status IN ('SUBMITTED','RESUBMITTED') AND (review_requests.reviewer_id IS NULL OR review_requests.reviewer_id=$%d))`, n))
 		branches = append(branches, fmt.Sprintf(`(review_requests.status='REVIEWING' AND review_requests.reviewer_id=$%d)`, n))
@@ -1114,11 +1114,22 @@ func (s *Server) addParticipant(w http.ResponseWriter, r *http.Request) {
 	}
 	var in struct {
 		UserID string `json:"user_id"`
+		// Role decides whether the person can fill the checklist in or only
+		// read it. Everyone used to get write access.
+		Role string `json:"role"`
 	}
 	if !decodeJSON(w, r, &in) {
 		return
 	}
-	_, err := s.Store.Pool.Exec(r.Context(), `INSERT INTO review_participants(review_request_id,user_id) VALUES($1,$2) ON CONFLICT DO NOTHING`, id, in.UserID)
+	if in.Role == "" {
+		in.Role = "CONTRIBUTOR"
+	}
+	if in.Role != "CONTRIBUTOR" && in.Role != "VIEWER" {
+		problem(w, 422, "VALIDATION_FAILED", "참여 역할은 CONTRIBUTOR 또는 VIEWER여야 합니다.", nil)
+		return
+	}
+	_, err := s.Store.Pool.Exec(r.Context(), `INSERT INTO review_participants(review_request_id,user_id,participant_role) VALUES($1,$2,$3)
+                ON CONFLICT(review_request_id,user_id) DO UPDATE SET participant_role=EXCLUDED.participant_role`, id, in.UserID, in.Role)
 	if err != nil {
 		problem(w, 500, "UPDATE_FAILED", "공동 작성자를 지정하지 못했습니다.", nil)
 		return
@@ -1288,7 +1299,7 @@ func (s *Server) canAccessReviewAs(ctx context.Context, userID, reviewID string)
 	_ = s.Store.Pool.QueryRow(ctx, `SELECT EXISTS(
                 SELECT 1 FROM review_requests r WHERE r.id=$1 AND (
                   r.requester_id=$2 OR r.builder_id=$2 OR r.developer_id=$2 OR r.operator_id=$2 OR r.reviewer_id=$2 OR r.approver_id=$2
-                  OR EXISTS(SELECT 1 FROM review_participants p WHERE p.review_request_id=r.id AND p.user_id=$2)))`, reviewID, userID).Scan(&ok)
+                  OR EXISTS(SELECT 1 FROM review_participants p WHERE p.review_request_id=r.id AND p.user_id=$2 AND p.participant_role='CONTRIBUTOR')))`, reviewID, userID).Scan(&ok)
 	return ok
 }
 
@@ -1304,7 +1315,7 @@ func (s *Server) canAccessReview(ctx context.Context, sess auth.Session, id stri
 }
 func (s *Server) canEditReview(ctx context.Context, sess auth.Session, id string) bool {
 	var ok bool
-	_ = s.Store.Pool.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM review_requests r WHERE r.id=$1 AND r.status IN ('DRAFT','CHANGE_REQUESTED') AND (r.requester_id=$2 OR r.builder_id=$2 OR r.developer_id=$2 OR EXISTS(SELECT 1 FROM review_participants p WHERE p.review_request_id=r.id AND p.user_id=$2)))`, id, sess.User.ID).Scan(&ok)
+	_ = s.Store.Pool.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM review_requests r WHERE r.id=$1 AND r.status IN ('DRAFT','CHANGE_REQUESTED') AND (r.requester_id=$2 OR r.builder_id=$2 OR r.developer_id=$2 OR EXISTS(SELECT 1 FROM review_participants p WHERE p.review_request_id=r.id AND p.user_id=$2 AND p.participant_role='CONTRIBUTOR')))`, id, sess.User.ID).Scan(&ok)
 	return ok
 }
 func (s *Server) canReview(ctx context.Context, sess auth.Session, id string) bool {

@@ -82,6 +82,7 @@ export type Evidence = {
   scan_status: string
   current_version: number
   description: string
+  scan_detail?: string
 }
 
 export type ChangeRequest = {

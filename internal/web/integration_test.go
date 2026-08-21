@@ -1109,3 +1109,58 @@ func TestReReviewCopyReportsWhatCarriedOver(t *testing.T) {
 		t.Errorf("%d copied responses have collision-prone short ids", shortIDs)
 	}
 }
+
+func TestViewerParticipantsCanReadButNotWrite(t *testing.T) {
+	h := newHarness(t)
+	ctx := context.Background()
+	h.user("part-owner", "REQUESTER")
+	h.user("part-writer", "CONTRIBUTOR", "REQUESTER")
+	h.user("part-viewer", "CONTRIBUTOR", "REQUESTER")
+	owner := h.login("part-owner")
+	reviewID := owner.createReview("참여자 서비스")
+	var writerID, viewerID string
+	_ = h.db.Pool.QueryRow(ctx, `SELECT id FROM users WHERE username='part-writer'`).Scan(&writerID)
+	_ = h.db.Pool.QueryRow(ctx, `SELECT id FROM users WHERE username='part-viewer'`).Scan(&viewerID)
+
+	if res := owner.do(http.MethodPost, "/api/v1/review-requests/"+reviewID+"/participants", map[string]string{"user_id": writerID, "role": "CONTRIBUTOR"}); res.status != http.StatusNoContent {
+		t.Fatalf("add contributor: %d %s", res.status, res.body)
+	}
+	if res := owner.do(http.MethodPost, "/api/v1/review-requests/"+reviewID+"/participants", map[string]string{"user_id": viewerID, "role": "VIEWER"}); res.status != http.StatusNoContent {
+		t.Fatalf("add viewer: %d %s", res.status, res.body)
+	}
+	if res := owner.do(http.MethodPost, "/api/v1/review-requests/"+reviewID+"/participants", map[string]string{"user_id": viewerID, "role": "AUDITOR"}); res.status != http.StatusUnprocessableEntity {
+		t.Errorf("an unknown participant role was accepted: %d", res.status)
+	}
+
+	items := []map[string]any{}
+	_ = json.Unmarshal([]byte(owner.do(http.MethodGet, "/api/v1/review-requests/"+reviewID+"/items", nil).body), &items)
+	path := fmt.Sprintf("/api/v1/review-requests/%s/responses/%s", reviewID, items[0]["id"].(string))
+	payload := map[string]any{"applicability": "Y", "self_assessment": "COMPLIANT"}
+
+	writer := h.login("part-writer")
+	viewer := h.login("part-viewer")
+	// Both can read.
+	for name, c := range map[string]*client{"contributor": writer, "viewer": viewer} {
+		if res := c.do(http.MethodGet, "/api/v1/review-requests/"+reviewID, nil); res.status != http.StatusOK {
+			t.Errorf("%s could not read the review: %d", name, res.status)
+		}
+	}
+	// Only the contributor can write.
+	if res := writer.do(http.MethodPut, path, payload); res.status != http.StatusOK {
+		t.Errorf("the contributor could not write: %d %s", res.status, res.body)
+	}
+	if res := viewer.do(http.MethodPut, path, payload); res.status != http.StatusForbidden {
+		t.Errorf("a viewer wrote to the checklist: %d %s", res.status, res.body)
+	}
+	// A viewer must not be handed items to fill in either.
+	if res := owner.do(http.MethodPost, "/api/v1/review-requests/"+reviewID+"/responses/bulk", map[string]any{"item_ids": []string{items[1]["id"].(string)}, "assign_only": true, "assigned_to": viewerID}); res.status != http.StatusUnprocessableEntity {
+		t.Errorf("items were assigned to a read-only participant: %d %s", res.status, res.body)
+	}
+	// Changing the role afterwards has to take effect.
+	if res := owner.do(http.MethodPost, "/api/v1/review-requests/"+reviewID+"/participants", map[string]string{"user_id": viewerID, "role": "CONTRIBUTOR"}); res.status != http.StatusNoContent {
+		t.Fatalf("promote viewer: %d %s", res.status, res.body)
+	}
+	if res := viewer.do(http.MethodPut, path, payload); res.status != http.StatusOK {
+		t.Errorf("a promoted viewer still could not write: %d %s", res.status, res.body)
+	}
+}

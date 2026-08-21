@@ -151,7 +151,9 @@ func (s *Server) downloadEvidence(w http.ResponseWriter, r *http.Request) {
 	// not leave the server.
 	if scanStatus != scanClean && scanStatus != scanSkipped {
 		_ = s.Store.Audit(r.Context(), auditFrom(r, "DOWNLOAD_EVIDENCE", "EVIDENCE", id, nil, map[string]any{"filename": name, "scan_status": scanStatus, "blocked": true}))
-		problem(w, 409, "SCAN_NOT_CLEARED", scanBlockMessage(scanStatus), map[string]any{"scan_status": scanStatus})
+		var detail string
+		_ = s.Store.Pool.QueryRow(r.Context(), `SELECT scan_detail FROM evidences WHERE id=$1`, id).Scan(&detail)
+		problem(w, 409, "SCAN_NOT_CLEARED", scanBlockMessage(scanStatus), map[string]any{"scan_status": scanStatus, "scan_detail": detail})
 		return
 	}
 	key, err := s.userKey(r.Context(), owner, keyVersion)

@@ -128,7 +128,9 @@ func (w *Worker) scan(ctx context.Context, payload []byte) error {
 }
 
 func (w *Worker) finish(ctx context.Context, evidenceID, filename, status, detail string) error {
-	if _, err := w.Store.Pool.Exec(ctx, `UPDATE evidences SET scan_status=$2 WHERE id=$1`, evidenceID, status); err != nil {
+	// The clamd verdict is kept on the row, not only in the log, so the reason
+	// a file was blocked is answerable months later.
+	if _, err := w.Store.Pool.Exec(ctx, `UPDATE evidences SET scan_status=$2,scan_detail=$3 WHERE id=$1`, evidenceID, status, truncate(detail, 500)); err != nil {
 		return err
 	}
 	_, _ = w.Store.Pool.Exec(ctx, `UPDATE evidence_versions SET scan_status=$2 WHERE evidence_id=$1 AND version=(SELECT current_version FROM evidences WHERE id=$1)`, evidenceID, status)
@@ -141,7 +143,7 @@ func (w *Worker) finish(ctx context.Context, evidenceID, filename, status, detai
 func (w *Worker) quarantine(ctx context.Context, evidenceID, filename, detail string) error {
 	var uploader string
 	if err := pgx.BeginFunc(ctx, w.Store.Pool, func(tx pgx.Tx) error {
-		if err := tx.QueryRow(ctx, `UPDATE evidences SET scan_status='INFECTED',deleted_at=now() WHERE id=$1 RETURNING uploaded_by`, evidenceID).Scan(&uploader); err != nil {
+		if err := tx.QueryRow(ctx, `UPDATE evidences SET scan_status='INFECTED',scan_detail=$2,deleted_at=now() WHERE id=$1 RETURNING uploaded_by`, evidenceID, truncate(detail, 500)).Scan(&uploader); err != nil {
 			return err
 		}
 		_, err := tx.Exec(ctx, `UPDATE evidence_versions SET scan_status='INFECTED' WHERE evidence_id=$1`, evidenceID)
@@ -173,7 +175,7 @@ func (w *Worker) fail(ctx context.Context, id string, attempt int, cause error) 
 				EvidenceID string `json:"evidence_id"`
 			}
 			if json.Unmarshal(payload, &job) == nil && job.EvidenceID != "" {
-				_, _ = w.Store.Pool.Exec(ctx, `UPDATE evidences SET scan_status='ERROR' WHERE id=$1 AND scan_status='PENDING'`, job.EvidenceID)
+				_, _ = w.Store.Pool.Exec(ctx, `UPDATE evidences SET scan_status='ERROR',scan_detail=$2 WHERE id=$1 AND scan_status='PENDING'`, job.EvidenceID, truncate(cause.Error(), 500))
 			}
 		}
 	}
