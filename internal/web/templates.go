@@ -551,7 +551,48 @@ func readWorkbookUpload(w http.ResponseWriter, r *http.Request) (io.ReadCloser, 
 	return file, h.Filename, nil
 }
 
-var headerAliases = map[string][]string{"section": {"구분", "section"}, "item_code": {"구분 no", "구분 no.", "항목코드", "item_code"}, "title": {"보안 요건 항목", "보안요건", "점검 항목", "점검항목", "title"}, "question": {"점검항목", "점검 항목", "항목설명", "question"}, "guide": {"점검 가이드", "점검가이드", "진단방법", "guide"}, "legal_basis": {"관련 근거", "관련근거", "legal_basis"}, "example": {"현황 및 증적", "현황 및 증적 제출", "설정방법", "example"}, "severity": {"중요도", "severity"}}
+// "점검항목" is the question, not the requirement title. It used to appear in
+// both lists, which made the two indistinguishable; a sheet that only carries
+// it still gets a title, because the parser derives one from the question.
+var headerAliases = map[string][]string{"section": {"구분", "section"}, "item_code": {"구분 no", "구분 no.", "항목코드", "item_code"}, "title": {"보안 요건 항목", "보안요건", "title"}, "question": {"점검항목", "점검 항목", "항목설명", "question"}, "guide": {"점검 가이드", "점검가이드", "진단방법", "guide"}, "legal_basis": {"관련 근거", "관련근거", "legal_basis"}, "example": {"현황 및 증적", "현황 및 증적 제출", "설정방법", "example"}, "severity": {"중요도", "severity"}}
+
+// Fields are tried in a fixed order because the guess used to come out of a
+// map range: the same workbook could map "구분 No." to the item code on one
+// upload and to the section on the next, and the wizard submits whatever it
+// was shown. An installation importing its standard checklist twice got two
+// different templates.
+var headerFieldOrder = []string{"item_code", "section", "title", "question", "guide", "legal_basis", "example", "severity"}
+
+// matchField picks the one field a header column feeds. An exact alias always
+// beats a substring -- "구분 No." is the item code even though it contains
+// "구분" -- and a longer substring beats a shorter one. A field already taken
+// by an earlier column is not offered again, so no column is silently mapped
+// twice while another goes unmapped.
+func matchField(header string, taken map[string]bool) string {
+	h := strings.Join(strings.Fields(strings.ToLower(strings.ReplaceAll(header, "\n", " "))), " ")
+	if h == "" {
+		return ""
+	}
+	best, bestScore := "", 0
+	for _, field := range headerFieldOrder {
+		if taken[field] {
+			continue
+		}
+		for _, alias := range headerAliases[field] {
+			score := 0
+			switch {
+			case h == alias:
+				score = 1000 + len(alias)
+			case strings.Contains(h, alias):
+				score = len(alias)
+			}
+			if score > bestScore {
+				best, bestScore = field, score
+			}
+		}
+	}
+	return best
+}
 
 func detectHeaders(rows [][]string) (int, []importColumn) {
 	best, bestScore := 0, 0
@@ -561,21 +602,17 @@ func detectHeaders(rows [][]string) (int, []importColumn) {
 			break
 		}
 		m := []importColumn{}
-		score := 0
+		taken := map[string]bool{}
 		for col, raw := range row {
-			h := strings.ToLower(strings.TrimSpace(strings.ReplaceAll(raw, "\n", " ")))
-			for field, aliases := range headerAliases {
-				for _, a := range aliases {
-					if h == a || strings.Contains(h, a) {
-						m = append(m, importColumn{Index: col, Header: raw, Field: field})
-						score++
-						break
-					}
-				}
+			field := matchField(raw, taken)
+			if field == "" {
+				continue
 			}
+			taken[field] = true
+			m = append(m, importColumn{Index: col, Header: raw, Field: field})
 		}
-		if score > bestScore {
-			best, bestScore, bestMap = i, score, m
+		if len(m) > bestScore {
+			best, bestScore, bestMap = i, len(m), m
 		}
 	}
 	return best, bestMap
