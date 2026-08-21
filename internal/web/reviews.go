@@ -161,6 +161,23 @@ func myTurnClause(sess auth.Session, n int) string {
 	return "(" + strings.Join(branches, " OR ") + ")"
 }
 
+// nextReviewNumber allocates the yearly sequence under an advisory lock so
+// two concurrent creations cannot claim the same number. The year and the year
+// boundary come from the configured display zone: a container running UTC
+// would otherwise stamp the first nine hours of a Korean new year with the
+// previous year's number, which is exactly when the numbering matters.
+func (s *Server) nextReviewNumber(r *http.Request, tx pgx.Tx) (string, error) {
+	if _, err := tx.Exec(r.Context(), `SELECT pg_advisory_xact_lock(hashtext('seccheck-review-number'))`); err != nil {
+		return "", err
+	}
+	zone := s.Store.Location(r.Context())
+	var seq int
+	if err := tx.QueryRow(r.Context(), `SELECT count(*)+1 FROM review_requests WHERE created_at >= date_trunc('year', now() AT TIME ZONE $1) AT TIME ZONE $1`, zone.String()).Scan(&seq); err != nil {
+		return "", err
+	}
+	return fmt.Sprintf("SC-%d-%06d", time.Now().In(zone).Year(), seq), nil
+}
+
 func validateReviewInput(in reviewInput) map[string]string {
 	e := map[string]string{}
 	for key, v := range map[string]string{"service_name": in.ServiceName, "description": in.Description, "service_type": in.ServiceType, "change_type": in.ChangeType, "builder_id": in.BuilderID, "developer_id": in.DeveloperID, "department": in.Department, "exposure": in.Exposure} {
@@ -187,10 +204,11 @@ func (s *Server) createReviewRequest(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer tx.Rollback(r.Context())
-	_, _ = tx.Exec(r.Context(), `SELECT pg_advisory_xact_lock(hashtext('seccheck-review-number'))`)
-	var seq int
-	_ = tx.QueryRow(r.Context(), `SELECT count(*)+1 FROM review_requests WHERE created_at>=date_trunc('year',now())`).Scan(&seq)
-	number := fmt.Sprintf("SC-%d-%06d", time.Now().Year(), seq)
+	number, err := s.nextReviewNumber(r, tx)
+	if err != nil {
+		problem(w, 500, "CREATE_FAILED", "심의번호를 발번하지 못했습니다.", nil)
+		return
+	}
 	id, submissionID := store.NewID(), store.NewID()
 	_, err = tx.Exec(r.Context(), `INSERT INTO review_requests(id,review_number,service_name,description,service_type,change_type,builder_id,developer_id,operator_id,department,requester_id,reviewer_id,approver_id,planned_open_date,exposure,has_admin_page,processes_personal_data,processes_credit_data,external_customer_service,uses_cloud,uses_docker,uses_kubernetes,external_integration,internet_access,business_criticality,manual_rule_override_reason) VALUES($1,$2,$3,$4,$5,$6,$7,$8,NULLIF($9,''),$10,$11,NULLIF($12,''),NULLIF($13,''),NULLIF($14,'')::date,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26)`, id, number, in.ServiceName, in.Description, in.ServiceType, in.ChangeType, in.BuilderID, in.DeveloperID, in.OperatorID, in.Department, sess.User.ID, in.ReviewerID, in.ApproverID, dateValue(in.PlannedOpenDate), in.Exposure, in.HasAdminPage, in.ProcessesPersonalData, in.ProcessesCreditData, in.ExternalCustomerService, in.UsesCloud, in.UsesDocker, in.UsesKubernetes, in.ExternalIntegration, in.InternetAccess, in.BusinessCriticality, in.ManualRuleOverrideReason)
 	if err != nil {
@@ -1218,10 +1236,11 @@ func (s *Server) copyReview(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer tx.Rollback(r.Context())
-	_, _ = tx.Exec(r.Context(), `SELECT pg_advisory_xact_lock(hashtext('seccheck-review-number'))`)
-	var seq int
-	_ = tx.QueryRow(r.Context(), `SELECT count(*)+1 FROM review_requests WHERE created_at>=date_trunc('year',now())`).Scan(&seq)
-	number := fmt.Sprintf("SC-%d-%06d", time.Now().Year(), seq)
+	number, err := s.nextReviewNumber(r, tx)
+	if err != nil {
+		problem(w, 500, "COPY_FAILED", "심의번호를 발번하지 못했습니다.", nil)
+		return
+	}
 	id, submissionID := store.NewID(), store.NewID()
 	_, err = tx.Exec(r.Context(), `INSERT INTO review_requests(id,review_number,service_name,description,service_type,change_type,builder_id,developer_id,operator_id,department,requester_id,reviewer_id,approver_id,exposure,has_admin_page,processes_personal_data,processes_credit_data,external_customer_service,uses_cloud,uses_docker,uses_kubernetes,external_integration,internet_access,business_criticality) VALUES($1,$2,$3,$4,$5,'REVIEW',$6,$7,NULLIF($8,''),$9,$10,NULLIF($11,''),NULLIF($12,''),$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23)`, id, number, in.ServiceName, in.Description, in.ServiceType, in.BuilderID, in.DeveloperID, in.OperatorID, in.Department, sess.User.ID, in.ReviewerID, in.ApproverID, in.Exposure, in.HasAdminPage, in.ProcessesPersonalData, in.ProcessesCreditData, in.ExternalCustomerService, in.UsesCloud, in.UsesDocker, in.UsesKubernetes, in.ExternalIntegration, in.InternetAccess, in.BusinessCriticality)
 	if err == nil {
@@ -1231,7 +1250,24 @@ func (s *Server) copyReview(w http.ResponseWriter, r *http.Request) {
 		_, err = s.snapshotApplicableItems(r.Context(), tx, submissionID, in)
 	}
 	if err == nil {
-		_, err = tx.Exec(r.Context(), `INSERT INTO responses(id,submission_item_id,answer_json,applicability,self_assessment,current_state,na_reason,action_plan,assigned_to,updated_by) SELECT $1||substr(md5(random()::text),1,8),new_item.id,old_resp.answer_json,old_resp.applicability,old_resp.self_assessment,old_resp.current_state,old_resp.na_reason,old_resp.action_plan,NULL,$2 FROM submissions old_sub JOIN submission_items old_item ON old_item.submission_id=old_sub.id JOIN responses old_resp ON old_resp.submission_item_id=old_item.id JOIN submission_items new_item ON new_item.submission_id=$3 AND new_item.template_name=old_item.template_name AND new_item.item_code=old_item.item_code WHERE old_sub.review_request_id=$4 AND old_sub.revision=(SELECT max(revision) FROM submissions WHERE review_request_id=$4)`, "copy-", sess.User.ID, submissionID, source)
+		_, err = tx.Exec(r.Context(), `INSERT INTO responses(id,submission_item_id,answer_json,applicability,self_assessment,current_state,na_reason,action_plan,assigned_to,updated_by) SELECT gen_random_uuid()::text,new_item.id,old_resp.answer_json,old_resp.applicability,old_resp.self_assessment,old_resp.current_state,old_resp.na_reason,old_resp.action_plan,NULL,$1 FROM submissions old_sub JOIN submission_items old_item ON old_item.submission_id=old_sub.id JOIN responses old_resp ON old_resp.submission_item_id=old_item.id JOIN submission_items new_item ON new_item.submission_id=$2 AND new_item.template_name=old_item.template_name AND new_item.item_code=old_item.item_code WHERE old_sub.review_request_id=$3 AND old_sub.revision=(SELECT max(revision) FROM submissions WHERE review_request_id=$3)`, sess.User.ID, submissionID, source)
+	}
+	// A re-review is assigned from today's published templates, so some items
+	// are new and some no longer exist. Saying nothing left the requester to
+	// discover that by scrolling.
+	var carried, total, added, dropped int
+	if err == nil {
+		err = tx.QueryRow(r.Context(), `SELECT
+                  (SELECT count(*) FROM submission_items si JOIN responses resp ON resp.submission_item_id=si.id WHERE si.submission_id=$1 AND resp.applicability<>''),
+                  (SELECT count(*) FROM submission_items si WHERE si.submission_id=$1),
+                  (SELECT count(*) FROM submission_items new_item WHERE new_item.submission_id=$1 AND NOT EXISTS(
+                     SELECT 1 FROM submissions old_sub JOIN submission_items old_item ON old_item.submission_id=old_sub.id
+                     WHERE old_sub.review_request_id=$2 AND old_sub.revision=(SELECT max(revision) FROM submissions WHERE review_request_id=$2)
+                       AND old_item.template_name=new_item.template_name AND old_item.item_code=new_item.item_code)),
+                  (SELECT count(*) FROM submissions old_sub JOIN submission_items old_item ON old_item.submission_id=old_sub.id
+                     WHERE old_sub.review_request_id=$2 AND old_sub.revision=(SELECT max(revision) FROM submissions WHERE review_request_id=$2)
+                       AND NOT EXISTS(SELECT 1 FROM submission_items new_item WHERE new_item.submission_id=$1 AND new_item.template_name=old_item.template_name AND new_item.item_code=old_item.item_code))`,
+			submissionID, source).Scan(&carried, &total, &added, &dropped)
 	}
 	if err == nil {
 		err = tx.Commit(r.Context())
@@ -1240,8 +1276,8 @@ func (s *Server) copyReview(w http.ResponseWriter, r *http.Request) {
 		problem(w, 500, "COPY_FAILED", "심의를 복사하지 못했습니다.", err.Error())
 		return
 	}
-	_ = s.Store.Audit(r.Context(), auditFrom(r, "COPY_SUBMISSION", "REVIEW_REQUEST", id, map[string]string{"source": source}, map[string]string{"review_number": number}))
-	jsonResponse(w, 201, map[string]any{"id": id, "review_number": number})
+	_ = s.Store.Audit(r.Context(), auditFrom(r, "COPY_SUBMISSION", "REVIEW_REQUEST", id, map[string]string{"source": source}, map[string]any{"review_number": number, "carried": carried, "new_items": added, "dropped_items": dropped}))
+	jsonResponse(w, 201, map[string]any{"id": id, "review_number": number, "carried": carried, "total": total, "new_items": added, "dropped_items": dropped})
 }
 
 // canAccessReviewAs answers the same question for a user id rather than the

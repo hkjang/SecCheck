@@ -11,6 +11,7 @@ import (
 	"net/http/httptest"
 	"net/url"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -1012,5 +1013,99 @@ func TestCommentsReachTheOtherSide(t *testing.T) {
 	_ = h.db.Pool.QueryRow(ctx, `SELECT count(*) FROM notifications WHERE event_type='COMMENT_ADDED' AND target_type='REVIEW_REQUEST' AND target_id=$1`, reviewID).Scan(&targeted)
 	if targeted != 2 {
 		t.Errorf("%d of 2 comment notifications link back to the review", targeted)
+	}
+}
+
+func TestReviewNumbersAreUniqueUnderConcurrentCreation(t *testing.T) {
+	h := newHarness(t)
+	h.user("numbering", "REQUESTER")
+	author := h.login("numbering")
+	const parallel = 8
+	var wg sync.WaitGroup
+	numbers := make([]string, parallel)
+	for i := 0; i < parallel; i++ {
+		wg.Add(1)
+		go func(slot int) {
+			defer wg.Done()
+			numbers[slot] = author.createReview(fmt.Sprintf("동시 생성 %d", slot))
+		}(i)
+	}
+	wg.Wait()
+
+	rows, err := h.db.Pool.Query(context.Background(), `SELECT review_number FROM review_requests ORDER BY review_number`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rows.Close()
+	seen := map[string]bool{}
+	count := 0
+	for rows.Next() {
+		var number string
+		if err = rows.Scan(&number); err != nil {
+			t.Fatal(err)
+		}
+		if seen[number] {
+			t.Errorf("review number %s was allocated twice", number)
+		}
+		seen[number] = true
+		count++
+		if !strings.HasPrefix(number, fmt.Sprintf("SC-%d-", time.Now().Year())) && !strings.HasPrefix(number, fmt.Sprintf("SC-%d-", time.Now().Year()+1)) {
+			t.Errorf("unexpected review number format: %s", number)
+		}
+	}
+	if count != parallel {
+		t.Errorf("created %d reviews, want %d", count, parallel)
+	}
+}
+
+func TestReReviewCopyReportsWhatCarriedOver(t *testing.T) {
+	h := newHarness(t)
+	ctx := context.Background()
+	h.user("recopy", "REQUESTER")
+	author := h.login("recopy")
+	admin := h.login(adminOf(h))
+	reviewID := author.createReview("재심의 원본")
+
+	items := []map[string]any{}
+	_ = json.Unmarshal([]byte(author.do(http.MethodGet, "/api/v1/review-requests/"+reviewID+"/items", nil).body), &items)
+	ids := []string{}
+	for i := 0; i < 4 && i < len(items); i++ {
+		ids = append(ids, items[i]["id"].(string))
+	}
+	if res := author.do(http.MethodPost, "/api/v1/review-requests/"+reviewID+"/responses/bulk", map[string]any{"item_ids": ids, "applicability": "N/A", "self_assessment": "N/A", "na_reason": "대상 아님"}); res.status != http.StatusOK {
+		t.Fatalf("seed answers: %d %s", res.status, res.body)
+	}
+	// Retire a template so the copy is genuinely built from a different set.
+	var templateID, versionID string
+	if err := h.db.Pool.QueryRow(ctx, `SELECT t.id,v.id FROM checklist_templates t JOIN checklist_versions v ON v.template_id=t.id WHERE v.status='PUBLISHED' AND t.category='CLOUD' LIMIT 1`).Scan(&templateID, &versionID); err == nil {
+		admin.do(http.MethodPatch, "/api/v1/templates/"+templateID, map[string]any{"Name": "", "Description": "", "Active": false})
+	}
+
+	res := author.do(http.MethodPost, "/api/v1/review-requests/"+reviewID+"/copy", nil)
+	if res.status != http.StatusCreated {
+		t.Fatalf("copy: %d %s", res.status, res.body)
+	}
+	out := res.json()
+	carried, _ := out["carried"].(float64)
+	total, _ := out["total"].(float64)
+	if carried != 4 {
+		t.Errorf("carried = %v answered items, want the 4 that were filled in", out["carried"])
+	}
+	if total == 0 || carried > total {
+		t.Errorf("total = %v with carried = %v", out["total"], out["carried"])
+	}
+	if _, ok := out["new_items"].(float64); !ok {
+		t.Error("the copy did not report how many items are new")
+	}
+	if _, ok := out["dropped_items"].(float64); !ok {
+		t.Error("the copy did not report how many items were dropped")
+	}
+	// Copied responses must get real identifiers, not an eight character stub.
+	var shortIDs int
+	if err := h.db.Pool.QueryRow(ctx, `SELECT count(*) FROM responses WHERE length(id) < 32`).Scan(&shortIDs); err != nil {
+		t.Fatal(err)
+	}
+	if shortIDs != 0 {
+		t.Errorf("%d copied responses have collision-prone short ids", shortIDs)
 	}
 }
