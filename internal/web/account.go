@@ -1,6 +1,7 @@
 package web
 
 import (
+	"fmt"
 	"net/http"
 	"strings"
 	"time"
@@ -160,7 +161,11 @@ func (s *Server) bulkSaveResponses(w http.ResponseWriter, r *http.Request) {
 		NAReason       string   `json:"na_reason"`
 		CurrentState   string   `json:"current_state"`
 		ActionPlan     string   `json:"action_plan"`
+		AssignedTo     string   `json:"assigned_to"`
 		Overwrite      bool     `json:"overwrite"`
+		// AssignOnly splits a long checklist across a team without touching
+		// anybody's answers.
+		AssignOnly bool `json:"assign_only"`
 	}
 	if !decodeJSON(w, r, &in) {
 		return
@@ -171,6 +176,10 @@ func (s *Server) bulkSaveResponses(w http.ResponseWriter, r *http.Request) {
 	}
 	if len(in.ItemIDs) > 1000 {
 		problem(w, 422, "VALIDATION_FAILED", "한 번에 1000개까지 적용할 수 있습니다.", nil)
+		return
+	}
+	if in.AssignOnly {
+		s.bulkAssign(w, r, reviewID, in.ItemIDs, in.AssignedTo)
 		return
 	}
 	if !contains([]string{"Y", "N", "N/A"}, in.Applicability) {
@@ -189,24 +198,55 @@ func (s *Server) bulkSaveResponses(w http.ResponseWriter, r *http.Request) {
 	// a bulk action cannot silently discard someone's work.
 	conflict := `ON CONFLICT(submission_item_id) DO NOTHING`
 	if in.Overwrite {
-		conflict = `ON CONFLICT(submission_item_id) DO UPDATE SET applicability=EXCLUDED.applicability,self_assessment=EXCLUDED.self_assessment,na_reason=EXCLUDED.na_reason,current_state=EXCLUDED.current_state,action_plan=EXCLUDED.action_plan,updated_by=EXCLUDED.updated_by,updated_at=now()`
+		conflict = `ON CONFLICT(submission_item_id) DO UPDATE SET applicability=EXCLUDED.applicability,self_assessment=EXCLUDED.self_assessment,na_reason=EXCLUDED.na_reason,current_state=EXCLUDED.current_state,action_plan=EXCLUDED.action_plan,assigned_to=EXCLUDED.assigned_to,updated_by=EXCLUDED.updated_by,updated_at=now()`
 	}
 	tag, err := s.Store.Pool.Exec(r.Context(), `
-                INSERT INTO responses(id,submission_item_id,answer_json,applicability,self_assessment,current_state,na_reason,action_plan,updated_by)
-                SELECT gen_id.id,si.id,'{}'::jsonb,$1,$2,$3,$4,$5,$6
+                INSERT INTO responses(id,submission_item_id,answer_json,applicability,self_assessment,current_state,na_reason,action_plan,assigned_to,updated_by)
+                SELECT gen_id.id,si.id,'{}'::jsonb,$1,$2,$3,$4,$5,NULLIF($6,''),$7
                 FROM submission_items si
                 JOIN submissions sub ON sub.id=si.submission_id
                 CROSS JOIN LATERAL (SELECT gen_random_uuid()::text AS id) gen_id
-                WHERE si.id = ANY($7) AND sub.review_request_id=$8
-                  AND sub.revision=(SELECT max(revision) FROM submissions WHERE review_request_id=$8)
+                WHERE si.id = ANY($8) AND sub.review_request_id=$9
+                  AND sub.revision=(SELECT max(revision) FROM submissions WHERE review_request_id=$9)
                 `+conflict,
-		in.Applicability, in.SelfAssessment, in.CurrentState, in.NAReason, in.ActionPlan, session(r).User.ID, in.ItemIDs, reviewID)
+		in.Applicability, in.SelfAssessment, in.CurrentState, in.NAReason, in.ActionPlan, in.AssignedTo, session(r).User.ID, in.ItemIDs, reviewID)
 	if err != nil {
 		problem(w, 500, "UPDATE_FAILED", "일괄 적용에 실패했습니다.", nil)
 		return
 	}
 	_ = s.Store.Audit(r.Context(), auditFrom(r, "BULK_UPDATE_RESPONSE", "REVIEW_REQUEST", reviewID, nil, map[string]any{"items": len(in.ItemIDs), "applied": tag.RowsAffected(), "applicability": in.Applicability, "overwrite": in.Overwrite}))
 	jsonResponse(w, 200, map[string]any{"requested": len(in.ItemIDs), "applied": tag.RowsAffected(), "skipped": int64(len(in.ItemIDs)) - tag.RowsAffected()})
+}
+
+// bulkAssign records who is responsible for each of the selected items without
+// writing an answer, so a long checklist can be divided up before anyone
+// starts filling it in. The assignee is notified once for the whole batch.
+func (s *Server) bulkAssign(w http.ResponseWriter, r *http.Request, reviewID string, itemIDs []string, assignee string) {
+	if assignee != "" && !s.canAccessReviewAs(r.Context(), assignee, reviewID) {
+		problem(w, 422, "NOT_A_PARTICIPANT", "이 심의에 참여하지 않는 사용자에게는 배정할 수 없습니다.", nil)
+		return
+	}
+	tag, err := s.Store.Pool.Exec(r.Context(), `
+                INSERT INTO responses(id,submission_item_id,answer_json,assigned_to,updated_by)
+                SELECT gen_random_uuid()::text,si.id,'{}'::jsonb,NULLIF($1,''),$2
+                FROM submission_items si
+                JOIN submissions sub ON sub.id=si.submission_id
+                WHERE si.id = ANY($3) AND sub.review_request_id=$4
+                  AND sub.revision=(SELECT max(revision) FROM submissions WHERE review_request_id=$4)
+                ON CONFLICT(submission_item_id) DO UPDATE SET assigned_to=EXCLUDED.assigned_to,updated_at=now()`,
+		assignee, session(r).User.ID, itemIDs, reviewID)
+	if err != nil {
+		problem(w, 500, "UPDATE_FAILED", "담당자를 배정하지 못했습니다.", nil)
+		return
+	}
+	if assignee != "" && tag.RowsAffected() > 0 {
+		var number, service string
+		_ = s.Store.Pool.QueryRow(r.Context(), `SELECT review_number,service_name FROM review_requests WHERE id=$1`, reviewID).Scan(&number, &service)
+		s.addTargetedNotification(r.Context(), assignee, "ITEM_ASSIGNED", "체크리스트 항목 배정",
+			fmt.Sprintf("%s(%s)의 체크리스트 항목 %d개가 배정되었습니다.", number, service, tag.RowsAffected()), "REVIEW_REQUEST", reviewID)
+	}
+	_ = s.Store.Audit(r.Context(), auditFrom(r, "ASSIGN_ITEMS", "REVIEW_REQUEST", reviewID, nil, map[string]any{"items": tag.RowsAffected(), "assigned_to": assignee}))
+	jsonResponse(w, 200, map[string]any{"requested": len(itemIDs), "applied": tag.RowsAffected(), "skipped": int64(len(itemIDs)) - tag.RowsAffected()})
 }
 
 // notificationEvents is the catalogue the preference screen renders. Keeping
@@ -220,6 +260,7 @@ var notificationEvents = []map[string]string{
 	{"code": "APPROVAL_PENDING", "label": "최종 승인 요청", "description": "승인자로서 결재가 필요할 때"},
 	{"code": "APPROVED", "label": "심의 완료", "description": "심의가 승인되거나 검토 완료되었을 때"},
 	{"code": "REJECTED", "label": "심의 반려", "description": "심의가 반려되었을 때"},
+	{"code": "ITEM_ASSIGNED", "label": "체크리스트 항목 배정", "description": "체크리스트 항목의 담당자로 지정되었을 때"},
 	{"code": "EVIDENCE_INFECTED", "label": "증적 악성코드 탐지", "description": "업로드한 증적에서 악성코드가 발견되었을 때"},
 	{"code": "AUDIT_CHAIN_BROKEN", "label": "감사로그 무결성 실패", "description": "해시 체인 검증이 실패했을 때 (시스템 관리자)"},
 }

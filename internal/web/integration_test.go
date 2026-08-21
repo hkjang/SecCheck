@@ -792,3 +792,111 @@ func TestReviewReportSummarisesAPeriod(t *testing.T) {
 		t.Errorf("a requester reached the report: %d", res.status)
 	}
 }
+
+func TestConcurrentEditsAreDetectedRatherThanOverwritten(t *testing.T) {
+	h := newHarness(t)
+	owner := h.user("coauthor-owner", "REQUESTER")
+	h.user("coauthor-two", "CONTRIBUTOR", "REQUESTER")
+	first := h.login("coauthor-owner")
+	second := h.login("coauthor-two")
+	reviewID := first.createReview("동시 편집 서비스")
+	var secondID string
+	if err := h.db.Pool.QueryRow(context.Background(), `SELECT id FROM users WHERE username='coauthor-two'`).Scan(&secondID); err != nil {
+		t.Fatal(err)
+	}
+	if res := first.do(http.MethodPost, "/api/v1/review-requests/"+reviewID+"/participants", map[string]string{"user_id": secondID}); res.status != http.StatusNoContent && res.status != http.StatusOK && res.status != http.StatusCreated {
+		t.Fatalf("add participant: %d %s", res.status, res.body)
+	}
+	_ = owner
+
+	items := []map[string]any{}
+	_ = json.Unmarshal([]byte(first.do(http.MethodGet, "/api/v1/review-requests/"+reviewID+"/items", nil).body), &items)
+	itemID := items[0]["id"].(string)
+	path := fmt.Sprintf("/api/v1/review-requests/%s/responses/%s", reviewID, itemID)
+
+	saved := first.do(http.MethodPut, path, map[string]any{"applicability": "Y", "self_assessment": "COMPLIANT", "current_state": "첫 번째 저장"})
+	if saved.status != http.StatusOK {
+		t.Fatalf("first save: %d %s", saved.status, saved.body)
+	}
+	version, _ := saved.json()["updated_at"].(string)
+	if version == "" {
+		t.Fatal("the save did not return a version to hold on to")
+	}
+
+	// The second author saves from the same starting point and wins the race.
+	if res := second.do(http.MethodPut, path, map[string]any{"applicability": "N", "self_assessment": "INSUFFICIENT", "current_state": "두 번째 저장", "expected_updated_at": version}); res.status != http.StatusOK {
+		t.Fatalf("second save: %d %s", res.status, res.body)
+	}
+	// The first author, still holding the old version, must be told rather than
+	// silently discarding the other author's work.
+	stale := first.do(http.MethodPut, path, map[string]any{"applicability": "Y", "current_state": "덮어쓰기 시도", "expected_updated_at": version})
+	if stale.status != http.StatusConflict || stale.errorCode() != "RESPONSE_CONFLICT" {
+		t.Fatalf("a stale save was accepted: %d %s", stale.status, stale.body)
+	}
+	details, _ := stale.json()["error"].(map[string]any)["details"].(map[string]any)
+	if details["current_state"] != "두 번째 저장" {
+		t.Errorf("the conflict did not report the stored value: %v", details)
+	}
+	if details["updated_by"] == "" {
+		t.Error("the conflict did not say who saved it")
+	}
+	var stored string
+	if err := h.db.Pool.QueryRow(context.Background(), `SELECT current_state FROM responses WHERE submission_item_id=$1`, itemID).Scan(&stored); err != nil {
+		t.Fatal(err)
+	}
+	if stored != "두 번째 저장" {
+		t.Errorf("the rejected save still changed the row to %q", stored)
+	}
+	// Deliberately overwriting is allowed once the author has seen the other
+	// version, which is what the modal's second button does.
+	if res := first.do(http.MethodPut, path, map[string]any{"applicability": "Y", "current_state": "의도적 덮어쓰기"}); res.status != http.StatusOK {
+		t.Fatalf("forced overwrite: %d %s", res.status, res.body)
+	}
+}
+
+func TestItemsCanBeAssignedInBulkToParticipantsOnly(t *testing.T) {
+	h := newHarness(t)
+	h.user("assign-owner", "REQUESTER")
+	h.user("assign-helper", "CONTRIBUTOR", "REQUESTER")
+	h.user("assign-outsider", "REQUESTER")
+	owner := h.login("assign-owner")
+	reviewID := owner.createReview("배정 서비스")
+	ctx := context.Background()
+	var helperID, outsiderID string
+	_ = h.db.Pool.QueryRow(ctx, `SELECT id FROM users WHERE username='assign-helper'`).Scan(&helperID)
+	_ = h.db.Pool.QueryRow(ctx, `SELECT id FROM users WHERE username='assign-outsider'`).Scan(&outsiderID)
+	owner.do(http.MethodPost, "/api/v1/review-requests/"+reviewID+"/participants", map[string]string{"user_id": helperID})
+
+	items := []map[string]any{}
+	_ = json.Unmarshal([]byte(owner.do(http.MethodGet, "/api/v1/review-requests/"+reviewID+"/items", nil).body), &items)
+	ids := []string{items[0]["id"].(string), items[1]["id"].(string), items[2]["id"].(string)}
+
+	if res := owner.do(http.MethodPost, "/api/v1/review-requests/"+reviewID+"/responses/bulk", map[string]any{"item_ids": ids, "assign_only": true, "assigned_to": outsiderID}); res.status != http.StatusUnprocessableEntity {
+		t.Errorf("assigning to a non-participant returned %d %s", res.status, res.body)
+	}
+	res := owner.do(http.MethodPost, "/api/v1/review-requests/"+reviewID+"/responses/bulk", map[string]any{"item_ids": ids, "assign_only": true, "assigned_to": helperID})
+	if res.status != http.StatusOK {
+		t.Fatalf("bulk assign: %d %s", res.status, res.body)
+	}
+	if applied, _ := res.json()["applied"].(float64); applied != 3 {
+		t.Errorf("assigned %v items, want 3", res.json()["applied"])
+	}
+	var assigned int
+	if err := h.db.Pool.QueryRow(ctx, `SELECT count(*) FROM responses WHERE assigned_to=$1`, helperID).Scan(&assigned); err != nil {
+		t.Fatal(err)
+	}
+	if assigned != 3 {
+		t.Errorf("responses.assigned_to set on %d rows, want 3", assigned)
+	}
+	// Assignment must not invent answers.
+	var answered int
+	_ = h.db.Pool.QueryRow(ctx, `SELECT count(*) FROM responses WHERE assigned_to=$1 AND applicability<>''`, helperID).Scan(&answered)
+	if answered != 0 {
+		t.Errorf("%d assigned items were given an answer", answered)
+	}
+	var notified int
+	_ = h.db.Pool.QueryRow(ctx, `SELECT count(*) FROM notifications WHERE recipient_id=$1 AND event_type='ITEM_ASSIGNED'`, helperID).Scan(&notified)
+	if notified != 1 {
+		t.Errorf("the assignee got %d notifications, want exactly one for the batch", notified)
+	}
+}

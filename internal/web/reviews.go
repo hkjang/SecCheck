@@ -478,6 +478,10 @@ func (s *Server) saveResponse(w http.ResponseWriter, r *http.Request) {
 		NAReason       string `json:"na_reason"`
 		ActionPlan     string `json:"action_plan"`
 		AssignedTo     string `json:"assigned_to"`
+		// ExpectedUpdatedAt is the version the editor loaded. A checklist is
+		// filled in by several people at once and the editor auto-saves, so
+		// without it the last keystroke anywhere silently wins.
+		ExpectedUpdatedAt string `json:"expected_updated_at"`
 	}
 	if !decodeJSON(w, r, &in) {
 		return
@@ -494,15 +498,66 @@ func (s *Server) saveResponse(w http.ResponseWriter, r *http.Request) {
 		problem(w, 422, "NA_REASON_REQUIRED", "N/A 선택 시 사유가 필요합니다.", map[string]string{"na_reason": "필수 입력 항목입니다."})
 		return
 	}
+	if conflict, ok := s.responseConflict(r, itemID, in.ExpectedUpdatedAt); ok {
+		problem(w, 409, "RESPONSE_CONFLICT", "다른 사용자가 이 항목을 먼저 저장했습니다. 최신 내용을 확인한 뒤 다시 저장하세요.", conflict)
+		return
+	}
 	answer, _ := json.Marshal(in.Answer)
 	id := store.NewID()
-	tag, err := s.Store.Pool.Exec(r.Context(), `INSERT INTO responses(id,submission_item_id,answer_json,applicability,self_assessment,current_state,na_reason,action_plan,assigned_to,updated_by) SELECT $1,si.id,$2,$3,$4,$5,$6,$7,NULLIF($8,''),$9 FROM submission_items si JOIN submissions sub ON sub.id=si.submission_id WHERE si.id=$10 AND sub.review_request_id=$11 AND sub.revision=(SELECT max(revision) FROM submissions WHERE review_request_id=$11) ON CONFLICT(submission_item_id) DO UPDATE SET answer_json=EXCLUDED.answer_json,applicability=EXCLUDED.applicability,self_assessment=EXCLUDED.self_assessment,current_state=EXCLUDED.current_state,na_reason=EXCLUDED.na_reason,action_plan=EXCLUDED.action_plan,assigned_to=EXCLUDED.assigned_to,updated_by=EXCLUDED.updated_by,updated_at=now()`, id, answer, in.Applicability, in.SelfAssessment, in.CurrentState, in.NAReason, in.ActionPlan, in.AssignedTo, session(r).User.ID, itemID, reviewID)
-	if err != nil || tag.RowsAffected() == 0 {
+	var savedAt time.Time
+	err := s.Store.Pool.QueryRow(r.Context(), `INSERT INTO responses(id,submission_item_id,answer_json,applicability,self_assessment,current_state,na_reason,action_plan,assigned_to,updated_by) SELECT $1,si.id,$2,$3,$4,$5,$6,$7,NULLIF($8,''),$9 FROM submission_items si JOIN submissions sub ON sub.id=si.submission_id WHERE si.id=$10 AND sub.review_request_id=$11 AND sub.revision=(SELECT max(revision) FROM submissions WHERE review_request_id=$11) ON CONFLICT(submission_item_id) DO UPDATE SET answer_json=EXCLUDED.answer_json,applicability=EXCLUDED.applicability,self_assessment=EXCLUDED.self_assessment,current_state=EXCLUDED.current_state,na_reason=EXCLUDED.na_reason,action_plan=EXCLUDED.action_plan,assigned_to=EXCLUDED.assigned_to,updated_by=EXCLUDED.updated_by,updated_at=now() RETURNING updated_at`, id, answer, in.Applicability, in.SelfAssessment, in.CurrentState, in.NAReason, in.ActionPlan, in.AssignedTo, session(r).User.ID, itemID, reviewID).Scan(&savedAt)
+	if err != nil {
 		problem(w, 404, "NOT_FOUND", "체크리스트 항목을 찾을 수 없습니다.", nil)
 		return
 	}
-	_ = s.Store.Audit(r.Context(), auditFrom(r, "UPDATE_RESPONSE", "SUBMISSION_ITEM", itemID, nil, map[string]any{"applicability": in.Applicability, "self_assessment": in.SelfAssessment}))
-	jsonResponse(w, 200, map[string]any{"saved_at": time.Now()})
+	_ = s.Store.Audit(r.Context(), auditFrom(r, "UPDATE_RESPONSE", "SUBMISSION_ITEM", itemID, nil, map[string]any{"applicability": in.Applicability, "self_assessment": in.SelfAssessment, "assigned_to": in.AssignedTo}))
+	jsonResponse(w, 200, map[string]any{"saved_at": savedAt, "updated_at": savedAt})
+}
+
+// responseConflict reports whether the stored answer has moved on since the
+// editor loaded it, and returns what is there now so the UI can show both
+// sides rather than just refusing. An empty expectation means the caller is
+// not participating in conflict detection, which keeps older clients working.
+func (s *Server) responseConflict(r *http.Request, itemID, expected string) (map[string]any, bool) {
+	if strings.TrimSpace(expected) == "" {
+		return nil, false
+	}
+	want, err := time.Parse(time.RFC3339Nano, expected)
+	if err != nil {
+		return nil, false
+	}
+	var current time.Time
+	var by, applicability, selfAssessment, currentState, naReason, actionPlan string
+	err = s.Store.Pool.QueryRow(r.Context(), `SELECT resp.updated_at,COALESCE(u.display_name,''),resp.applicability,resp.self_assessment,resp.current_state,resp.na_reason,resp.action_plan
+                FROM responses resp LEFT JOIN users u ON u.id=resp.updated_by WHERE resp.submission_item_id=$1`, itemID).
+		Scan(&current, &by, &applicability, &selfAssessment, &currentState, &naReason, &actionPlan)
+	if err != nil || current.Equal(want) {
+		return nil, false
+	}
+	return map[string]any{
+		"updated_at": current, "updated_by": by,
+		"applicability": applicability, "self_assessment": selfAssessment,
+		"current_state": currentState, "na_reason": naReason, "action_plan": actionPlan,
+	}, true
+}
+
+func (s *Server) reviewResultConflict(r *http.Request, itemID, expected string) (map[string]any, bool) {
+	if strings.TrimSpace(expected) == "" {
+		return nil, false
+	}
+	want, err := time.Parse(time.RFC3339Nano, expected)
+	if err != nil {
+		return nil, false
+	}
+	var current time.Time
+	var by, result, opinion, adequacy, followUp string
+	err = s.Store.Pool.QueryRow(r.Context(), `SELECT rr.updated_at,COALESCE(u.display_name,''),rr.result,rr.opinion,rr.evidence_adequacy,rr.follow_up
+                FROM review_results rr LEFT JOIN users u ON u.id=rr.reviewer_id WHERE rr.submission_item_id=$1`, itemID).
+		Scan(&current, &by, &result, &opinion, &adequacy, &followUp)
+	if err != nil || current.Equal(want) {
+		return nil, false
+	}
+	return map[string]any{"updated_at": current, "updated_by": by, "result": result, "opinion": opinion, "evidence_adequacy": adequacy, "follow_up": followUp}, true
 }
 
 func (s *Server) submitReview(w http.ResponseWriter, r *http.Request) {
@@ -757,6 +812,7 @@ func (s *Server) saveReviewResult(w http.ResponseWriter, r *http.Request) {
 		EvidenceAdequacy   string `json:"evidence_adequacy"`
 		FollowUp           string `json:"follow_up"`
 		NAApproved         *bool  `json:"na_approved"`
+		ExpectedUpdatedAt  string `json:"expected_updated_at"`
 	}
 	if !decodeJSON(w, r, &in) {
 		return
@@ -766,13 +822,20 @@ func (s *Server) saveReviewResult(w http.ResponseWriter, r *http.Request) {
 		problem(w, 422, "VALIDATION_FAILED", "검토 결과를 선택하세요.", nil)
 		return
 	}
-	tag, err := s.Store.Pool.Exec(r.Context(), `INSERT INTO review_results(id,submission_item_id,reviewer_id,final_applicability,result,opinion,evidence_adequacy,na_approved,follow_up) SELECT $1,si.id,$2,$3,$4,$5,$6,$7,$8 FROM submission_items si JOIN submissions sub ON sub.id=si.submission_id JOIN review_requests rq ON rq.id=sub.review_request_id WHERE si.id=$9 AND sub.review_request_id=$10 AND rq.status='REVIEWING' AND sub.revision=(SELECT max(revision) FROM submissions WHERE review_request_id=$10) ON CONFLICT(submission_item_id) DO UPDATE SET reviewer_id=EXCLUDED.reviewer_id,final_applicability=EXCLUDED.final_applicability,result=EXCLUDED.result,opinion=EXCLUDED.opinion,evidence_adequacy=EXCLUDED.evidence_adequacy,na_approved=EXCLUDED.na_approved,follow_up=EXCLUDED.follow_up,updated_at=now()`, store.NewID(), session(r).User.ID, in.FinalApplicability, in.Result, in.Opinion, in.EvidenceAdequacy, in.NAApproved, in.FollowUp, itemID, id)
-	if err != nil || tag.RowsAffected() == 0 {
+	// Two reviewers can hold the same review open, so the same protection the
+	// author side has applies here.
+	if conflict, ok := s.reviewResultConflict(r, itemID, in.ExpectedUpdatedAt); ok {
+		problem(w, 409, "REVIEW_RESULT_CONFLICT", "다른 검토자가 이 항목을 먼저 저장했습니다. 최신 내용을 확인한 뒤 다시 저장하세요.", conflict)
+		return
+	}
+	var savedAt time.Time
+	err := s.Store.Pool.QueryRow(r.Context(), `INSERT INTO review_results(id,submission_item_id,reviewer_id,final_applicability,result,opinion,evidence_adequacy,na_approved,follow_up) SELECT $1,si.id,$2,$3,$4,$5,$6,$7,$8 FROM submission_items si JOIN submissions sub ON sub.id=si.submission_id JOIN review_requests rq ON rq.id=sub.review_request_id WHERE si.id=$9 AND sub.review_request_id=$10 AND rq.status='REVIEWING' AND sub.revision=(SELECT max(revision) FROM submissions WHERE review_request_id=$10) ON CONFLICT(submission_item_id) DO UPDATE SET reviewer_id=EXCLUDED.reviewer_id,final_applicability=EXCLUDED.final_applicability,result=EXCLUDED.result,opinion=EXCLUDED.opinion,evidence_adequacy=EXCLUDED.evidence_adequacy,na_approved=EXCLUDED.na_approved,follow_up=EXCLUDED.follow_up,updated_at=now() RETURNING updated_at`, store.NewID(), session(r).User.ID, in.FinalApplicability, in.Result, in.Opinion, in.EvidenceAdequacy, in.NAApproved, in.FollowUp, itemID, id).Scan(&savedAt)
+	if err != nil {
 		problem(w, 404, "NOT_FOUND", "검토 항목을 찾을 수 없습니다.", nil)
 		return
 	}
 	_ = s.Store.Audit(r.Context(), auditFrom(r, "REVIEW_ITEM", "SUBMISSION_ITEM", itemID, nil, in))
-	jsonResponse(w, 200, map[string]any{"saved_at": time.Now()})
+	jsonResponse(w, 200, map[string]any{"saved_at": savedAt, "updated_at": savedAt})
 }
 
 func (s *Server) createChangeRequest(w http.ResponseWriter, r *http.Request) {
@@ -1138,6 +1201,18 @@ func (s *Server) copyReview(w http.ResponseWriter, r *http.Request) {
 	}
 	_ = s.Store.Audit(r.Context(), auditFrom(r, "COPY_SUBMISSION", "REVIEW_REQUEST", id, map[string]string{"source": source}, map[string]string{"review_number": number}))
 	jsonResponse(w, 201, map[string]any{"id": id, "review_number": number})
+}
+
+// canAccessReviewAs answers the same question for a user id rather than the
+// caller's own session, which is what assignment needs: you may only hand an
+// item to someone who can already open the review.
+func (s *Server) canAccessReviewAs(ctx context.Context, userID, reviewID string) bool {
+	var ok bool
+	_ = s.Store.Pool.QueryRow(ctx, `SELECT EXISTS(
+                SELECT 1 FROM review_requests r WHERE r.id=$1 AND (
+                  r.requester_id=$2 OR r.builder_id=$2 OR r.developer_id=$2 OR r.operator_id=$2 OR r.reviewer_id=$2 OR r.approver_id=$2
+                  OR EXISTS(SELECT 1 FROM review_participants p WHERE p.review_request_id=r.id AND p.user_id=$2)))`, reviewID, userID).Scan(&ok)
+	return ok
 }
 
 func (s *Server) canAccessReview(ctx context.Context, sess auth.Session, id string) bool {
