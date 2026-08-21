@@ -4,7 +4,7 @@ import { post, setCSRF, errorMessage, ApiError } from '../lib/api'
 import { User } from '../lib/types'
 import { Button, Field } from '../components/ui'
 
-export default function Login({ config, onLogin }: { config: { service_name: string; version: string; oidc_enabled: boolean }; onLogin: (user: User, csrf: string) => void }) {
+export default function Login({ config, expired, onLogin }: { config: { service_name: string; version: string; oidc_enabled: boolean }; expired?: boolean; onLogin: (user: User, csrf: string) => void }) {
   const [username, setUsername] = useState('')
   const [password, setPassword] = useState('')
   const [totp, setTotp] = useState('')
@@ -26,6 +26,7 @@ export default function Login({ config, onLogin }: { config: { service_name: str
     } finally { setBusy(false) }
   }
   return <div className="login-page"><section className="login-panel"><div className="login-box"><div className="login-brand"><div className="brand-mark"><Shield size={20} /></div><div><strong data-sx="sx-019">SecCheck</strong><div className="subtle">SECURITY REVIEW PLATFORM</div></div></div><h1 className="login-title">안전한 서비스의 시작</h1><p className="login-copy">보안성 심의 체크리스트와 증적, 검토·승인 이력을 하나의 흐름으로 관리합니다.</p>
+    {expired && <div className="guide-block">세션이 종료되어 로그아웃되었습니다. 유휴 시간 초과, 비밀번호 변경 또는 관리자의 세션 종료 때문일 수 있습니다. 다시 로그인하세요.</div>}
     <form className="login-form" onSubmit={submit}>
       <Field label="아이디" required><input className="input" autoComplete="username" value={username} onChange={e => setUsername(e.target.value)} /></Field>
       <Field label="비밀번호" required error={needsTotp ? '' : error}><input className="input" type="password" autoComplete="current-password" value={password} onChange={e => setPassword(e.target.value)} /></Field>

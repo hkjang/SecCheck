@@ -309,6 +309,21 @@ func setSecurityHeaders(header http.Header) {
 	header.Set("Content-Security-Policy", "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data: blob:; connect-src 'self'; font-src 'self'; frame-ancestors 'none'; base-uri 'self'; form-action 'self'; object-src 'none'; upgrade-insecure-requests")
 }
 
+// invalidateSettingCaches is called after a setting is saved so the change is
+// live on the next request rather than after the cache window.
+func (s *Server) invalidateSettingCaches(key string) {
+	switch key {
+	case "security":
+		s.securityMu.Lock()
+		s.securityAt = time.Time{}
+		s.securityConf = runtimeSecurity{}
+		s.securityMu.Unlock()
+		s.Auth.InvalidatePolicy()
+	case "general":
+		s.Store.InvalidateLocation()
+	}
+}
+
 func (s *Server) runtimeSecurity(ctx context.Context) runtimeSecurity {
 	s.securityMu.Lock()
 	defer s.securityMu.Unlock()

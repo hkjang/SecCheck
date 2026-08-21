@@ -1250,3 +1250,92 @@ func TestOpenAPIDocumentIsCompleteAndUsable(t *testing.T) {
 		t.Error("the document has no tag list")
 	}
 }
+
+func TestIdleTimeoutEndsASessionThatOnlyPolls(t *testing.T) {
+	h := newHarness(t)
+	ctx := context.Background()
+	admin := h.login(adminOf(h))
+	if res := admin.do(http.MethodPut, "/api/v1/admin/settings/security", map[string]any{
+		"cookie_secure": false, "cors_origins": []string{}, "rate_limit_per_minute": 10000,
+		"inactive_admin_lock_days": 90, "login_rate_limit_per_minute": 600, "max_login_failures": 0,
+		"lockout_minutes": 15, "idle_timeout_minutes": 5, "trusted_proxies": []string{}, "require_totp_for_admins": false,
+	}); res.status != http.StatusOK {
+		t.Fatalf("enable idle timeout: %d %s", res.status, res.body)
+	}
+
+	h.user("idler", "REQUESTER")
+	idler := h.login("idler")
+	age := func(minutes int) {
+		t.Helper()
+		if _, err := h.db.Pool.Exec(ctx, `UPDATE sessions SET last_seen_at=now()-make_interval(mins=>$2) WHERE id=$1`, idlerSessionID(t, h, "idler"), minutes); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	// Background polling must not count as being at the desk.
+	age(4)
+	if res := idler.do(http.MethodGet, "/api/v1/notifications/unread-count", nil); res.status != http.StatusOK {
+		t.Fatalf("the poll itself should still work at 4 minutes idle: %d", res.status)
+	}
+	var seen bool
+	if err := h.db.Pool.QueryRow(ctx, `SELECT last_seen_at < now()-interval '3 minutes' FROM sessions WHERE id=$1`, idlerSessionID(t, h, "idler")).Scan(&seen); err != nil {
+		t.Fatal(err)
+	}
+	if !seen {
+		t.Error("the badge poll refreshed last_seen_at, so an unattended tab would never time out")
+	}
+
+	// Real use does count.
+	if res := idler.do(http.MethodGet, "/api/v1/me", nil); res.status != http.StatusOK {
+		t.Fatalf("real use failed: %d", res.status)
+	}
+	if err := h.db.Pool.QueryRow(ctx, `SELECT last_seen_at > now()-interval '1 minute' FROM sessions WHERE id=$1`, idlerSessionID(t, h, "idler")).Scan(&seen); err != nil {
+		t.Fatal(err)
+	}
+	if !seen {
+		t.Error("a real request did not refresh the session")
+	}
+
+	// Past the window the session is gone, and polling does not save it.
+	age(9)
+	if res := idler.do(http.MethodGet, "/api/v1/notifications/unread-count", nil); res.status != http.StatusUnauthorized {
+		t.Errorf("an idle session survived the timeout: %d", res.status)
+	}
+	var remaining int
+	_ = h.db.Pool.QueryRow(ctx, `SELECT count(*) FROM sessions s JOIN users u ON u.id=s.user_id WHERE u.username='idler'`).Scan(&remaining)
+	if remaining != 0 {
+		t.Errorf("%d expired sessions were left behind", remaining)
+	}
+}
+
+func idlerSessionID(t *testing.T, h *harness, username string) string {
+	t.Helper()
+	var id string
+	if err := h.db.Pool.QueryRow(context.Background(), `SELECT s.id FROM sessions s JOIN users u ON u.id=s.user_id WHERE u.username=$1 ORDER BY s.created_at DESC LIMIT 1`, username).Scan(&id); err != nil {
+		t.Fatalf("find session for %s: %v", username, err)
+	}
+	return id
+}
+
+func TestSettingChangesApplyImmediately(t *testing.T) {
+	h := newHarness(t)
+	admin := h.login(adminOf(h))
+	// A cache that outlives the save makes an administrator think the setting
+	// did not work, so the change has to be live on the very next request.
+	if res := admin.do(http.MethodPut, "/api/v1/admin/settings/general", map[string]any{
+		"service_name": "SecCheck", "timezone": "Asia/Seoul", "session_minutes": 480, "retention_days": 1825, "base_url": "",
+	}); res.status != http.StatusOK {
+		t.Fatalf("save: %d %s", res.status, res.body)
+	}
+	if zone := admin.do(http.MethodGet, "/api/v1/me", nil).json()["timezone"]; zone != "Asia/Seoul" {
+		t.Errorf("time zone still %v on the next request", zone)
+	}
+	if res := admin.do(http.MethodPut, "/api/v1/admin/settings/general", map[string]any{
+		"service_name": "SecCheck", "timezone": "UTC", "session_minutes": 480, "retention_days": 1825, "base_url": "",
+	}); res.status != http.StatusOK {
+		t.Fatalf("save again: %d %s", res.status, res.body)
+	}
+	if zone := admin.do(http.MethodGet, "/api/v1/me", nil).json()["timezone"]; zone != "UTC" {
+		t.Errorf("time zone still %v after the second change", zone)
+	}
+}

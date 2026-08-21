@@ -183,6 +183,13 @@ func (s *Store) Location(ctx context.Context) *time.Location {
 	return zone
 }
 
+// InvalidateLocation drops the cached time zone after the setting changes.
+func (s *Store) InvalidateLocation() {
+	s.zoneMu.Lock()
+	defer s.zoneMu.Unlock()
+	s.zone = nil
+}
+
 // LocalTime renders a timestamp in the configured zone, for exports and
 // e-mails that are read outside the browser.
 func (s *Store) LocalTime(ctx context.Context, v any, layout string) string {

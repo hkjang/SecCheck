@@ -2,7 +2,7 @@ import React, { createContext, useContext, useEffect, useState } from 'react'
 import ReactDOM from 'react-dom/client'
 import { BrowserRouter, Navigate, Route, Routes } from 'react-router-dom'
 import './styles.css'
-import { get, post, setCSRF } from './lib/api'
+import { get, onSessionEvent, post, setCSRF } from './lib/api'
 import { AuthValue, User } from './lib/types'
 import { Loading, ToastProvider, setDisplayTimezone } from './components/ui'
 import Layout from './components/Layout'
@@ -35,9 +35,16 @@ function App() {
   const [publicConfig, setPublicConfig] = useState({ service_name: 'SecCheck', version: 'dev', oidc_enabled: false, timezone: '' })
   const [me, setMe] = useState<{ user: User; version: string; totp_enrollment_required?: boolean } | null | undefined>(undefined)
   const refresh = async () => { try { const value = await get<{ user: User; csrf_token: string; version: string; totp_enrollment_required?: boolean; timezone?: string }>('/api/v1/me'); setCSRF(value.csrf_token); setDisplayTimezone(value.timezone || ''); setMe(value) } catch { setCSRF(''); setMe(null) } }
+  const [expired, setExpired] = useState(false)
   useEffect(() => { get<typeof publicConfig>('/api/v1/public/config').then(value => { setDisplayTimezone(value.timezone || ''); setPublicConfig(value) }).catch(() => undefined); refresh() }, [])
+  // Returning to the sign-in screen is the shell's job, so a screen that hits
+  // an ended session does not have to know what to do about it.
+  useEffect(() => onSessionEvent(event => {
+    if (event === 'expired') { setCSRF(''); setExpired(true); setMe(null) }
+    else refresh()
+  }), [])
   if (me === undefined) return <Loading />
-  if (!me) return <Login config={publicConfig} onLogin={(user) => setMe({ user, version: publicConfig.version })} />
+  if (!me) return <Login config={publicConfig} expired={expired} onLogin={(user) => { setExpired(false); setMe({ user, version: publicConfig.version }) }} />
   const logout = async () => { try { await post('/api/v1/auth/logout') } finally { setCSRF(''); setMe(null) } }
   // Policy can require a second factor before anything else is reachable, so
   // the router collapses to the enrolment screen until it exists.

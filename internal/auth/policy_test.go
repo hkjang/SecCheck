@@ -33,3 +33,15 @@ func TestPolicyKeepsLockoutDisabledWhenChosen(t *testing.T) {
 		t.Fatalf("valid settings were rewritten: %+v", got)
 	}
 }
+
+func TestPassiveRequestsDoNotCountAsActivity(t *testing.T) {
+	// The badge poll must not keep an unattended session alive.
+	if !passiveRequest("/api/v1/notifications/unread-count") {
+		t.Error("the unread-count poll is treated as user activity, which defeats the idle timeout")
+	}
+	for _, path := range []string{"/api/v1/me", "/api/v1/review-requests", "/api/v1/notifications", "/api/v1/dashboard"} {
+		if passiveRequest(path) {
+			t.Errorf("%s is real use and must refresh the session", path)
+		}
+	}
+}

@@ -234,6 +234,7 @@ func (s *Server) updateSetting(w http.ResponseWriter, r *http.Request) {
 	if secret != "" {
 		safe["secret_configured"] = true
 	}
+	s.invalidateSettingCaches(key)
 	_ = s.Store.Audit(r.Context(), auditFrom(r, "UPDATE_SETTING", "SETTING", key, nil, safe))
 	jsonResponse(w, 200, safe)
 }

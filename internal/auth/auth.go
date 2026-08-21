@@ -166,6 +166,16 @@ func (a *Service) Policy(ctx context.Context) SecurityPolicy {
 	return a.policy
 }
 
+// InvalidatePolicy drops the cached copy so a saved setting takes effect on
+// the next request instead of up to fifteen seconds later. An administrator
+// who changes a security setting and immediately tests it should not see the
+// old behaviour and conclude the setting does not work.
+func (a *Service) InvalidatePolicy() {
+	a.policyMu.Lock()
+	defer a.policyMu.Unlock()
+	a.policyLoaded = false
+}
+
 func PasswordHash(password string) (string, error) {
 	if len(password) < 12 {
 		return "", errors.New("password must have at least 12 characters")
@@ -374,10 +384,24 @@ func (a *Service) Authenticate(r *http.Request) (Session, error) {
 	var totpEnabled bool
 	_ = a.Store.Pool.QueryRow(r.Context(), `SELECT totp_enabled FROM users WHERE id=$1`, uid).Scan(&totpEnabled)
 	sess.EnrollTOTP = RequiresTOTPEnrollment(a.Policy(r.Context()), sess.User, totpEnabled)
-	if idle >= lastSeenWriteInterval {
+	if idle >= lastSeenWriteInterval && !passiveRequest(r.URL.Path) {
 		_, _ = a.Store.Pool.Exec(r.Context(), `UPDATE sessions SET last_seen_at=now() WHERE id=$1`, sess.ID)
 	}
 	return sess, nil
+}
+
+// passiveRequest reports whether a request is the browser polling in the
+// background rather than somebody using the service. The unread-notification
+// badge refreshes once a minute, which kept last_seen_at moving forever and
+// meant an idle session on an unattended desk never timed out — the polling
+// defeated the very setting meant to close it. The list is server-side so a
+// client cannot extend its own session by omitting a header.
+func passiveRequest(path string) bool {
+	switch path {
+	case "/api/v1/notifications/unread-count":
+		return true
+	}
+	return false
 }
 
 func (a *Service) authenticateAPIKey(ctx context.Context, token string) (Session, error) {

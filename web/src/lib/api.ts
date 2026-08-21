@@ -18,6 +18,23 @@ export function setCSRF(value: string) {
   else sessionStorage.removeItem('seccheck_csrf')
 }
 
+// A session can end while the tab is open — the idle timeout expires it, an
+// administrator revokes it, a password change ends the others. Every request
+// then fails with 401, and without central handling each screen just shows an
+// error toast and the person is left on a page that no longer works. The
+// events below let the shell react once instead.
+type SessionEvent = 'expired' | 'enrollment-required'
+const sessionListeners = new Set<(event: SessionEvent) => void>()
+export function onSessionEvent(listener: (event: SessionEvent) => void) {
+  sessionListeners.add(listener)
+  return () => { sessionListeners.delete(listener) }
+}
+function announce(event: SessionEvent) { sessionListeners.forEach(listener => listener(event)) }
+
+// Sign-in and the public config legitimately answer 401/403 to an anonymous
+// caller; those must not be read as a session ending.
+const anonymousPaths = ['/api/v1/auth/login', '/api/v1/public/config']
+
 export async function api<T>(path: string, init: RequestInit = {}): Promise<T> {
   const headers = new Headers(init.headers)
   if (init.body && !(init.body instanceof FormData)) headers.set('Content-Type', 'application/json')
@@ -29,7 +46,12 @@ export async function api<T>(path: string, init: RequestInit = {}): Promise<T> {
   const value = type.includes('json') ? await response.json() : await response.text()
   if (!response.ok) {
     const problem = value?.error || {}
-    throw new ApiError(response.status, problem.code || 'REQUEST_FAILED', problem.message || String(value), problem.details)
+    const error = new ApiError(response.status, problem.code || 'REQUEST_FAILED', problem.message || String(value), problem.details)
+    if (!anonymousPaths.some(p => path.startsWith(p))) {
+      if (response.status === 401) { setCSRF(''); announce('expired') }
+      else if (error.code === 'TOTP_ENROLLMENT_REQUIRED') announce('enrollment-required')
+    }
+    throw error
   }
   return value as T
 }

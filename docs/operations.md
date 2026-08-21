@@ -61,6 +61,8 @@ OIDC 장애 시 기존 세션은 만료까지 동작합니다. 비활성화된 b
 | `max_login_failures` | 5 | 계정 잠금까지 허용할 연속 실패 횟수. 0이면 잠금 미사용 |
 | `lockout_minutes` | 15 | 자동 잠금 유지 시간 |
 | `idle_timeout_minutes` | 0 | 유휴 세션 만료. 0이면 세션 시간까지 유지 |
+
+유휴 판정에는 화면에서 발생한 실제 요청만 반영되며, 읽지 않은 알림 배지의 1분 주기 폴링은 활동으로 계산하지 않습니다. 브라우저 탭을 열어둔 채 자리를 비워도 설정한 시간이 지나면 세션이 종료됩니다. 관리 설정은 저장 즉시 적용됩니다.
 | `trusted_proxies` | (비어 있음) | X-Forwarded-For를 신뢰할 Reverse Proxy IP/CIDR |
 | `require_totp_for_admins` | false | 관리자·검토자·승인자 계정에 일회용 코드 요구 |
 
