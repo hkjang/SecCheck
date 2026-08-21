@@ -52,16 +52,19 @@ func (s *Server) login(w http.ResponseWriter, r *http.Request) {
 	if !decodeJSON(w, r, &in) {
 		return
 	}
-	// Password login carries its own, much tighter budget than the general API
-	// limit so that credential spraying is throttled long before it becomes
-	// useful, even when it spreads across many accounts.
+	// Only failed logins are counted, so credential spraying runs out of budget
+	// while a shared office or reverse-proxy address never throttles people who
+	// are typing the right password.
 	policy := s.Auth.Policy(r.Context())
-	if !s.loginLimiter.allow(clientIP(r), policy.LoginRateLimitPerMinute) {
+	if s.loginLimiter.blocked(clientIP(r), policy.LoginRateLimitPerMinute) {
 		_ = s.Store.Audit(r.Context(), store.AuditEvent{UserName: in.Username, SourceIP: clientIP(r), EventType: "LOGIN_FAIL", TargetType: "USER", RequestID: requestID(r), Result: "FAILURE", After: map[string]any{"reason": "rate_limited"}})
 		problem(w, 429, "LOGIN_RATE_LIMITED", "로그인 시도가 너무 많습니다. 잠시 후 다시 시도하세요.", nil)
 		return
 	}
 	u, token, csrf, expires, err := s.Auth.PasswordLogin(r.Context(), in.Username, in.Password, clientIP(r), r.UserAgent())
+	if err != nil {
+		s.loginLimiter.record(clientIP(r))
+	}
 	var locked *auth.LockedError
 	if errors.As(err, &locked) {
 		_ = s.Store.Audit(r.Context(), store.AuditEvent{UserID: u.ID, UserName: in.Username, SourceIP: clientIP(r), EventType: "LOGIN_LOCKED", TargetType: "USER", TargetID: u.ID, RequestID: requestID(r), Result: "FAILURE", After: map[string]any{"locked_until": locked.Until.UTC()}})
@@ -140,6 +143,49 @@ func (s *Server) updateMe(w http.ResponseWriter, r *http.Request) {
 	_ = s.Store.Audit(r.Context(), auditFrom(r, "UPDATE_PROFILE", "USER", sess.User.ID, nil, in))
 	u, _ := s.Store.GetUser(r.Context(), sess.User.ID)
 	jsonResponse(w, 200, publicUser(u))
+}
+
+// changePassword lets a local account rotate its own password. Every other
+// session of the same user is dropped so a stolen cookie does not survive a
+// deliberate password change.
+func (s *Server) changePassword(w http.ResponseWriter, r *http.Request) {
+	var in struct {
+		CurrentPassword string `json:"current_password"`
+		NewPassword     string `json:"new_password"`
+	}
+	if !decodeJSON(w, r, &in) {
+		return
+	}
+	sess := session(r)
+	if sess.APIKey {
+		problem(w, 403, "SESSION_REQUIRED", "비밀번호 변경은 브라우저 로그인 세션에서만 가능합니다.", nil)
+		return
+	}
+	if sess.User.AuthSource != "local" {
+		problem(w, 422, "EXTERNAL_ACCOUNT", "SSO 계정의 비밀번호는 사내 인증 서버에서 변경하세요.", nil)
+		return
+	}
+	if !verifyPassword(sess.User.PasswordHash, in.CurrentPassword) {
+		_ = s.Store.Audit(r.Context(), auditFrom(r, "CHANGE_PASSWORD", "USER", sess.User.ID, nil, map[string]any{"reason": "current password mismatch"}))
+		problem(w, 403, "INVALID_CREDENTIALS", "현재 비밀번호가 올바르지 않습니다.", nil)
+		return
+	}
+	if in.NewPassword == in.CurrentPassword {
+		problem(w, 422, "VALIDATION_FAILED", "새 비밀번호는 현재 비밀번호와 달라야 합니다.", nil)
+		return
+	}
+	hash, err := auth.PasswordHash(in.NewPassword)
+	if err != nil {
+		problem(w, 422, "VALIDATION_FAILED", "새 비밀번호는 12자 이상이어야 합니다.", nil)
+		return
+	}
+	if _, err = s.Store.Pool.Exec(r.Context(), `UPDATE users SET password_hash=$2,failed_login_count=0,locked_until=NULL,updated_at=now() WHERE id=$1`, sess.User.ID, hash); err != nil {
+		problem(w, 500, "UPDATE_FAILED", "비밀번호를 변경하지 못했습니다.", nil)
+		return
+	}
+	_, _ = s.Store.Pool.Exec(r.Context(), `DELETE FROM sessions WHERE user_id=$1 AND id<>$2`, sess.User.ID, sess.ID)
+	_ = s.Store.Audit(r.Context(), auditFrom(r, "CHANGE_PASSWORD", "USER", sess.User.ID, nil, nil))
+	w.WriteHeader(204)
 }
 
 func publicUser(u store.User) map[string]any {
@@ -274,6 +320,24 @@ func (s *Server) userDirectory(w http.ResponseWriter, r *http.Request) {
 	}
 	jsonResponse(w, 200, scanDynamic(rows, []string{"id", "username", "display_name", "department"}))
 }
+
+// unreadNotifications backs the badge in the header, so it stays a single
+// counting query rather than the full list.
+func (s *Server) unreadNotifications(w http.ResponseWriter, r *http.Request) {
+	var count int64
+	_ = s.Store.Pool.QueryRow(r.Context(), `SELECT count(*) FROM notifications WHERE recipient_id=$1 AND read_at IS NULL`, session(r).User.ID).Scan(&count)
+	jsonResponse(w, 200, map[string]any{"count": count})
+}
+
+func (s *Server) readAllNotifications(w http.ResponseWriter, r *http.Request) {
+	tag, err := s.Store.Pool.Exec(r.Context(), `UPDATE notifications SET read_at=now(),status='READ' WHERE recipient_id=$1 AND read_at IS NULL`, session(r).User.ID)
+	if err != nil {
+		problem(w, 500, "UPDATE_FAILED", "알림을 갱신하지 못했습니다.", nil)
+		return
+	}
+	jsonResponse(w, 200, map[string]any{"updated": tag.RowsAffected()})
+}
+
 func (s *Server) readNotification(w http.ResponseWriter, r *http.Request) {
 	_, err := s.Store.Pool.Exec(r.Context(), `UPDATE notifications SET read_at=now(),status='READ' WHERE id=$1 AND recipient_id=$2`, r.PathValue("id"), session(r).User.ID)
 	if err != nil {

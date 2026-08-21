@@ -2,12 +2,15 @@ package web
 
 import (
 	"crypto/sha256"
+	"encoding/csv"
 	"encoding/hex"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/url"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/hkjang/SecCheck/internal/auth"
 	"github.com/hkjang/SecCheck/internal/store"
@@ -124,6 +127,40 @@ func (s *Server) setUserActive(w http.ResponseWriter, r *http.Request) {
 		_, _ = s.Store.Pool.Exec(r.Context(), `DELETE FROM sessions WHERE user_id=$1`, id)
 	}
 	_ = s.Store.Audit(r.Context(), auditFrom(r, "CHANGE_PERMISSION", "USER", id, nil, in))
+	w.WriteHeader(204)
+}
+
+// resetUserPassword gives administrators a recovery path for local accounts.
+// Every session of the target user is dropped and the lockout counters are
+// cleared so the temporary password can be used immediately.
+func (s *Server) resetUserPassword(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	var in struct {
+		Password string `json:"password"`
+	}
+	if !decodeJSON(w, r, &in) {
+		return
+	}
+	hash, err := auth.PasswordHash(in.Password)
+	if err != nil {
+		problem(w, 422, "VALIDATION_FAILED", "임시 비밀번호는 12자 이상이어야 합니다.", nil)
+		return
+	}
+	var source string
+	if err = s.Store.Pool.QueryRow(r.Context(), `SELECT auth_source FROM users WHERE id=$1`, id).Scan(&source); err != nil {
+		problem(w, 404, "NOT_FOUND", "사용자를 찾을 수 없습니다.", nil)
+		return
+	}
+	if source != "local" {
+		problem(w, 422, "EXTERNAL_ACCOUNT", "SSO 계정의 비밀번호는 사내 인증 서버에서 관리합니다.", nil)
+		return
+	}
+	if _, err = s.Store.Pool.Exec(r.Context(), `UPDATE users SET password_hash=$2,failed_login_count=0,locked_until=NULL,updated_at=now() WHERE id=$1`, id, hash); err != nil {
+		problem(w, 500, "UPDATE_FAILED", "비밀번호를 재설정하지 못했습니다.", nil)
+		return
+	}
+	_, _ = s.Store.Pool.Exec(r.Context(), `DELETE FROM sessions WHERE user_id=$1`, id)
+	_ = s.Store.Audit(r.Context(), auditFrom(r, "RESET_PASSWORD", "USER", id, nil, nil))
 	w.WriteHeader(204)
 }
 
@@ -306,19 +343,33 @@ func (s *Server) testOIDC(w http.ResponseWriter, r *http.Request) {
 	jsonResponse(w, 200, map[string]any{"ok": true, "issuer": p.Issuer, "authorization_endpoint": p.AuthorizationEndpoint, "token_endpoint": p.TokenEndpoint, "userinfo_endpoint": p.UserinfoEndpoint})
 }
 
+var auditColumns = []string{"event_id", "timestamp", "user_id", "user_name", "source_ip", "session_id", "event_type", "target_type", "target_id", "before_value", "after_value", "request_id", "result", "previous_hash", "event_hash"}
+
 func (s *Server) listAudit(w http.ResponseWriter, r *http.Request) {
 	limit := parseLimit(r)
-	event := strings.TrimSpace(r.URL.Query().Get("event"))
-	user := strings.TrimSpace(r.URL.Query().Get("user"))
+	query := r.URL.Query()
 	where := "TRUE"
 	args := []any{}
-	if event != "" {
-		args = append(args, event)
-		where += ` AND event_type=$1`
+	// event_type is matched as a prefix so that typing "LOGIN" also finds
+	// LOGIN_FAIL and LOGIN_LOCKED, which is what the filter box implies.
+	if event := strings.TrimSpace(query.Get("event")); event != "" {
+		args = append(args, event+"%")
+		where += ` AND event_type ILIKE $` + intString(len(args))
 	}
-	if user != "" {
+	if user := strings.TrimSpace(query.Get("user")); user != "" {
 		args = append(args, "%"+user+"%")
-		where += ` AND user_name ILIKE $` + intString(len(args))
+		where += ` AND (user_name ILIKE $` + intString(len(args)) + ` OR source_ip ILIKE $` + intString(len(args)) + `)`
+	}
+	if from := strings.TrimSpace(query.Get("from")); from != "" {
+		args = append(args, from)
+		where += ` AND timestamp >= $` + intString(len(args)) + `::date`
+	}
+	if to := strings.TrimSpace(query.Get("to")); to != "" {
+		args = append(args, to)
+		where += ` AND timestamp < $` + intString(len(args)) + `::date + 1`
+	}
+	if query.Get("format") == "csv" {
+		limit = 50000
 	}
 	args = append(args, limit)
 	rows, err := s.Store.Pool.Query(r.Context(), `SELECT event_id,timestamp,user_id,user_name,source_ip,session_id,event_type,target_type,target_id,before_value,after_value,request_id,result,previous_hash,event_hash FROM audit_logs WHERE `+where+` ORDER BY timestamp DESC LIMIT $`+intString(len(args)), args...)
@@ -326,7 +377,50 @@ func (s *Server) listAudit(w http.ResponseWriter, r *http.Request) {
 		problem(w, 500, "QUERY_FAILED", "감사 로그를 불러오지 못했습니다.", nil)
 		return
 	}
-	jsonResponse(w, 200, scanDynamic(rows, []string{"event_id", "timestamp", "user_id", "user_name", "source_ip", "session_id", "event_type", "target_type", "target_id", "before_value", "after_value", "request_id", "result", "previous_hash", "event_hash"}))
+	records := scanDynamic(rows, auditColumns)
+	if query.Get("format") == "csv" {
+		_ = s.Store.Audit(r.Context(), auditFrom(r, "EXPORT_AUDIT", "AUDIT_LOG", "", nil, map[string]any{"rows": len(records)}))
+		writeCSV(w, "seccheck-audit", auditColumns, records)
+		return
+	}
+	jsonResponse(w, 200, records)
+}
+
+// writeCSV emits a UTF-8 BOM so that Excel on a Korean Windows desktop opens
+// the download without mangling the text.
+func writeCSV(w http.ResponseWriter, name string, columns []string, records []map[string]any) {
+	w.Header().Set("Content-Type", "text/csv; charset=utf-8")
+	w.Header().Set("Content-Disposition", `attachment; filename="`+name+`.csv"`)
+	_, _ = w.Write([]byte("\ufeff"))
+	out := csv.NewWriter(w)
+	defer out.Flush()
+	_ = out.Write(columns)
+	row := make([]string, len(columns))
+	for _, record := range records {
+		for i, column := range columns {
+			row[i] = csvValue(record[column])
+		}
+		_ = out.Write(row)
+	}
+}
+
+func csvValue(v any) string {
+	switch value := v.(type) {
+	case nil:
+		return ""
+	case string:
+		return value
+	case time.Time:
+		return value.Format(time.RFC3339)
+	case []byte:
+		return string(value)
+	default:
+		encoded, err := json.Marshal(value)
+		if err != nil {
+			return fmt.Sprint(value)
+		}
+		return strings.Trim(string(encoded), `"`)
+	}
 }
 
 func (s *Server) verifyAudit(w http.ResponseWriter, r *http.Request) {
@@ -376,6 +470,11 @@ func (s *Server) listLogs(w http.ResponseWriter, r *http.Request) {
 	if level != "" {
 		args = append(args, level)
 		where = `level=$1`
+	}
+	if term := strings.TrimSpace(r.URL.Query().Get("q")); term != "" {
+		args = append(args, "%"+term+"%")
+		position := intString(len(args))
+		where += ` AND (message ILIKE $` + position + ` OR component ILIKE $` + position + ` OR request_id ILIKE $` + position + ` OR fields::text ILIKE $` + position + `)`
 	}
 	args = append(args, limit)
 	rows, err := s.Store.Pool.Query(r.Context(), `SELECT id,timestamp,level,request_id,component,message,fields FROM application_logs WHERE `+where+` ORDER BY timestamp DESC LIMIT $`+intString(len(args)), args...)

@@ -69,9 +69,12 @@ func (s *Server) routes() {
 	s.mux.Handle("POST /api/v1/auth/logout", s.require(nil, http.HandlerFunc(s.logout)))
 	s.mux.Handle("GET /api/v1/me", s.require(nil, http.HandlerFunc(s.me)))
 	s.mux.Handle("PATCH /api/v1/me", s.require(nil, http.HandlerFunc(s.updateMe)))
+	s.mux.Handle("PUT /api/v1/me/password", s.require(nil, http.HandlerFunc(s.changePassword)))
 	s.mux.Handle("GET /api/v1/dashboard", s.require(nil, http.HandlerFunc(s.dashboard)))
 	s.mux.Handle("GET /api/v1/search", s.require(nil, http.HandlerFunc(s.search)))
 	s.mux.Handle("GET /api/v1/notifications", s.require(nil, http.HandlerFunc(s.notifications)))
+	s.mux.Handle("GET /api/v1/notifications/unread-count", s.require(nil, http.HandlerFunc(s.unreadNotifications)))
+	s.mux.Handle("POST /api/v1/notifications/read-all", s.require(nil, http.HandlerFunc(s.readAllNotifications)))
 	s.mux.Handle("GET /api/v1/users/directory", s.require(nil, http.HandlerFunc(s.userDirectory)))
 	s.mux.Handle("POST /api/v1/notifications/{id}/read", s.require(nil, http.HandlerFunc(s.readNotification)))
 	s.mux.Handle("GET /api/v1/review-requests", s.require(nil, http.HandlerFunc(s.listReviewRequests)))
@@ -139,6 +142,7 @@ func (s *Server) routes() {
 	s.mux.Handle("PUT /api/v1/admin/users/{id}/roles", s.require([]string{"SYSTEM_ADMIN"}, http.HandlerFunc(s.updateUserRoles)))
 	s.mux.Handle("POST /api/v1/admin/users/{id}/active", s.require([]string{"SYSTEM_ADMIN"}, http.HandlerFunc(s.setUserActive)))
 	s.mux.Handle("POST /api/v1/admin/users/{id}/unlock", s.require([]string{"SYSTEM_ADMIN"}, http.HandlerFunc(s.unlockUser)))
+	s.mux.Handle("POST /api/v1/admin/users/{id}/password", s.require([]string{"SYSTEM_ADMIN"}, http.HandlerFunc(s.resetUserPassword)))
 	s.mux.Handle("GET /api/v1/admin/settings", s.require([]string{"SYSTEM_ADMIN"}, http.HandlerFunc(s.listSettings)))
 	s.mux.Handle("PUT /api/v1/admin/settings/{key}", s.require([]string{"SYSTEM_ADMIN"}, http.HandlerFunc(s.updateSetting)))
 	s.mux.Handle("POST /api/v1/admin/settings/oidc/test", s.require([]string{"SYSTEM_ADMIN"}, http.HandlerFunc(s.testOIDC)))
@@ -439,6 +443,30 @@ func (l *rateLimiter) allow(key string, limit int) bool {
 	}
 	e.count++
 	return e.count <= limit
+}
+
+// blocked reports whether the key has already spent its budget for the current
+// window without consuming from it, so a caller can count only the events it
+// actually wants to throttle.
+func (l *rateLimiter) blocked(key string, limit int) bool {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	now := time.Now()
+	l.sweep(now)
+	e := l.entries[key]
+	return e != nil && now.Sub(e.window) < time.Minute && e.count >= limit
+}
+
+func (l *rateLimiter) record(key string) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	now := time.Now()
+	l.sweep(now)
+	if e := l.entries[key]; e != nil && now.Sub(e.window) < time.Minute {
+		e.count++
+		return
+	}
+	l.entries[key] = &rateEntry{window: now, count: 1}
 }
 
 func (l *rateLimiter) sweep(now time.Time) {

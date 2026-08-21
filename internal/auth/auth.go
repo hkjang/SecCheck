@@ -72,7 +72,7 @@ type securitySettings struct {
 func (c securitySettings) policy() SecurityPolicy {
 	p := SecurityPolicy{LoginRateLimitPerMinute: c.LoginRateLimitPerMinute, MaxLoginFailures: 5, LockoutMinutes: c.LockoutMinutes, IdleTimeoutMinutes: c.IdleTimeoutMinutes}
 	if p.LoginRateLimitPerMinute < 1 || p.LoginRateLimitPerMinute > 600 {
-		p.LoginRateLimitPerMinute = 10
+		p.LoginRateLimitPerMinute = 30
 	}
 	if c.MaxLoginFailures != nil && *c.MaxLoginFailures >= 0 && *c.MaxLoginFailures <= 100 {
 		p.MaxLoginFailures = *c.MaxLoginFailures

@@ -35,3 +35,21 @@ func TestRateLimiterEvictsExpiredWindows(t *testing.T) {
 		t.Fatalf("expired windows were kept: %d entries remain", len(l.entries))
 	}
 }
+
+func TestRateLimiterCountsOnlyRecordedEvents(t *testing.T) {
+	l := newRateLimiter()
+	for i := 0; i < 50; i++ {
+		if l.blocked("10.0.0.1", 3) {
+			t.Fatalf("peek %d blocked a key that never recorded an event", i+1)
+		}
+	}
+	for i := 0; i < 3; i++ {
+		l.record("10.0.0.1")
+	}
+	if !l.blocked("10.0.0.1", 3) {
+		t.Fatal("the key spent its budget but is not blocked")
+	}
+	if l.blocked("10.0.0.2", 3) {
+		t.Fatal("a different source address must have its own budget")
+	}
+}

@@ -15,7 +15,7 @@ func parsePolicy(t *testing.T, raw string) SecurityPolicy {
 }
 
 func TestPolicyFallsBackToSafeDefaults(t *testing.T) {
-	want := SecurityPolicy{LoginRateLimitPerMinute: 10, MaxLoginFailures: 5, LockoutMinutes: 15}
+	want := SecurityPolicy{LoginRateLimitPerMinute: 30, MaxLoginFailures: 5, LockoutMinutes: 15}
 	if got := parsePolicy(t, `{}`); got != want {
 		t.Fatalf("settings without the policy keys = %+v, want %+v", got, want)
 	}
@@ -25,11 +25,11 @@ func TestPolicyFallsBackToSafeDefaults(t *testing.T) {
 }
 
 func TestPolicyKeepsLockoutDisabledWhenChosen(t *testing.T) {
-	got := parsePolicy(t, `{"login_rate_limit_per_minute":30,"max_login_failures":0,"lockout_minutes":60,"idle_timeout_minutes":30}`)
+	got := parsePolicy(t, `{"login_rate_limit_per_minute":45,"max_login_failures":0,"lockout_minutes":60,"idle_timeout_minutes":30}`)
 	if got.MaxLoginFailures != 0 {
 		t.Fatalf("max_login_failures = %d, want 0 so administrators can turn lockout off", got.MaxLoginFailures)
 	}
-	if got.LoginRateLimitPerMinute != 30 || got.LockoutMinutes != 60 || got.IdleTimeoutMinutes != 30 {
+	if got.LoginRateLimitPerMinute != 45 || got.LockoutMinutes != 60 || got.IdleTimeoutMinutes != 30 {
 		t.Fatalf("valid settings were rewritten: %+v", got)
 	}
 }
