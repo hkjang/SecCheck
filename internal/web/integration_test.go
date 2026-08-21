@@ -1164,3 +1164,46 @@ func TestViewerParticipantsCanReadButNotWrite(t *testing.T) {
 		t.Errorf("a promoted viewer still could not write: %d %s", res.status, res.body)
 	}
 }
+
+func TestAuditListLabelsEventsAndOffersACatalogue(t *testing.T) {
+	h := newHarness(t)
+	admin := h.login(adminOf(h))
+	page := admin.do(http.MethodGet, "/api/v1/admin/audit?limit=50", nil).json()
+
+	events, _ := page["events"].([]any)
+	if len(events) < 20 {
+		t.Fatalf("the event catalogue has %d entries, want the full vocabulary", len(events))
+	}
+	for _, raw := range events {
+		entry, _ := raw.(map[string]any)
+		if entry["code"] == "" || entry["label"] == "" {
+			t.Errorf("catalogue entry is incomplete: %v", entry)
+		}
+	}
+
+	items, _ := page["items"].([]any)
+	if len(items) == 0 {
+		t.Fatal("the login should have produced an audit entry")
+	}
+	for _, raw := range items {
+		record, _ := raw.(map[string]any)
+		if label, _ := record["event_label"].(string); label == "" {
+			t.Errorf("audit row %v has no readable label", record["event_type"])
+		}
+	}
+
+	// The CSV carries the label as its first column so the spreadsheet is
+	// readable without a lookup.
+	req, _ := http.NewRequest(http.MethodGet, h.server.URL+"/api/v1/admin/audit?format=csv", nil)
+	csv := admin.send(req)
+	if csv.status != http.StatusOK {
+		t.Fatalf("csv export returned %d", csv.status)
+	}
+	header := strings.SplitN(strings.TrimPrefix(csv.body, "\ufeff"), "\n", 2)[0]
+	if !strings.HasPrefix(header, "event_label,event_id") {
+		t.Errorf("unexpected CSV header: %q", header)
+	}
+	if !strings.Contains(csv.body, "로그인") {
+		t.Error("the CSV does not carry the Korean label")
+	}
+}

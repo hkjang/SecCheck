@@ -363,6 +363,10 @@ func (s *Server) testOIDC(w http.ResponseWriter, r *http.Request) {
 
 var auditColumns = []string{"event_id", "timestamp", "user_id", "user_name", "source_ip", "session_id", "event_type", "target_type", "target_id", "before_value", "after_value", "request_id", "result", "previous_hash", "event_hash"}
 
+// The CSV carries the Korean label as well, because the spreadsheet is read
+// outside the console where no lookup is available.
+var auditCSVColumns = append([]string{"event_label"}, auditColumns...)
+
 func (s *Server) listAudit(w http.ResponseWriter, r *http.Request) {
 	limit := parseLimit(r)
 	query := r.URL.Query()
@@ -396,12 +400,17 @@ func (s *Server) listAudit(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	records := scanDynamic(rows, auditColumns)
+	for _, record := range records {
+		if code, ok := record["event_type"].(string); ok {
+			record["event_label"] = auditEventLabels[code]
+		}
+	}
 	if query.Get("format") == "csv" {
 		_ = s.Store.Audit(r.Context(), auditFrom(r, "EXPORT_AUDIT", "AUDIT_LOG", "", nil, map[string]any{"rows": len(records)}))
-		writeCSV(w, "seccheck-audit", auditColumns, records)
+		writeCSV(w, "seccheck-audit", auditCSVColumns, records)
 		return
 	}
-	jsonResponse(w, 200, records)
+	jsonResponse(w, 200, map[string]any{"items": records, "events": auditEventCatalogue()})
 }
 
 // writeCSV emits a UTF-8 BOM so that Excel on a Korean Windows desktop opens

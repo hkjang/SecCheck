@@ -648,7 +648,7 @@ func (s *Server) submitReview(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	_, _ = s.Store.Pool.Exec(r.Context(), `UPDATE submissions SET status=$2,submitted_by=$3,submitted_at=now() WHERE review_request_id=$1 AND revision=(SELECT max(revision) FROM submissions WHERE review_request_id=$1)`, id, next, session(r).User.ID)
-	s.notifyReviewer(r.Context(), id, "SUBMISSION", fmt.Sprintf("심의 %s이(가) 제출되었습니다.", id))
+	s.notifyReviewer(r.Context(), id, "REVIEW_SUBMITTED", "")
 	_ = s.Store.Audit(r.Context(), auditFrom(r, event, "REVIEW_REQUEST", id, map[string]any{"status": current}, map[string]any{"status": next}))
 	jsonResponse(w, 200, map[string]any{"status": next})
 }
@@ -1097,7 +1097,8 @@ func (s *Server) decideApproval(w http.ResponseWriter, r *http.Request, decision
 	_, _ = s.Store.Pool.Exec(r.Context(), `INSERT INTO approvals(id,review_request_id,approver_id,decision,comment) VALUES($1,$2,$3,$4,$5)`, store.NewID(), id, sess.User.ID, decision, in.Comment)
 	var requester string
 	_ = s.Store.Pool.QueryRow(r.Context(), `SELECT requester_id FROM review_requests WHERE id=$1`, id).Scan(&requester)
-	s.addTargetedNotification(r.Context(), requester, decision, "심의 "+decision, in.Comment, "REVIEW_REQUEST", id)
+	decisionTitle := map[string]string{"APPROVED": "심의 최종 승인", "REJECTED": "심의 반려"}[decision]
+	s.addTargetedNotification(r.Context(), requester, decision, decisionTitle, in.Comment, "REVIEW_REQUEST", id)
 	event := "APPROVE"
 	if decision == "REJECTED" {
 		event = "REJECT"
@@ -1387,11 +1388,17 @@ func (s *Server) emailWanted(ctx context.Context, tx pgx.Tx, recipient, event st
 }
 
 func (s *Server) notifyReviewer(ctx context.Context, id, event, body string) {
-	var recipient string
-	_ = s.Store.Pool.QueryRow(ctx, `SELECT COALESCE(reviewer_id,'') FROM review_requests WHERE id=$1`, id).Scan(&recipient)
-	if recipient != "" {
-		s.addTargetedNotification(ctx, recipient, event, "새 심의 제출", body, "REVIEW_REQUEST", id)
+	var recipient, number, service string
+	_ = s.Store.Pool.QueryRow(ctx, `SELECT COALESCE(reviewer_id,''),review_number,service_name FROM review_requests WHERE id=$1`, id).Scan(&recipient, &number, &service)
+	if recipient == "" {
+		return
 	}
+	if body == "" {
+		// The message used to quote the internal UUID, which means nothing to
+		// the person reading it.
+		body = fmt.Sprintf("%s(%s) 심의가 제출되었습니다. 검토를 시작하세요.", number, service)
+	}
+	s.addTargetedNotification(ctx, recipient, event, "새 심의 제출", body, "REVIEW_REQUEST", id)
 }
 
 var _ = errors.Is
