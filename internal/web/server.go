@@ -55,9 +55,20 @@ type runtimeSecurity struct {
 	CORSOrigins        []string `json:"cors_origins"`
 	RateLimitPerMinute int      `json:"rate_limit_per_minute"`
 	TrustedProxies     []string `json:"trusted_proxies"`
+	// MetricsPublic keeps /metrics reachable without credentials, which is
+	// what a Prometheus scrape usually expects and what every installation
+	// has had so far. It is exposed as a setting because the numbers are not
+	// nothing: user and review counts, failed sign-ins in the last day,
+	// locked accounts. Turning it off leaves the endpoint available to a
+	// read-scoped API key.
+	MetricsPublic *bool `json:"metrics_public"`
 
 	trusted []netip.Prefix
 }
+
+// metricsPublic defaults to true so that upgrading does not silently break a
+// scrape that has been running for months.
+func (c runtimeSecurity) metricsPublic() bool { return c.MetricsPublic == nil || *c.MetricsPublic }
 
 type ctxKey string
 

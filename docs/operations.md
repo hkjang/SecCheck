@@ -37,9 +37,22 @@ Redis나 외부 CDN은 필요하지 않습니다. UI, 한글 PDF 글꼴, 기본 
 
 - `/health`: 프로세스 생존
 - `/ready`: DB 연결 포함 준비 상태
-- `/metrics`: Prometheus 지표 (아래 표가 전체 목록)
+- `/metrics`: Prometheus 지표 (아래 표가 전체 목록). **기본값은 인증 없이 공개**이며, 관리자 설정 > 접근 보안에서 끄면 읽기 범위 API 키로만 수집할 수 있습니다
 - 관리자 > 서버 로그: 요청 ID 기반 구조화 로그
 - 관리자 > 감사로그: 주요 행위와 체인 검증
+
+### `/metrics` 접근 통제
+
+기본적으로 `/metrics`는 인증 없이 응답합니다. Prometheus 스크랩의 일반적인 방식이지만, 공개되는 값에는 사용자 수, 누적 심의 건수, 24시간 로그인 실패 수, 잠긴 계정 수, 증적 저장 용량이 포함됩니다. 신뢰 경계 밖에서 접근 가능한 배치라면 관리자 설정 > 접근 보안에서 `/metrics를 인증 없이 공개`를 끄고, 읽기 범위 API 키로 수집하십시오.
+
+```
+scrape_configs:
+  - job_name: seccheck
+    authorization:
+      credentials: sck_xxxxxxxx_...
+    static_configs:
+      - targets: ['seccheck.internal:8080']
+```
 
 ### `/metrics` 지표
 

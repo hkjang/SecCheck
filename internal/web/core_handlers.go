@@ -31,6 +31,15 @@ func (s *Server) ready(w http.ResponseWriter, r *http.Request) {
 	jsonResponse(w, 200, map[string]any{"status": "ready"})
 }
 func (s *Server) metrics(w http.ResponseWriter, r *http.Request) {
+	// The route is registered as public so a scrape needs no session, but an
+	// installation that would rather not publish its counts can turn that off
+	// and scrape with a read-scoped API key instead.
+	if !s.runtimeSecurity(r.Context()).metricsPublic() {
+		if _, err := s.Auth.Authenticate(r); err != nil {
+			problem(w, http.StatusUnauthorized, "AUTHENTICATION_REQUIRED", "지표 조회에 인증이 필요하도록 설정되어 있습니다.", nil)
+			return
+		}
+	}
 	var users, reviews, pending, failedJobs, requests, requestErrors, loginOK, loginFail, storageBytes, scanFailures, submissionFailures, sessions, lockedAccounts, pendingScans int64
 	var avgDuration, oldestPending float64
 	_ = s.Store.Pool.QueryRow(r.Context(), `SELECT (SELECT count(*) FROM users),(SELECT count(*) FROM review_requests),(SELECT count(*) FROM jobs WHERE status='PENDING'),(SELECT count(*) FROM jobs WHERE status='FAILED'),(SELECT count(*) FROM application_logs WHERE component='http' AND timestamp>now()-interval '5 minutes'),(SELECT count(*) FROM application_logs WHERE component='http' AND timestamp>now()-interval '5 minutes' AND (fields->>'status')::int>=500),(SELECT COALESCE(avg((fields->>'duration_ms')::numeric),0) FROM application_logs WHERE component='http' AND timestamp>now()-interval '5 minutes' AND fields->>'duration_ms' ~ '^[0-9]+$'),(SELECT count(*) FROM audit_logs WHERE event_type='LOGIN' AND timestamp>now()-interval '24 hours'),(SELECT count(*) FROM audit_logs WHERE event_type='LOGIN_FAIL' AND timestamp>now()-interval '24 hours'),(SELECT COALESCE(sum(size_bytes),0) FROM evidence_versions),(SELECT count(*) FROM evidences WHERE scan_status NOT IN ('CLEAN','SKIPPED')),(SELECT count(*) FROM application_logs WHERE component='http' AND timestamp>now()-interval '24 hours' AND fields->>'path' LIKE '%/submit' AND (fields->>'status')::int>=400),(SELECT count(*) FROM sessions WHERE expires_at>now()),(SELECT count(*) FROM users WHERE locked_until>now()),(SELECT count(*) FROM evidences WHERE scan_status='PENDING' AND deleted_at IS NULL),(SELECT coalesce(extract(epoch FROM now()-min(available_at)),0) FROM jobs WHERE status='PENDING' AND available_at<=now())`).Scan(&users, &reviews, &pending, &failedJobs, &requests, &requestErrors, &avgDuration, &loginOK, &loginFail, &storageBytes, &scanFailures, &submissionFailures, &sessions, &lockedAccounts, &pendingScans, &oldestPending)

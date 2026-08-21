@@ -1867,3 +1867,49 @@ func TestOutsidersReachNoneOfTheReviewScopedEndpoints(t *testing.T) {
 		t.Errorf("an auditor was refused a review: %d %s", res.status, res.body)
 	}
 }
+
+// /metrics answers an unauthenticated scrape, which is what Prometheus
+// expects but also publishes user counts, failed sign-ins and locked
+// accounts to anyone who can reach the host. An installation has to be able
+// to decide that for itself.
+func TestMetricsExposureFollowsTheSetting(t *testing.T) {
+	h := newHarness(t)
+	admin := h.login(adminOf(h))
+	anon := &client{h: h}
+
+	if res := anon.do(http.MethodGet, "/metrics", nil); res.status != http.StatusOK {
+		t.Fatalf("the default scrape was refused: %d", res.status)
+	}
+	// The endpoint replaces the whole security object, so the current values
+	// are read back and only this one flag is changed.
+	setMetricsPublic := func(public bool) {
+		t.Helper()
+		settings := []map[string]any{}
+		if err := json.Unmarshal([]byte(admin.do(http.MethodGet, "/api/v1/admin/settings", nil).body), &settings); err != nil {
+			t.Fatal(err)
+		}
+		for _, setting := range settings {
+			if setting["key"] != "security" {
+				continue
+			}
+			value, _ := setting["value"].(map[string]any)
+			value["metrics_public"] = public
+			if res := admin.do(http.MethodPut, "/api/v1/admin/settings/security", value); res.status != http.StatusOK {
+				t.Fatalf("saving the setting returned %d %s", res.status, res.body)
+			}
+			return
+		}
+		t.Fatal("the security settings were not returned")
+	}
+	setMetricsPublic(false)
+	if res := anon.do(http.MethodGet, "/metrics", nil); res.status != http.StatusUnauthorized {
+		t.Errorf("with the setting off an anonymous scrape returned %d, want 401", res.status)
+	}
+	if res := admin.do(http.MethodGet, "/metrics", nil); res.status != http.StatusOK {
+		t.Errorf("an authenticated scrape was refused: %d", res.status)
+	}
+	setMetricsPublic(true)
+	if res := anon.do(http.MethodGet, "/metrics", nil); res.status != http.StatusOK {
+		t.Errorf("turning it back on left the scrape refused: %d", res.status)
+	}
+}
