@@ -2,7 +2,7 @@ import { useEffect, useMemo, useState } from 'react'
 import { Link } from 'react-router-dom'
 import { ArrowRight, Bell, Check, CheckCheck, Settings2 } from 'lucide-react'
 import { errorMessage, get, post, put } from '../lib/api'
-import { Badge, Button, Empty, Field, Loading, Modal, Toggle, formatDate, useToast } from '../components/ui'
+import { Badge, Button, Empty, Field, formatDate, LoadFailed, Loading, Modal, Toggle, useToast } from '../components/ui'
 
 type Notice = { id: string; event_type: string; title: string; body: string; status: string; target_type: string; target_id: string; read_at?: string; created_at: string }
 type Page = { items: Notice[]; total: number; has_more: boolean }
@@ -25,12 +25,14 @@ export default function Notifications() {
   const [editing, setEditing] = useState(false)
   const params = useMemo(() => { const qs = new URLSearchParams({ limit: String(limit) }); if (unreadOnly) qs.set('unread', '1'); if (event) qs.set('event', event); return qs }, [unreadOnly, event, limit])
   const load = () => get<Page>(`/api/v1/notifications?${params}`).then(setPage)
-  useEffect(() => { load().catch(e => toast.push(errorMessage(e), 'error')) }, [params])
+  const [failed, setFailed] = useState<unknown>()
+  useEffect(() => { setFailed(undefined); load().catch(setFailed) }, [params])
   useEffect(() => { get<PreferenceView>('/api/v1/me/notification-preferences').then(setSettings).catch(() => undefined) }, [])
 
   const read = async (id: string) => { try { await post(`/api/v1/notifications/${id}/read`); load() } catch (e) { toast.push(errorMessage(e), 'error') } }
   const readAll = async () => { try { const out = await post<{ updated: number }>('/api/v1/notifications/read-all'); toast.push(`${out.updated}건을 읽음으로 표시했습니다.`); load() } catch (e) { toast.push(errorMessage(e), 'error') } }
 
+  if (failed) return <LoadFailed error={failed} onRetry={() => { setFailed(undefined); load().catch(setFailed) }} />
   if (!page) return <Loading />
   const unread = page.items.filter(n => !n.read_at).length
   const labelOf = (code: string) => settings?.events.find(e => e.code === code)?.label || code

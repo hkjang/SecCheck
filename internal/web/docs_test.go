@@ -48,3 +48,26 @@ func TestFeatureGuideScreenshotsExist(t *testing.T) {
 		}
 	}
 }
+
+// A page that renders nothing until its data arrives owes the reader an
+// explanation when the data never comes. Seven pages once left the spinner
+// turning for good on a failed first load.
+func TestPagesThatBlockOnLoadingAlsoHandleFailure(t *testing.T) {
+	pages, err := filepath.Glob(filepath.Join("..", "..", "web", "src", "pages", "*.tsx"))
+	if err != nil || len(pages) == 0 {
+		t.Fatalf("no pages found: %v", err)
+	}
+	for _, page := range pages {
+		body, err := os.ReadFile(page)
+		if err != nil {
+			t.Fatalf("read %s: %v", page, err)
+		}
+		source := string(body)
+		if !strings.Contains(source, "return <Loading />") {
+			continue
+		}
+		if !strings.Contains(source, "<LoadFailed") {
+			t.Errorf("%s blocks on <Loading /> but never renders <LoadFailed />, so a failed load hangs forever", filepath.Base(page))
+		}
+	}
+}

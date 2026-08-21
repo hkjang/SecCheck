@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react'
 import { AlertTriangle, RefreshCw, RotateCcw } from 'lucide-react'
 import { errorMessage, get, post } from '../lib/api'
-import { Badge, Button, Empty, Loading, formatDate, useToast } from '../components/ui'
+import { Badge, Button, Empty, formatDate, LoadFailed, Loading, useToast } from '../components/ui'
 
 type Job = { id: string; type: string; status: string; attempts: number; available_at: string; locked_at?: string; last_error: string; created_at: string; updated_at: string }
 type Summary = { counts?: { type: string; status: string; count: number }[]; evidence_awaiting_scan: number; oldest_pending_seconds?: number }
@@ -16,9 +16,10 @@ export default function JobsPage() {
   const [status, setStatus] = useState('')
   const [live, setLive] = useState(false)
   const load = () => { const qs = new URLSearchParams({ limit: '200' }); if (status) qs.set('status', status); return get<{ items: Job[]; summary: Summary }>(`/api/v1/admin/jobs?${qs}`).then(setData) }
+  const [loadError, setLoadError] = useState<unknown>()
   useEffect(() => {
     let alive = true
-    const run = () => load().catch(() => undefined)
+    const run = () => { setLoadError(undefined); return load().catch(e => { if (alive) setLoadError(e) }) }
     run()
     const timer = live ? window.setInterval(() => { if (alive) run() }, 10000) : undefined
     return () => { alive = false; if (timer) clearInterval(timer) }
@@ -27,6 +28,7 @@ export default function JobsPage() {
   const retry = async (id: string) => { try { await post(`/api/v1/admin/jobs/${id}/retry`); toast.push('작업을 다시 큐에 넣었습니다.'); load() } catch (e) { toast.push(errorMessage(e), 'error') } }
   const retryAll = async () => { try { const out = await post<{ requeued: number }>('/api/v1/admin/jobs/retry-failed'); toast.push(`${out.requeued}건을 다시 큐에 넣었습니다.`); load() } catch (e) { toast.push(errorMessage(e), 'error') } }
 
+  if (loadError && !data) return <LoadFailed error={loadError} onRetry={() => load().catch(setLoadError)} />
   if (!data) return <Loading />
   const failed = (data.summary.counts || []).filter(c => c.status === 'FAILED').reduce((n, c) => n + Number(c.count), 0)
   const pending = (data.summary.counts || []).filter(c => c.status === 'PENDING').reduce((n, c) => n + Number(c.count), 0)

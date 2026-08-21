@@ -3,7 +3,7 @@ import { useNavigate, useParams } from 'react-router-dom'
 import { ArrowLeft, GitCompareArrows, History, Plus, Rocket, Search, Trash2 } from 'lucide-react'
 import { api, errorMessage, get, post } from '../lib/api'
 import { Template, TemplateVersion } from '../lib/types'
-import { Badge, Button, Empty, Field, Loading, Modal, StatusBadge, useToast } from '../components/ui'
+import { Badge, Button, Empty, Field, LoadFailed, Loading, Modal, StatusBadge, useToast } from '../components/ui'
 
 type ItemForm = { id?: string; section: string; control_id: string; item_code: string; category: string; title: string; question: string; guide: string; legal_basis: string; example: string; severity: string; required: boolean; answer_type: string; evidence_required: boolean; applicability_rule: unknown; options: unknown[]; options_json?: unknown[]; sort_order: number }
 const blank = (category = 'DEVELOPMENT', order = 1): ItemForm => ({ section: '', control_id: '', item_code: '', category, title: '', question: '', guide: '', legal_basis: '', example: '', severity: 'MEDIUM', required: true, answer_type: 'YNNA', evidence_required: false, applicability_rule: {}, options: [], sort_order: order })
@@ -12,7 +12,7 @@ export default function TemplateDetail() {
   // A published workbook runs to a couple of hundred rows, which is unusable
   // as one flat table.
   const [itemQuery, setItemQuery] = useState(''); const [severity, setSeverity] = useState('')
-  const load = async () => { const value = await get<Template>(`/api/v1/templates/${id}`); setData(value); setVersionID(v => v || value.versions?.[0]?.id || '') }; useEffect(() => { load() }, [id]); const version = useMemo(() => data?.versions?.find(v => v.id === versionID), [data, versionID]); const items = (version?.items || []) as unknown as ItemForm[]
+  const [failed, setFailed] = useState<unknown>(); const load = async () => { setFailed(undefined); try { const value = await get<Template>(`/api/v1/templates/${id}`); setData(value); setVersionID(v => v || value.versions?.[0]?.id || '') } catch (e) { setFailed(e) } }; useEffect(() => { load() }, [id]); const version = useMemo(() => data?.versions?.find(v => v.id === versionID), [data, versionID]); const items = (version?.items || []) as unknown as ItemForm[]
   const shownItems = useMemo(() => {
     const term = itemQuery.trim().toLowerCase()
     return [...items]
@@ -25,6 +25,7 @@ export default function TemplateDetail() {
   const publish = async () => { if (!version || !confirm(`${version.version} 버전을 게시하면 직접 수정할 수 없습니다. 계속할까요?`)) return; try { await post(`/api/v1/templates/${id}/versions/${version.id}/publish`); toast.push('템플릿 버전을 게시했습니다.'); await load() } catch (e) { toast.push(errorMessage(e), 'error') } }
   const compare = async () => { if (!version) return; try { const out = await get<{ changes: Record<string, unknown>[] }>(`/api/v1/templates/${id}/versions/${version.id}/diff`); setDiff(out.changes) } catch (e) { toast.push(errorMessage(e), 'error') } }
   const changes = async () => { if (!version) return; try { setHistory(await get<Record<string, unknown>[]>(`/api/v1/templates/${id}/versions/${version.id}/changes`)) } catch (e) { toast.push(errorMessage(e), 'error') } }
+  if (failed) return <LoadFailed error={failed} onRetry={load} />
   if (!data) return <Loading />
   return <div className="page"><div className="page-header"><div><Button variant="ghost" small onClick={() => navigate('/templates')}><ArrowLeft size={14} /> 템플릿</Button><h1 className="page-title" data-sx="sx-035">{data.name}</h1><p className="page-description">{data.category} · {data.description}</p></div><div className="header-actions"><Button onClick={() => setNewVersion(true)}><Plus size={14} /> 새 버전</Button><Button onClick={compare}><GitCompareArrows size={14} /> 버전 비교</Button>{version?.status === 'DRAFT' && <Button variant="primary" onClick={publish}><Rocket size={14} /> 게시</Button>}</div></div>
     <div className="card"><div className="card-body"><div className="toolbar"><select className="select" data-sx="sx-053" value={versionID} onChange={e => setVersionID(e.target.value)}>{data.versions?.map(v => <option key={v.id} value={v.id}>{v.version} · {v.status}</option>)}</select>{version && <StatusBadge status={version.status} />}{version?.change_note && <span className="subtle">{version.change_note}</span>}<span data-sx="sx-016" /><Button small onClick={changes}><History size={13} /> 변경 이력</Button>{version?.status === 'DRAFT' && <Button variant="primary" small onClick={() => setEdit(blank(data.category, items.length + 1))}><Plus size={13} /> 항목 추가</Button>}</div>

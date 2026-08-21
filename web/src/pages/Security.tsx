@@ -2,7 +2,7 @@ import { useEffect, useState } from 'react'
 import { Copy, LogOut, MonitorSmartphone, ShieldCheck, ShieldOff, Smartphone } from 'lucide-react'
 import { del, errorMessage, get, post } from '../lib/api'
 import { AccountSecurity, SessionInfo } from '../lib/types'
-import { Badge, Button, Empty, Field, Loading, Modal, formatDate, useToast } from '../components/ui'
+import { Badge, Button, Empty, Field, formatDate, LoadFailed, Loading, Modal, useToast } from '../components/ui'
 import { useAuth } from '../main'
 
 type Enrollment = { secret: string; raw_secret: string; uri: string; instructions: string }
@@ -14,13 +14,15 @@ export default function SecurityPage() {
   const [sessions, setSessions] = useState<SessionInfo[]>()
   const [enrollment, setEnrollment] = useState<Enrollment>()
   const [disabling, setDisabling] = useState(false)
-  const load = () => Promise.all([get<AccountSecurity>('/api/v1/me/security'), get<SessionInfo[]>('/api/v1/me/sessions')]).then(([a, b]) => { setState(a); setSessions(b) })
-  useEffect(() => { load().catch(e => toast.push(errorMessage(e), 'error')) }, [])
+  const [failed, setFailed] = useState<unknown>()
+  const load = () => { setFailed(undefined); return Promise.all([get<AccountSecurity>('/api/v1/me/security'), get<SessionInfo[]>('/api/v1/me/sessions')]).then(([a, b]) => { setState(a); setSessions(b) }) }
+  useEffect(() => { load().catch(setFailed) }, [])
 
   const start = async () => { try { setEnrollment(await post<Enrollment>('/api/v1/me/totp/setup')) } catch (e) { toast.push(errorMessage(e), 'error') } }
   const revoke = async (id: string) => { try { await del(`/api/v1/me/sessions/${id}`); toast.push('세션을 종료했습니다.'); load() } catch (e) { toast.push(errorMessage(e), 'error') } }
   const revokeOthers = async () => { try { const out = await post<{ revoked: number }>('/api/v1/me/sessions/revoke-others'); toast.push(`${out.revoked}개 세션을 종료했습니다.`); load() } catch (e) { toast.push(errorMessage(e), 'error') } }
 
+  if (failed) return <LoadFailed error={failed} onRetry={() => load().catch(setFailed)} />
   if (!state || !sessions) return <Loading />
   const external = state.auth_source !== 'local'
   return <div className="page">

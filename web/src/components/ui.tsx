@@ -1,5 +1,6 @@
 import { PropsWithChildren, ReactNode, createContext, useCallback, useContext, useEffect, useState } from 'react'
-import { AlertCircle, Inbox } from 'lucide-react'
+import { AlertCircle, Inbox, RefreshCw } from 'lucide-react'
+import { errorMessage } from '../lib/api'
 
 export function Button({ children, variant = '', small, ...props }: PropsWithChildren<React.ButtonHTMLAttributes<HTMLButtonElement> & { variant?: 'primary' | 'danger' | 'success' | 'ghost' | ''; small?: boolean }>) {
   return <button className={`button ${variant} ${small ? 'small' : ''}`} {...props}>{children}</button>
@@ -22,6 +23,14 @@ export function Empty({ title = '표시할 항목이 없습니다.', description
 }
 
 export function Loading() { return <div className="loading"><div className="spinner" aria-label="불러오는 중" /></div> }
+
+// Pages gate their whole body on `!data`, so a first load that fails used to
+// leave the spinner turning for good -- at best with a toast that vanished
+// seconds later. This says what went wrong and stays on screen.
+export function LoadFailed({ error, onRetry }: { error: unknown; onRetry?: () => void }) {
+  return <div className="empty" role="alert"><AlertCircle /><div>화면을 불러오지 못했습니다.</div><p className="subtle">{errorMessage(error)}</p>
+    {onRetry && <Button onClick={onRetry}><RefreshCw size={14} /> 다시 시도</Button>}</div>
+}
 
 export function Modal({ title, children, footer, onClose, className = '' }: PropsWithChildren<{ title?: string; footer?: ReactNode; onClose: () => void; className?: string }>) {
   useEffect(() => { const close = (e: KeyboardEvent) => e.key === 'Escape' && onClose(); window.addEventListener('keydown', close); return () => window.removeEventListener('keydown', close) }, [onClose])

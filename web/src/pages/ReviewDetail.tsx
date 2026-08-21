@@ -3,7 +3,7 @@ import { useNavigate, useParams } from 'react-router-dom'
 import { AlertTriangle, ArrowLeft, Check, CheckCircle2, CheckSquare, ChevronDown, ChevronRight, Copy, Download, FileCheck2, FilePlus2, Filter, ListChecks, MessageSquareWarning, Paperclip, Play, RefreshCw, History, Save, Search, Send, ShieldCheck, SlidersHorizontal, Trash2, UserRound, Upload, ZoomIn } from 'lucide-react'
 import { api, del, errorMessage, get, post, put, upload, ApiError } from '../lib/api'
 import { ChangeRequest, ChecklistItem, DirectoryUser, Review } from '../lib/types'
-import { Badge, Button, Empty, Field, Loading, Modal, StatusBadge, Toggle, formatBytes, formatDate, useToast } from '../components/ui'
+import { Badge, Button, Empty, Field, formatBytes, formatDate, LoadFailed, Loading, Modal, StatusBadge, Toggle, useToast } from '../components/ui'
 import { useAuth } from '../main'
 
 type ResponseDraft = { answer: unknown; applicability: string; self_assessment: string; current_state: string; na_reason: string; action_plan: string; assigned_to: string }
@@ -14,7 +14,8 @@ export default function ReviewDetail() {
   const [review, setReview] = useState<Review>(); const [items, setItems] = useState<ChecklistItem[]>(); const [selected, setSelected] = useState<string>(''); const [open, setOpen] = useState<Set<string>>(new Set()); const [query, setQuery] = useState(''); const [filter, setFilter] = useState('ALL'); const [validation, setValidation] = useState<Record<string, unknown>[] | null>(null); const [dialog, setDialog] = useState<'complete' | 'approval' | 'reject' | null>(null); const [ruleOpen, setRuleOpen] = useState(false); const [busy, setBusy] = useState(false); const [picked, setPicked] = useState<Set<string>>(new Set()); const [bulkOpen, setBulkOpen] = useState(false); const [historyOpen, setHistoryOpen] = useState(false)
   const reviewer = user.roles.includes('SECURITY_REVIEWER'); const approver = user.roles.includes('APPROVER')
   const load = async () => { const [r, i] = await Promise.all([get<Review>(`/api/v1/review-requests/${id}`), get<ChecklistItem[]>(`/api/v1/review-requests/${id}/items`)]); setReview(r); setItems(i); if (!selected && i[0]) setSelected(i[0].id) }
-  useEffect(() => { load().catch(e => toast.push(errorMessage(e), 'error')) }, [id])
+  const [failed, setFailed] = useState<unknown>()
+  useEffect(() => { setFailed(undefined); load().catch(setFailed) }, [id])
   const filtered = useMemo(() => (items || []).filter(item => { const hit = !query || `${item.item_code} ${item.title} ${item.question}`.toLowerCase().includes(query.toLowerCase()); if (!hit) return false; if (filter === 'MISSING') return !item.response.applicability; if (filter === 'NA') return item.response.applicability === 'N/A'; if (filter === 'EVIDENCE') return item.evidence_required && !item.evidences.length; if (filter === 'CHANGE') return item.change_requests.some(c => c.status !== 'VERIFIED'); if (filter === 'MINE') return item.response.assigned_to === user.id; return true }), [items, query, filter, user.id])
   const sections = useMemo(() => Array.from(new Set((items || []).map(x => `${x.template_name} · ${x.section || '일반'}`))), [items])
   // Showing how much is left per filter turns the dropdown into a to-do list
@@ -30,6 +31,7 @@ export default function ReviewDetail() {
   const togglePick = (id: string) => setPicked(v => { const n = new Set(v); n.has(id) ? n.delete(id) : n.add(id); return n })
   const action = async (path: string, data?: unknown) => { setBusy(true); try { const out = await post<{ status: string }>(`/api/v1/review-requests/${id}/${path}`, data); toast.push(`상태가 ${out.status}(으)로 변경되었습니다.`); setDialog(null); await load() } catch (e) { if (e instanceof ApiError && e.code === 'SUBMISSION_INCOMPLETE') setValidation(e.details as Record<string, unknown>[]); else toast.push(errorMessage(e), 'error') } finally { setBusy(false) } }
   const verifyChange=async(changeID:string)=>{try{await api(`/api/v1/change-requests/${changeID}`,{method:'PATCH',body:JSON.stringify({status:'VERIFIED',answer:''})});toast.push('보완 조치를 검증 완료했습니다.');await load()}catch(e){toast.push(errorMessage(e),'error')}}
+  if (failed) return <LoadFailed error={failed} onRetry={() => { setFailed(undefined); load().catch(setFailed) }} />
   if (!review || !items) return <Loading />
   const editable = ['DRAFT', 'CHANGE_REQUESTED'].includes(review.status)
   const progress = review.progress || { total: items.length, answered: items.filter(x => x.response.applicability).length, evidence: 0 }; const percent = progress.total ? Math.round(progress.answered / progress.total * 100) : 0; const results=(review.result_summary||{}) as Record<string,number>

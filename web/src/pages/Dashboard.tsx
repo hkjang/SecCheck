@@ -3,7 +3,7 @@ import { Link } from 'react-router-dom'
 import { AlertTriangle, ArrowRight, CalendarClock, ClipboardList, Inbox, Plus, ShieldCheck } from 'lucide-react'
 import { get } from '../lib/api'
 import { DueChange, Page, QueueEntry, Review } from '../lib/types'
-import { Badge, Button, Empty, Loading, StatusBadge, formatDate } from '../components/ui'
+import { Badge, Button, Empty, formatDate, LoadFailed, Loading, StatusBadge } from '../components/ui'
 import { useAuth } from '../main'
 
 type DashboardData = { status_counts: Record<string, number>; opening_soon: number; open_change_requests: number; my_queue: QueueEntry[]; due_soon: DueChange[] }
@@ -11,7 +11,10 @@ export default function Dashboard() {
   const { user } = useAuth()
   const [data, setData] = useState<DashboardData>()
   const [recent, setRecent] = useState<Review[]>([])
-  useEffect(() => { Promise.all([get<DashboardData>('/api/v1/dashboard'), get<Page<Review>>('/api/v1/review-requests?limit=7')]).then(([d, r]) => { setData(d); setRecent(r.items) }) }, [])
+  const [failed, setFailed] = useState<unknown>()
+  const load = () => { setFailed(undefined); Promise.all([get<DashboardData>('/api/v1/dashboard'), get<Page<Review>>('/api/v1/review-requests?limit=7')]).then(([d, r]) => { setData(d); setRecent(r.items) }).catch(setFailed) }
+  useEffect(load, [])
+  if (failed) return <LoadFailed error={failed} onRetry={load} />
   if (!data) return <Loading />
   const reviewMode = user.roles.some(r => ['SECURITY_REVIEWER', 'SYSTEM_ADMIN'].includes(r))
   const pending = (data.status_counts.SUBMITTED || 0) + (data.status_counts.RESUBMITTED || 0)
