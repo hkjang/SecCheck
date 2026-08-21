@@ -15,6 +15,7 @@ var auditEventLabels = map[string]string{
 	"RESET_PASSWORD":                 "비밀번호 재설정",
 	"UNLOCK_USER":                    "계정 잠금 해제",
 	"REASSIGN_APPROVER":              "최종 승인자 변경",
+	"SYNC_OIDC_ROLES":                "디렉터리 역할 동기화",
 	"TOTP_ENROLLMENT_STARTED":        "일회용 코드 등록 시작",
 	"TOTP_ENABLED":                   "일회용 코드 활성화",
 	"TOTP_DISABLED":                  "일회용 코드 해제",

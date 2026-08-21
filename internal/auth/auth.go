@@ -10,6 +10,8 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
+	"slices"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -597,7 +599,13 @@ func (a *Service) CompleteOIDC(ctx context.Context, state, code, ip, userAgent s
 		return u, "", "", time.Time{}, "", err
 	}
 	if len(cfg.RoleMappings) > 0 {
-		if err = a.syncOIDCRoles(ctx, u.ID, rolesFromGroups(cfg, claims)); err != nil {
+		// Keycloak only puts groups in the token when the client has a group
+		// membership mapper, and getting that wrong looks exactly like a
+		// mapping that does not work. Recording what actually arrived is the
+		// only way an administrator can tell the two apart.
+		groups := groupsFromClaims(cfg, claims)
+		a.Store.Log(ctx, "INFO", "", "oidc", "directory groups received", map[string]any{"username": username, "groups": groups})
+		if err = a.syncOIDCRoles(ctx, u, rolesFromGroups(cfg, claims), ip); err != nil {
 			return u, "", "", time.Time{}, "", err
 		}
 		u, _ = a.Store.GetUser(ctx, u.ID)
@@ -616,24 +624,9 @@ func (a *Service) CompleteOIDC(ctx context.Context, state, code, ip, userAgent s
 // Keycloak writes realm groups with a leading slash, so both forms match, and
 // the comparison ignores case because directory exports rarely agree on it.
 func rolesFromGroups(cfg OIDCSettings, claims map[string]any) []string {
-	claim := strings.TrimSpace(cfg.GroupsClaim)
-	if claim == "" {
-		claim = "groups"
-	}
 	member := map[string]bool{}
-	switch value := claims[claim].(type) {
-	case string:
-		member[normalizeGroup(value)] = true
-	case []any:
-		for _, entry := range value {
-			if name, ok := entry.(string); ok {
-				member[normalizeGroup(name)] = true
-			}
-		}
-	case []string:
-		for _, name := range value {
-			member[normalizeGroup(name)] = true
-		}
+	for _, name := range groupsFromClaims(cfg, claims) {
+		member[normalizeGroup(name)] = true
 	}
 	seen := map[string]bool{}
 	roles := []string{}
@@ -652,6 +645,29 @@ func rolesFromGroups(cfg OIDCSettings, claims map[string]any) []string {
 	return roles
 }
 
+// groupsFromClaims reads the configured claim, which providers write either
+// as a list or, when somebody belongs to one group, as a bare string.
+func groupsFromClaims(cfg OIDCSettings, claims map[string]any) []string {
+	claim := strings.TrimSpace(cfg.GroupsClaim)
+	if claim == "" {
+		claim = "groups"
+	}
+	out := []string{}
+	switch value := claims[claim].(type) {
+	case string:
+		out = append(out, value)
+	case []any:
+		for _, entry := range value {
+			if name, ok := entry.(string); ok {
+				out = append(out, name)
+			}
+		}
+	case []string:
+		out = append(out, value...)
+	}
+	return out
+}
+
 func normalizeGroup(name string) string {
 	return strings.ToLower(strings.TrimPrefix(strings.TrimSpace(name), "/"))
 }
@@ -661,7 +677,7 @@ func normalizeGroup(name string) string {
 // out of a group in the IdP left their access here untouched. Roles the
 // mapping never mentions are left alone, so an administrator can still grant
 // something by hand that the directory does not know about.
-func (a *Service) syncOIDCRoles(ctx context.Context, userID string, roles []string) error {
+func (a *Service) syncOIDCRoles(ctx context.Context, u store.User, roles []string, ip string) error {
 	governed := map[string]bool{}
 	for _, role := range assignableOIDCRoles {
 		governed[role] = true
@@ -675,14 +691,35 @@ func (a *Service) syncOIDCRoles(ctx context.Context, userID string, roles []stri
 		if !governed[role] {
 			continue
 		}
-		if _, err = tx.Exec(ctx, `INSERT INTO user_roles(user_id,role_code) VALUES($1,$2) ON CONFLICT DO NOTHING`, userID, role); err != nil {
+		if _, err = tx.Exec(ctx, `INSERT INTO user_roles(user_id,role_code) VALUES($1,$2) ON CONFLICT DO NOTHING`, u.ID, role); err != nil {
 			return err
 		}
 	}
-	if _, err = tx.Exec(ctx, `DELETE FROM user_roles WHERE user_id=$1 AND role_code=ANY($2) AND NOT (role_code=ANY($3))`, userID, assignableOIDCRoles, roles); err != nil {
+	if _, err = tx.Exec(ctx, `DELETE FROM user_roles WHERE user_id=$1 AND role_code=ANY($2) AND NOT (role_code=ANY($3))`, u.ID, assignableOIDCRoles, roles); err != nil {
 		return err
 	}
-	return tx.Commit(ctx)
+	if err = tx.Commit(ctx); err != nil {
+		return err
+	}
+	// A privilege that changes without anyone deciding it still has to appear
+	// in the audit log, or the directory becomes a way to alter access here
+	// without leaving a trace.
+	after, _ := a.Store.GetUser(ctx, u.ID)
+	if !sameRoles(u.Roles, after.Roles) {
+		_ = a.Store.Audit(ctx, store.AuditEvent{UserID: u.ID, UserName: u.DisplayName, SourceIP: ip, EventType: "SYNC_OIDC_ROLES", TargetType: "USER", TargetID: u.ID,
+			Before: map[string]any{"roles": u.Roles}, After: map[string]any{"roles": after.Roles}})
+	}
+	return nil
+}
+
+func sameRoles(before, after []string) bool {
+	if len(before) != len(after) {
+		return false
+	}
+	a1, a2 := append([]string(nil), before...), append([]string(nil), after...)
+	sort.Strings(a1)
+	sort.Strings(a2)
+	return slices.Equal(a1, a2)
 }
 
 // SYSTEM_ADMIN is deliberately absent. Role sync runs at every sign-in with

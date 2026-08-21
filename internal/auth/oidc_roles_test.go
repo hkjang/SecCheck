@@ -79,7 +79,11 @@ func TestSyncRemovesRolesTheDirectoryNoLongerGrants(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	if err := svc.syncOIDCRoles(ctx, userID, []string{"SECURITY_REVIEWER"}); err != nil {
+	before, err := db.GetUser(ctx, userID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := svc.syncOIDCRoles(ctx, before, []string{"SECURITY_REVIEWER"}, "10.0.0.9"); err != nil {
 		t.Fatal(err)
 	}
 	got := roles()
@@ -91,5 +95,42 @@ func TestSyncRemovesRolesTheDirectoryNoLongerGrants(t *testing.T) {
 	}
 	if !slices.Contains(got, "SYSTEM_ADMIN") {
 		t.Errorf("a role no mapping can grant was stripped: %v", got)
+	}
+}
+
+// A privilege that changes with nobody deciding it still has to be in the
+// audit log, or the directory becomes a way to alter access without a trace.
+func TestDirectoryRoleChangesAreAudited(t *testing.T) {
+	db := testdb.New(t)
+	userID := testdb.Bootstrap(t, db, "audited-member")
+	ctx := context.Background()
+	svc := &Service{Store: db}
+	before, err := db.GetUser(ctx, userID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := svc.syncOIDCRoles(ctx, before, []string{"AUDITOR"}, "10.0.0.9"); err != nil {
+		t.Fatal(err)
+	}
+	var events int
+	if err := db.Pool.QueryRow(ctx, `SELECT count(*) FROM audit_logs WHERE event_type='SYNC_OIDC_ROLES' AND target_id=$1`, userID).Scan(&events); err != nil {
+		t.Fatal(err)
+	}
+	if events != 1 {
+		t.Fatalf("the role change left %d audit events, want 1", events)
+	}
+	// Signing in again with the same groups must not fill the log with noise.
+	after, err := db.GetUser(ctx, userID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := svc.syncOIDCRoles(ctx, after, []string{"AUDITOR"}, "10.0.0.9"); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Pool.QueryRow(ctx, `SELECT count(*) FROM audit_logs WHERE event_type='SYNC_OIDC_ROLES' AND target_id=$1`, userID).Scan(&events); err != nil {
+		t.Fatal(err)
+	}
+	if events != 1 {
+		t.Errorf("an unchanged sign-in wrote another audit event: %d", events)
 	}
 }

@@ -8,7 +8,7 @@
   <img src="https://img.shields.io/badge/PostgreSQL-17-4169E1?style=flat-square&logo=postgresql&logoColor=white" alt="PostgreSQL" />
   <img src="https://img.shields.io/badge/Docker-Ready-2496ED?style=flat-square&logo=docker&logoColor=white" alt="Docker" />
   <img src="https://img.shields.io/badge/MCP-2026--07--28-8A2BE2?style=flat-square" alt="MCP" />
-  <img src="https://img.shields.io/badge/Release-v0.33.0-success?style=flat-square" alt="v0.33.0" />
+  <img src="https://img.shields.io/badge/Release-v0.34.0-success?style=flat-square" alt="v0.34.0" />
 </p>
 
 <h3>Excel 보안 심의를 넘어 추적 가능한 Security Control로.</h3>
@@ -48,7 +48,7 @@
 | **보안 검토 Queue** | ![보안 검토](docs/screenshots/10_security_reviews.png) | 보안 담당자 전용 제출/재제출 심의 대기열 |
 | **Security Controls** | ![통합 Controls](docs/screenshots/11_controls_catalog.png) | 통제 코드 관리 및 템플릿/심의 영향 범위 추적 |
 | **템플릿 관리** | ![템플릿](docs/screenshots/12_templates_list.png) | 개발보안, 개인정보, 클라우드, K8s 기본 탑재 |
-| **템플릿 상세/규칙** | ![템플릿 상세](docs/screenshots/13_template_detail.png) | 카테고리, 항목, 가중치 및 자동 배정 조건 |
+| **템플릿 상세/규칙** | ![템플릿 상세](docs/screenshots/13_template_detail.png) | 카테고리, 항목, 중요도 및 자동 배정 조건 |
 | **Excel 가져오기** | ![Excel 마법사](docs/screenshots/14_excel_import_wizard.png) | 기존 엑셀 체크리스트 업로드 및 컬럼 매핑 |
 | **개인 키 & 암호화** | ![키 관리](docs/screenshots/16_api_keys_and_encryption.png) | Bearer API 키 발급 및 증적 암호화 키 회전 |
 | **API · MCP 연계** | ![MCP 연계](docs/screenshots/18_integrations_mcp.png) | REST API 명세 및 MCP `2026-07-28` 도구 규격 |
@@ -121,7 +121,7 @@ docker run -d --name seccheck --restart unless-stopped \
   -e BOOTSTRAP_ADMIN='admin' \
   -e BOOTSTRAP_ADMIN_PASSWORD='your-strong-password' \
   -e ENCRYPTION_KEY='your-32-char-random-encryption-key' \
-  seccheck:v0.33.0
+  seccheck:v0.34.0
 ```
 
 - **접속 주소**: `http://localhost:8080` (초기 관리자 계정: `admin`)
