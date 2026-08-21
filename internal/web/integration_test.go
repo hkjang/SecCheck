@@ -1798,3 +1798,72 @@ func TestApprovalAcceptsAnEmptyBody(t *testing.T) {
 		t.Fatalf("an approval with no body returned %d %s", res.status, res.body)
 	}
 }
+
+// Twenty endpoints are authorised by whether the caller takes part in the
+// review rather than by a role, and the OpenAPI document now says so. This
+// walks that same list over HTTP as somebody with no connection to the review
+// and insists none of them answers. A route added without its check fails
+// here, not in production.
+func TestOutsidersReachNoneOfTheReviewScopedEndpoints(t *testing.T) {
+	h := newHarness(t)
+	owner := h.login(adminOf(h))
+	reviewID := owner.createReview("외부인 차단 확인")
+	ctx := context.Background()
+
+	items := []map[string]any{}
+	if err := json.Unmarshal([]byte(owner.do(http.MethodGet, "/api/v1/review-requests/"+reviewID+"/items", nil).body), &items); err != nil {
+		t.Fatal(err)
+	}
+	if len(items) == 0 {
+		t.Fatal("the review has no checklist items to probe with")
+	}
+	itemID, _ := items[0]["id"].(string)
+
+	evidenceID, changeID := store.NewID(), store.NewID()
+	var ownerUUID string
+	if err := h.db.Pool.QueryRow(ctx, `SELECT id FROM users WHERE username='integration-admin'`).Scan(&ownerUUID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := h.db.Pool.Exec(ctx, `INSERT INTO evidences(id,submission_item_id,original_filename,stored_filename,mime_type,size_bytes,sha256,uploaded_by,key_owner_id,key_version,scan_status)
+                VALUES($1,$2,'증적.pdf','stored.bin','application/pdf',10,'abc',$3,$3,1,'CLEAN')`, evidenceID, itemID, ownerUUID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := h.db.Pool.Exec(ctx, `INSERT INTO change_requests(id,review_request_id,submission_item_id,reason,requester_id) VALUES($1,$2,$3,'보완',$4)`, changeID, reviewID, itemID, ownerUUID); err != nil {
+		t.Fatal(err)
+	}
+
+	// Every role except the two that are meant to see every review, so only
+	// the participation check can be what stops them. SYSTEM_ADMIN is in the
+	// list deliberately: administering the service does not include reading
+	// other people's reviews.
+	h.user("total-outsider", "REQUESTER", "CONTRIBUTOR", "APPROVER", "TEMPLATE_ADMIN", "SYSTEM_ADMIN")
+	outsider := h.login("total-outsider")
+
+	substitute := strings.NewReplacer("{id}", reviewID, "{itemID}", itemID, "{format}", "xlsx")
+	probed := 0
+	for route := range api.ObjectScopedRoutes {
+		method, path, _ := strings.Cut(route, " ")
+		if strings.HasPrefix(path, "/api/v1/evidences/") {
+			path = strings.Replace(path, "{id}", evidenceID, 1)
+		} else if strings.HasPrefix(path, "/api/v1/change-requests/") {
+			path = strings.Replace(path, "{id}", changeID, 1)
+		}
+		path = substitute.Replace(path)
+		res := outsider.do(method, path, map[string]any{})
+		if res.status >= 200 && res.status < 300 {
+			t.Errorf("%s answered %d to somebody with no part in the review", route, res.status)
+		}
+		probed++
+	}
+	if probed < 15 {
+		t.Fatalf("only %d scoped routes probed", probed)
+	}
+
+	// The counterpart: a security reviewer or auditor is supposed to read any
+	// review, which is why the scoped endpoints cannot simply demand
+	// participation.
+	h.user("standing-auditor", "AUDITOR")
+	if res := h.login("standing-auditor").do(http.MethodGet, "/api/v1/review-requests/"+reviewID, nil); res.status != http.StatusOK {
+		t.Errorf("an auditor was refused a review: %d %s", res.status, res.body)
+	}
+}

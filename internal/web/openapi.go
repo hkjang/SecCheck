@@ -33,7 +33,7 @@ func (s *Server) openAPI(w http.ResponseWriter, r *http.Request) {
 		"info": map[string]any{
 			"title":       "SecCheck API",
 			"version":     s.Version,
-			"description": "보안성 심의 체크리스트, 증적, 검토, 승인 및 감사 API. 브라우저는 세션+CSRF를, 시스템 연계는 범위 제한 개인 API 키 Bearer 인증을 사용합니다. read 키는 조회/MCP만, read:write 키는 기존 RBAC 범위 안의 변경도 허용합니다. 각 operation의 x-required-roles는 해당 엔드포인트에 필요한 역할입니다. 비어 있으면 역할 제한이 없다는 뜻이며, x-object-scoped가 true인 operation은 역할 대신 대상 심의의 참여 여부로 접근을 판단합니다(권한이 없으면 404).",
+			"description": "보안성 심의 체크리스트, 증적, 검토, 승인 및 감사 API. 브라우저는 세션+CSRF를, 시스템 연계는 범위 제한 개인 API 키 Bearer 인증을 사용합니다. read 키는 조회/MCP만, read:write 키는 기존 RBAC 범위 안의 변경도 허용합니다. 각 operation의 x-required-roles는 해당 엔드포인트에 필요한 역할입니다. 비어 있으면 역할 제한이 없다는 뜻이며, x-object-scoped가 true인 operation은 역할 대신 대상 심의에 대한 접근 권한으로 판단합니다(권한이 없으면 404). SECURITY_REVIEWER와 AUDITOR는 조회에 한해 모든 심의에 접근합니다.",
 		},
 		"servers":    []map[string]string{{"url": "/"}},
 		"tags":       tagList(tags),
@@ -80,7 +80,7 @@ func (s *Server) operation(route APIRoute) map[string]any {
 	}
 	if objectScopedRoutes[route.Method+" "+route.Path] {
 		operation["x-object-scoped"] = true
-		notes = append(notes, "해당 심의의 참여자(요청자, 공동 작성자, 지정된 검토자·승인자)만 호출할 수 있습니다. 권한이 없으면 404를 반환합니다.")
+		notes = append(notes, "역할이 아니라 대상 심의에 대한 접근 권한으로 판단합니다. 요청자·공동 작성자·지정된 검토자·승인자가 해당하며, 조회는 SECURITY_REVIEWER와 AUDITOR도 모든 심의에 접근할 수 있습니다. 권한이 없으면 404를 반환합니다.")
 	}
 	if len(notes) > 0 {
 		operation["description"] = strings.Join(notes, " · ")

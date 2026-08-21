@@ -22,7 +22,7 @@ Authorization: Bearer sck_a1b2c3d4_xxxxxxxxxxxxxxxxxxxxxxxxxxxx
 - `operationId` — 메서드와 경로에서 파생된 안정적인 식별자 (클라이언트 자동 생성용)
 - `parameters` — 경로 파라미터 선언
 - `requestBody` — 본문을 받는 operation의 JSON 속성과 타입. 서버가 알 수 없는 속성을 거부하므로 스키마도 `additionalProperties: false`입니다. 즉 명세대로 보내면 그대로 통과합니다
-- `x-object-scoped` — `true`이면 역할이 아니라 **대상 심의의 참여 여부**로 접근을 판단합니다. 참여자가 아니면 404를 반환하므로, 역할만 보고 호출 가능 여부를 판단하면 안 됩니다
+- `x-object-scoped` — `true`이면 역할이 아니라 **대상 심의에 대한 접근 권한**으로 판단합니다. 요청자·공동 작성자·지정된 검토자·승인자가 해당하며, 조회는 `SECURITY_REVIEWER`와 `AUDITOR`도 모든 심의에 접근합니다. `SYSTEM_ADMIN`은 포함되지 않습니다 — 서비스 운영 권한이 남의 심의 열람 권한은 아닙니다. 권한이 없으면 404이므로, 역할만 보고 호출 가능 여부를 판단하면 안 됩니다
 - `x-required-roles` — 호출에 필요한 RBAC 역할. 빈 배열이면 로그인한 모든 사용자가 호출 가능
 - `security: []` — 인증 없이 호출 가능한 엔드포인트 (`/api/v1/auth/login`, `/api/v1/public/config` 등)
 
