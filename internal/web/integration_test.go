@@ -1913,3 +1913,52 @@ func TestMetricsExposureFollowsTheSetting(t *testing.T) {
 		t.Errorf("turning it back on left the scrape refused: %d", res.status)
 	}
 }
+
+// Evidence is encrypted under the uploader's own key, so a file replaced by a
+// second person can only be read with that person's key. Resolving the key
+// from whoever is downloading instead of from the row would look correct
+// until two people touched the same evidence.
+func TestEvidenceReplacedByAnotherPersonStillDecrypts(t *testing.T) {
+	h := newHarness(t)
+	h.user("first-uploader", "REQUESTER")
+	owner := h.login("first-uploader")
+	reviewID := owner.createReview("증적 승계 서비스")
+
+	items := []map[string]any{}
+	_ = json.Unmarshal([]byte(owner.do(http.MethodGet, "/api/v1/review-requests/"+reviewID+"/items", nil).body), &items)
+	itemID := items[0]["id"].(string)
+
+	original := strings.Repeat("최초 업로더가 올린 증적\n", 200)
+	res := owner.upload(fmt.Sprintf("/api/v1/review-requests/%s/items/%s/evidences", reviewID, itemID), "evidence.txt", original)
+	if res.status != http.StatusCreated {
+		t.Fatalf("upload returned %d %s", res.status, res.body)
+	}
+	evidenceID, _ := res.json()["id"].(string)
+
+	helper := h.user("second-uploader", "REQUESTER", "CONTRIBUTOR")
+	if res := owner.do(http.MethodPost, "/api/v1/review-requests/"+reviewID+"/participants", map[string]any{"user_id": helper, "role": "CONTRIBUTOR"}); res.status >= 300 {
+		t.Fatalf("adding a contributor returned %d %s", res.status, res.body)
+	}
+	replacement := strings.Repeat("두 번째 사람이 교체한 증적\n", 300)
+	if res := h.login("second-uploader").upload("/api/v1/evidences/"+evidenceID+"/versions", "evidence.txt", replacement); res.status >= 300 {
+		t.Fatalf("replacing the evidence returned %d %s", res.status, res.body)
+	}
+
+	// The original uploader reads a file encrypted under somebody else's key.
+	download := owner.do(http.MethodGet, "/api/v1/evidences/"+evidenceID+"/download", nil)
+	if download.status != http.StatusOK {
+		t.Fatalf("download after replacement returned %d %s", download.status, download.body)
+	}
+	if download.body != replacement {
+		t.Errorf("the download did not return the replacement: %d bytes, want %d", len(download.body), len(replacement))
+	}
+
+	var keyOwner string
+	var version int
+	if err := h.db.Pool.QueryRow(context.Background(), `SELECT key_owner_id,current_version FROM evidences WHERE id=$1`, evidenceID).Scan(&keyOwner, &version); err != nil {
+		t.Fatal(err)
+	}
+	if keyOwner != helper || version != 2 {
+		t.Errorf("evidence records key owner %s at version %d, want %s at 2", keyOwner, version, helper)
+	}
+}
