@@ -1781,3 +1781,20 @@ func TestOnlyAnAdministratorReassignsAPendingApproval(t *testing.T) {
 		t.Errorf("a requester reassigned the approver: %d %s", res.status, res.body)
 	}
 }
+
+// An approval carries an optional comment, so a client that sends no body at
+// all -- the obvious call for an integration -- has to work.
+func TestApprovalAcceptsAnEmptyBody(t *testing.T) {
+	h := newHarness(t)
+	h.login(adminOf(h))
+	requester := h.user("empty-body-requester", "REQUESTER")
+	approver := h.user("empty-body-approver", "APPROVER")
+	id := store.NewID()
+	if _, err := h.db.Pool.Exec(context.Background(), `INSERT INTO review_requests(id,review_number,service_name,description,service_type,change_type,builder_id,developer_id,department,requester_id,approver_id,exposure,status)
+                VALUES($1,$2,'본문 없는 승인','설명','WEB','NEW',$3,$3,'보안팀',$3,$4,'INTERNAL','APPROVAL_PENDING')`, id, "SR-EMPTY-1", requester, approver); err != nil {
+		t.Fatal(err)
+	}
+	if res := h.login("empty-body-approver").do(http.MethodPost, "/api/v1/review-requests/"+id+"/approve", nil); res.status != http.StatusOK {
+		t.Fatalf("an approval with no body returned %d %s", res.status, res.body)
+	}
+}

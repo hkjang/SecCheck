@@ -224,3 +224,63 @@ func TestTheMCPDispatcherAnswersOnlyCataloguedTools(t *testing.T) {
 		t.Errorf("%d tools dispatched, %d advertised", len(dispatch), len(catalogue))
 	}
 }
+
+// A client generated from the document has to be able to call the API. The
+// specification used to name no request bodies at all.
+func TestTheOpenAPIDocumentDescribesRequestBodies(t *testing.T) {
+	s := &Server{mux: http.NewServeMux()}
+	s.routes()
+	rec := httptest.NewRecorder()
+	s.openAPI(rec, httptest.NewRequest(http.MethodGet, "/api/openapi.json", nil))
+	// A path item holds method keys alongside a shared "parameters" array, so
+	// the operations are decoded one at a time.
+	type operationDoc struct {
+		RequestBody struct {
+			Required bool `json:"required"`
+			Content  map[string]struct {
+				Schema struct {
+					AdditionalProperties bool           `json:"additionalProperties"`
+					Properties           map[string]any `json:"properties"`
+				} `json:"schema"`
+			} `json:"content"`
+		} `json:"requestBody"`
+	}
+	var doc struct {
+		Paths map[string]map[string]json.RawMessage `json:"paths"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &doc); err != nil {
+		t.Fatalf("the document is not valid JSON: %v", err)
+	}
+	described := 0
+	for path, methods := range doc.Paths {
+		for method, raw := range methods {
+			if method == "parameters" {
+				continue
+			}
+			var op operationDoc
+			if err := json.Unmarshal(raw, &op); err != nil {
+				t.Fatalf("%s %s: %v", method, path, err)
+			}
+			key := strings.ToUpper(method) + " " + path
+			want, expected := requestPayloads[key]
+			body := op.RequestBody
+			if !expected {
+				if len(body.Content) > 0 {
+					t.Errorf("%s describes a body but decodes none", key)
+				}
+				continue
+			}
+			schema := body.Content["application/json"].Schema
+			if len(schema.Properties) != len(want) {
+				t.Errorf("%s describes %d properties, the server accepts %d", key, len(schema.Properties), len(want))
+			}
+			if schema.AdditionalProperties {
+				t.Errorf("%s allows extra properties, but the server rejects them", key)
+			}
+			described++
+		}
+	}
+	if described != len(requestPayloads) {
+		t.Errorf("%d bodies reached the document, %d are in the table", described, len(requestPayloads))
+	}
+}

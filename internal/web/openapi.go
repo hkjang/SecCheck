@@ -57,6 +57,10 @@ func (s *Server) operation(route APIRoute) map[string]any {
 		"operationId": operationID(route),
 		"responses":   responses,
 	}
+	if body := requestBodySchema(route); body != nil {
+		operation["requestBody"] = body
+		responses["400"] = map[string]any{"description": "Invalid request body"}
+	}
 	if route.Public {
 		// Health, readiness and the sign-in endpoints are reachable without a
 		// session, which the document has to say.
@@ -74,6 +78,46 @@ func (s *Server) operation(route APIRoute) map[string]any {
 		operation["description"] = "필요 역할: " + strings.Join(roles, ", ")
 	}
 	return operation
+}
+
+// requestBodySchema describes what a route decodes. The server rejects
+// unknown properties, so additionalProperties is false here too: a client
+// generated from this document sends exactly what will be accepted.
+func requestBodySchema(route APIRoute) map[string]any {
+	fields := requestPayloads[route.Method+" "+route.Path]
+	if len(fields) == 0 {
+		return nil
+	}
+	properties := map[string]any{}
+	for _, f := range fields {
+		properties[f.Name] = jsonSchemaType(f.Type)
+	}
+	return map[string]any{
+		"required": true,
+		"content": map[string]any{"application/json": map[string]any{
+			"schema": map[string]any{"type": "object", "additionalProperties": false, "properties": properties},
+		}},
+	}
+}
+
+func jsonSchemaType(goType string) map[string]any {
+	switch goType {
+	case "bool":
+		return map[string]any{"type": "boolean"}
+	case "int", "int64":
+		return map[string]any{"type": "integer"}
+	case "float64":
+		return map[string]any{"type": "number"}
+	case "time.Time":
+		return map[string]any{"type": "string", "format": "date-time"}
+	case "[]string":
+		return map[string]any{"type": "array", "items": map[string]any{"type": "string"}}
+	case "any":
+		return map[string]any{}
+	case "map":
+		return map[string]any{"type": "object"}
+	}
+	return map[string]any{"type": "string"}
 }
 
 var pathParam = regexp.MustCompile(`\{(\w+)\}`)

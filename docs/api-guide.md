@@ -21,6 +21,7 @@ Authorization: Bearer sck_a1b2c3d4_xxxxxxxxxxxxxxxxxxxxxxxxxxxx
 - `summary` · `tags` — 한글 설명과 기능 분류
 - `operationId` — 메서드와 경로에서 파생된 안정적인 식별자 (클라이언트 자동 생성용)
 - `parameters` — 경로 파라미터 선언
+- `requestBody` — 본문을 받는 operation의 JSON 속성과 타입. 서버가 알 수 없는 속성을 거부하므로 스키마도 `additionalProperties: false`입니다. 즉 명세대로 보내면 그대로 통과합니다
 - `x-required-roles` — 호출에 필요한 RBAC 역할. 빈 배열이면 로그인한 모든 사용자가 호출 가능
 - `security: []` — 인증 없이 호출 가능한 엔드포인트 (`/api/v1/auth/login`, `/api/v1/public/config` 등)
 

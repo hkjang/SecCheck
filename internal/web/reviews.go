@@ -1171,8 +1171,12 @@ func (s *Server) closeReview(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) decideApproval(w http.ResponseWriter, r *http.Request, decision string) {
 	id := r.PathValue("id")
-	var in struct{ Comment string }
-	if !decodeJSON(w, r, &in) {
+	// The comment is optional, so an approval sent with no body at all -- the
+	// obvious thing for an API client to do -- has to be accepted.
+	var in struct {
+		Comment string `json:"comment"`
+	}
+	if !decodeOptionalJSON(w, r, &in) {
 		return
 	}
 	sess := session(r)

@@ -386,11 +386,9 @@ func decodeJSON(w http.ResponseWriter, r *http.Request, out any) bool {
 	return true
 }
 
-// clientIP returns the address the request is attributed to for rate limiting
-// and audit logging. The middleware resolves it once per request; the direct
-// peer address is the fallback for handlers reached outside that path.
 // decodeOptionalJSON accepts an absent body, for endpoints whose fields are
-// all optional. decodeJSON would reject the empty request the UI sends.
+// all optional. decodeJSON would reject the empty request an API client
+// reasonably sends.
 func decodeOptionalJSON(w http.ResponseWriter, r *http.Request, out any) bool {
 	r.Body = http.MaxBytesReader(w, r.Body, 2<<20)
 	d := json.NewDecoder(r.Body)
@@ -405,6 +403,9 @@ func decodeOptionalJSON(w http.ResponseWriter, r *http.Request, out any) bool {
 	return true
 }
 
+// clientIP returns the address the request is attributed to for rate limiting
+// and audit logging. The middleware resolves it once per request; the direct
+// peer address is the fallback for handlers reached outside that path.
 func clientIP(r *http.Request) string {
 	if value, ok := r.Context().Value(clientIPKey).(string); ok && value != "" {
 		return value
