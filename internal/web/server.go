@@ -83,6 +83,7 @@ func (s *Server) routes() {
 	s.mux.Handle("POST /api/v1/me/totp/disable", s.require(nil, http.HandlerFunc(s.disableTOTP)))
 	s.mux.Handle("GET /api/v1/dashboard", s.require(nil, http.HandlerFunc(s.dashboard)))
 	s.mux.Handle("GET /api/v1/search", s.require(nil, http.HandlerFunc(s.search)))
+	s.mux.Handle("GET /api/v1/reports/reviews", s.require([]string{"SYSTEM_ADMIN", "SECURITY_REVIEWER", "AUDITOR", "APPROVER"}, http.HandlerFunc(s.reviewReport)))
 	s.mux.Handle("GET /api/v1/notifications", s.require(nil, http.HandlerFunc(s.notifications)))
 	s.mux.Handle("GET /api/v1/notifications/unread-count", s.require(nil, http.HandlerFunc(s.unreadNotifications)))
 	s.mux.Handle("POST /api/v1/notifications/read-all", s.require(nil, http.HandlerFunc(s.readAllNotifications)))

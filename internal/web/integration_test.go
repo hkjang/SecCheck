@@ -11,6 +11,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/hkjang/SecCheck/internal/auth"
 	"github.com/hkjang/SecCheck/internal/cryptox"
@@ -721,5 +722,73 @@ func TestConfiguredTimezoneReachesTheClients(t *testing.T) {
 		"service_name": "SecCheck", "timezone": "Mars/Olympus", "session_minutes": 480, "retention_days": 1825, "base_url": "",
 	}); res.status != http.StatusUnprocessableEntity {
 		t.Errorf("an unknown zone name was accepted: %d %s", res.status, res.body)
+	}
+}
+
+func TestReviewReportSummarisesAPeriod(t *testing.T) {
+	h := newHarness(t)
+	ctx := context.Background()
+	h.user("reportwriter", "REQUESTER")
+	writer := h.login("reportwriter")
+	admin := h.login(adminOf(h))
+
+	inPeriod := writer.createReview("기간 안 서비스")
+	older := writer.createReview("기간 밖 서비스")
+	// Push one review outside the window and complete the other, so the report
+	// has something to separate.
+	if _, err := h.db.Pool.Exec(ctx, `UPDATE review_requests SET created_at=now()-interval '400 days' WHERE id=$1`, older); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := h.db.Pool.Exec(ctx, `UPDATE review_requests SET status='APPROVED',first_submitted_at=now()-interval '5 days',approved_at=now()-interval '1 day' WHERE id=$1`, inPeriod); err != nil {
+		t.Fatal(err)
+	}
+
+	report := admin.do(http.MethodGet, "/api/v1/reports/reviews?from=2020-01-01", nil).json()
+	totals, _ := report["totals"].(map[string]any)
+	if created, _ := totals["created"].(float64); created != 2 {
+		t.Errorf("created = %v over the whole range, want 2", totals["created"])
+	}
+	if completed, _ := totals["completed"].(float64); completed != 1 {
+		t.Errorf("completed = %v, want 1", totals["completed"])
+	}
+
+	// Bounding the period must exclude the older review.
+	recent := admin.do(http.MethodGet, "/api/v1/reports/reviews?from="+time.Now().AddDate(0, 0, -7).Format("2006-01-02"), nil).json()
+	recentTotals, _ := recent["totals"].(map[string]any)
+	if created, _ := recentTotals["created"].(float64); created != 1 {
+		t.Errorf("created in the last week = %v, want 1", recentTotals["created"])
+	}
+
+	cycle, _ := report["cycle_time"].(map[string]any)
+	if measured, _ := cycle["measured"].(float64); measured != 1 {
+		t.Fatalf("cycle time measured %v reviews, want 1", cycle["measured"])
+	}
+	if average, _ := cycle["average_days"].(float64); average < 3.5 || average > 4.5 {
+		t.Errorf("average cycle time = %v days, want about 4", cycle["average_days"])
+	}
+
+	if departments, _ := report["by_department"].([]any); len(departments) == 0 {
+		t.Error("the department breakdown is empty")
+	}
+	if aging, _ := report["aging"].([]any); len(aging) == 0 {
+		t.Error("the aging breakdown is empty while a review is still open")
+	}
+
+	// The workbook has to be a real xlsx, not an error page.
+	req, _ := http.NewRequest(http.MethodGet, h.server.URL+"/api/v1/reports/reviews?format=xlsx&from=2020-01-01", nil)
+	res := admin.send(req)
+	if res.status != http.StatusOK {
+		t.Fatalf("xlsx report returned %d", res.status)
+	}
+	if !strings.HasPrefix(res.body, "PK\x03\x04") {
+		t.Errorf("the report download is not a workbook (%d bytes)", len(res.body))
+	}
+	if got := res.raw.Header.Get("Content-Type"); !strings.Contains(got, "spreadsheetml") {
+		t.Errorf("Content-Type = %q", got)
+	}
+
+	h.user("reportoutsider", "REQUESTER")
+	if res := h.login("reportoutsider").do(http.MethodGet, "/api/v1/reports/reviews", nil); res.status != http.StatusForbidden {
+		t.Errorf("a requester reached the report: %d", res.status)
 	}
 }

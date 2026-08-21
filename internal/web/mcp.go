@@ -143,6 +143,7 @@ func mcpTools() []map[string]any {
 		{"name": "seccheck.get_review", "title": "Get security review", "description": "심의 ID로 기본정보, 진행률, 상태와 담당자를 조회합니다.", "inputSchema": map[string]any{"type": "object", "properties": map[string]any{"review_id": map[string]any{"type": "string", "description": "SecCheck review UUID"}}, "required": []string{"review_id"}, "additionalProperties": false}, "annotations": map[string]any{"readOnlyHint": true, "destructiveHint": false}},
 		{"name": "seccheck.list_reviews", "title": "List security reviews", "description": "권한 범위의 보안성 심의를 상태 또는 검색어로 조회합니다.", "inputSchema": map[string]any{"type": "object", "properties": map[string]any{"status": map[string]any{"type": "string"}, "query": map[string]any{"type": "string"}, "limit": map[string]any{"type": "integer", "minimum": 1, "maximum": 100}}, "additionalProperties": false}, "annotations": map[string]any{"readOnlyHint": true, "destructiveHint": false}},
 		{"name": "seccheck.search_controls", "title": "Search security controls", "description": "게시된 체크리스트의 항목 코드, 보안요건, 질문과 가이드를 검색합니다.", "inputSchema": map[string]any{"type": "object", "properties": map[string]any{"query": map[string]any{"type": "string", "minLength": 2}, "category": map[string]any{"type": "string"}, "limit": map[string]any{"type": "integer", "minimum": 1, "maximum": 100}}, "required": []string{"query"}, "additionalProperties": false}, "annotations": map[string]any{"readOnlyHint": true, "destructiveHint": false}},
+		{"name": "seccheck.review_report", "title": "Review report", "description": "기간별 심의 처리 현황, 처리 소요 기간, 부서별 집계와 반복 미흡 항목을 조회합니다.", "inputSchema": map[string]any{"type": "object", "properties": map[string]any{"from": map[string]any{"type": "string", "description": "YYYY-MM-DD"}, "to": map[string]any{"type": "string", "description": "YYYY-MM-DD"}, "department": map[string]any{"type": "string"}}, "additionalProperties": false}, "annotations": map[string]any{"readOnlyHint": true, "destructiveHint": false}},
 		{"name": "seccheck.my_queue", "title": "My review queue", "description": "지금 본인이 처리해야 하는 심의와 기한이 임박한 보완 요청을 조회합니다.", "inputSchema": map[string]any{"type": "object", "additionalProperties": false}, "annotations": map[string]any{"readOnlyHint": true, "destructiveHint": false}},
 		{"name": "seccheck.validate_submission", "title": "Validate submission", "description": "제출 전 서버 검증을 실행하고 누락된 적용여부, N/A 사유, 증적 또는 검사 상태를 반환합니다.", "inputSchema": map[string]any{"type": "object", "properties": map[string]any{"review_id": map[string]any{"type": "string"}}, "required": []string{"review_id"}, "additionalProperties": false}, "annotations": map[string]any{"readOnlyHint": true, "destructiveHint": false}},
 	}
@@ -164,6 +165,11 @@ func (s *Server) callMCPTool(r *http.Request, raw json.RawMessage) (any, *rpcErr
 		data, err = s.mcpDashboard(r, sess)
 	case "seccheck.my_queue":
 		data = map[string]any{"my_queue": s.myQueue(r), "due_soon": s.dueChangeRequests(r)}
+	case "seccheck.review_report":
+		if !hasAnyRole(sess.User, "SYSTEM_ADMIN", "SECURITY_REVIEWER", "AUDITOR", "APPROVER") {
+			return nil, &rpcError{Code: -32001, Message: "이 도구를 사용할 권한이 없습니다."}
+		}
+		data, err = s.mcpReviewReport(r, p.Arguments)
 	case "seccheck.get_review":
 		data, err = s.mcpGetReview(r, sess, stringValue(p.Arguments["review_id"]))
 	case "seccheck.list_reviews":
@@ -192,6 +198,20 @@ func (s *Server) callMCPTool(r *http.Request, raw json.RawMessage) (any, *rpcErr
 }
 func mcpToolError(message string) map[string]any {
 	return map[string]any{"resultType": "complete", "isError": true, "content": []map[string]any{{"type": "text", "text": message}}}
+}
+
+// mcpReviewReport reuses the HTTP report so an agent and the console can never
+// disagree about the numbers.
+func (s *Server) mcpReviewReport(r *http.Request, args map[string]any) (any, error) {
+	query := r.URL.Query()
+	for _, key := range []string{"from", "to", "department"} {
+		if value := strings.TrimSpace(stringValue(args[key])); value != "" {
+			query.Set(key, value)
+		}
+	}
+	scoped := r.Clone(r.Context())
+	scoped.URL.RawQuery = query.Encode()
+	return s.buildReport(scoped, reportFilter(scoped))
 }
 
 func (s *Server) mcpDashboard(r *http.Request, sess auth.Session) (any, error) {

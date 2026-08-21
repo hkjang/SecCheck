@@ -14,6 +14,7 @@ func (s *Server) openAPI(w http.ResponseWriter, r *http.Request) {
 			"/api/v1/templates/{id}":                       map[string]any{"get": operation("템플릿 상세", "templates"), "patch": operation("템플릿 수정", "templates"), "delete": operation("미사용 템플릿 삭제", "templates")},
 			"/api/v1/templates/import/preview":             map[string]any{"post": operation("Excel 가져오기 드라이런", "templates")},
 			"/api/v1/templates/rule-simulation":            map[string]any{"post": operation("서비스 특성별 자동 배정 시뮬레이션", "templates")},
+			"/api/v1/reports/reviews":                      map[string]any{"get": operation("기간별 심의 통계. format=xlsx로 Excel 리포트", "reports")},
 			"/api/v1/review-requests":                      map[string]any{"get": operation("권한 범위의 심의 목록", "reviews"), "post": operation("심의 생성 및 체크리스트 스냅샷 배정", "reviews")},
 			"/api/v1/review-requests/{id}":                 map[string]any{"get": operation("심의 상세", "reviews"), "patch": operation("심의 기본정보 수정", "reviews")},
 			"/api/v1/review-requests/{id}/items":           map[string]any{"get": operation("응답, 검토결과, 증적을 포함한 스냅샷 항목", "reviews")},
