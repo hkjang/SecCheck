@@ -18,13 +18,43 @@ import (
 	"github.com/xuri/excelize/v2"
 )
 
+// listTemplates is paginated and searchable like the review list. An
+// installation that imports a workbook per team accumulates templates the same
+// way it accumulates reviews, and a fixed unbounded list stops being usable.
 func (s *Server) listTemplates(w http.ResponseWriter, r *http.Request) {
-	rows, err := s.Store.Pool.Query(r.Context(), `SELECT t.id,t.name,t.category,t.description,t.active,t.created_at,t.updated_at,COALESCE((SELECT jsonb_agg(jsonb_build_object('id',v.id,'version',v.version,'status',v.status,'change_note',v.change_note,'source_filename',v.source_filename,'published_at',v.published_at,'created_at',v.created_at) ORDER BY v.created_at DESC) FROM checklist_versions v WHERE v.template_id=t.id),'[]') FROM checklist_templates t ORDER BY t.category,t.name`)
+	where := "TRUE"
+	args := []any{}
+	query := r.URL.Query()
+	if term := strings.TrimSpace(query.Get("q")); term != "" {
+		args = append(args, "%"+term+"%")
+		n := intString(len(args))
+		where += " AND (t.name ILIKE $" + n + " OR t.description ILIKE $" + n + " OR t.category ILIKE $" + n + ")"
+	}
+	if category := strings.TrimSpace(query.Get("category")); category != "" {
+		args = append(args, category)
+		where += " AND t.category=$" + intString(len(args))
+	}
+	switch strings.TrimSpace(query.Get("active")) {
+	case "1":
+		where += " AND t.active"
+	case "0":
+		where += " AND NOT t.active"
+	}
+	var total int64
+	if err := s.Store.Pool.QueryRow(r.Context(), `SELECT count(*) FROM checklist_templates t WHERE `+where, args...).Scan(&total); err != nil {
+		problem(w, 500, "QUERY_FAILED", "템플릿을 불러오지 못했습니다.", nil)
+		return
+	}
+	limit, offset := parsePage(r)
+	paged := append(append([]any{}, args...), limit, offset)
+	rows, err := s.Store.Pool.Query(r.Context(), `SELECT t.id,t.name,t.category,t.description,t.active,t.created_at,t.updated_at,COALESCE((SELECT jsonb_agg(jsonb_build_object('id',v.id,'version',v.version,'status',v.status,'change_note',v.change_note,'source_filename',v.source_filename,'published_at',v.published_at,'created_at',v.created_at) ORDER BY v.created_at DESC) FROM checklist_versions v WHERE v.template_id=t.id),'[]') FROM checklist_templates t WHERE `+where+
+		` ORDER BY t.category,t.name LIMIT $`+intString(len(paged)-1)+` OFFSET $`+intString(len(paged)), paged...)
 	if err != nil {
 		problem(w, 500, "QUERY_FAILED", "템플릿을 불러오지 못했습니다.", nil)
 		return
 	}
-	jsonResponse(w, 200, scanDynamic(rows, []string{"id", "name", "category", "description", "active", "created_at", "updated_at", "versions"}))
+	items := scanDynamic(rows, []string{"id", "name", "category", "description", "active", "created_at", "updated_at", "versions"})
+	jsonResponse(w, 200, map[string]any{"items": items, "total": total, "limit": limit, "offset": offset, "has_more": int64(offset+len(items)) < total})
 }
 
 func (s *Server) createTemplate(w http.ResponseWriter, r *http.Request) {

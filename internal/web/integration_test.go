@@ -9,6 +9,7 @@ import (
 	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"strings"
 	"testing"
 	"time"
@@ -619,12 +620,14 @@ func TestTemplateDeletionOnlyWhileUnused(t *testing.T) {
 	}
 
 	// A template the seeded workbook published is in use and must be refused.
-	list := []map[string]any{}
-	if err := json.Unmarshal([]byte(admin.do(http.MethodGet, "/api/v1/templates", nil).body), &list); err != nil {
+	var list struct {
+		Items []map[string]any `json:"items"`
+	}
+	if err := json.Unmarshal([]byte(admin.do(http.MethodGet, "/api/v1/templates?limit=200", nil).body), &list); err != nil {
 		t.Fatal(err)
 	}
 	var publishedID string
-	for _, tpl := range list {
+	for _, tpl := range list.Items {
 		versions, _ := tpl["versions"].([]any)
 		for _, v := range versions {
 			if version, ok := v.(map[string]any); ok && version["status"] == "PUBLISHED" {
@@ -898,5 +901,57 @@ func TestItemsCanBeAssignedInBulkToParticipantsOnly(t *testing.T) {
 	_ = h.db.Pool.QueryRow(ctx, `SELECT count(*) FROM notifications WHERE recipient_id=$1 AND event_type='ITEM_ASSIGNED'`, helperID).Scan(&notified)
 	if notified != 1 {
 		t.Errorf("the assignee got %d notifications, want exactly one for the batch", notified)
+	}
+}
+
+func TestTemplateAndControlListsArePaginatedAndSearchable(t *testing.T) {
+	h := newHarness(t)
+	admin := h.login(adminOf(h))
+
+	// The seeded workbook publishes several templates, which is enough to page.
+	first := admin.do(http.MethodGet, "/api/v1/templates?limit=2&offset=0", nil).json()
+	total, _ := first["total"].(float64)
+	if total < 3 {
+		t.Fatalf("expected the seeded templates, got total=%v", first["total"])
+	}
+	if items, _ := first["items"].([]any); len(items) != 2 {
+		t.Fatalf("page size = %d, want 2", len(items))
+	}
+	if more, _ := first["has_more"].(bool); !more {
+		t.Error("has_more should be true on the first page")
+	}
+	last := admin.do(http.MethodGet, fmt.Sprintf("/api/v1/templates?limit=2&offset=%d", int(total)-1), nil).json()
+	if items, _ := last["items"].([]any); len(items) != 1 {
+		t.Errorf("final page size = %d, want 1", len(items))
+	}
+
+	// Searching narrows the same envelope.
+	cloud := admin.do(http.MethodGet, "/api/v1/templates?q="+url.QueryEscape("클라우드"), nil).json()
+	cloudTotal, _ := cloud["total"].(float64)
+	if cloudTotal == 0 || cloudTotal >= total {
+		t.Errorf("search matched %v of %v templates", cloud["total"], first["total"])
+	}
+	if none := admin.do(http.MethodGet, "/api/v1/templates?q=zzz-no-such-template", nil).json(); none["total"] != float64(0) {
+		t.Errorf("an impossible search matched %v", none["total"])
+	}
+	if filtered := admin.do(http.MethodGet, "/api/v1/templates?category=CLOUD", nil).json(); filtered["total"] == float64(0) {
+		t.Error("the category filter matched nothing")
+	}
+
+	// Controls use the same shape.
+	for i := 0; i < 3; i++ {
+		if res := admin.do(http.MethodPost, "/api/v1/security-controls", map[string]string{"code": fmt.Sprintf("SEC-PAGE-%03d", i), "title": fmt.Sprintf("페이지 통제 %d", i), "description": "", "owner_id": ""}); res.status != http.StatusCreated {
+			t.Fatalf("create control: %d %s", res.status, res.body)
+		}
+	}
+	controls := admin.do(http.MethodGet, "/api/v1/security-controls?limit=2", nil).json()
+	if controlTotal, _ := controls["total"].(float64); controlTotal != 3 {
+		t.Errorf("controls total = %v, want 3", controls["total"])
+	}
+	if items, _ := controls["items"].([]any); len(items) != 2 {
+		t.Errorf("controls page size = %d, want 2", len(items))
+	}
+	if searched := admin.do(http.MethodGet, "/api/v1/security-controls?q=SEC-PAGE-001", nil).json(); searched["total"] != float64(1) {
+		t.Errorf("control search matched %v, want 1", searched["total"])
 	}
 }

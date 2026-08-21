@@ -21,15 +21,24 @@ func (s *Server) listControls(w http.ResponseWriter, r *http.Request) {
 	// The counts used to come from a GROUP BY over a four-table join, which
 	// aggregated every submission item in the installation on every page load.
 	// Correlated sub-queries let each count use its own index instead.
+	var total int64
+	if err := s.Store.Pool.QueryRow(r.Context(), `SELECT count(*) FROM security_controls c WHERE `+where, args...).Scan(&total); err != nil {
+		problem(w, 500, "QUERY_FAILED", "Security Control을 불러오지 못했습니다.", nil)
+		return
+	}
+	limit, offset := parsePage(r)
+	paged := append(append([]any{}, args...), limit, offset)
 	rows, err := s.Store.Pool.Query(r.Context(), `SELECT c.id,c.code,c.title,c.description,c.owner_id,COALESCE(u.display_name,'') AS owner,c.created_at,c.updated_at,
                 (SELECT count(*) FROM checklist_items i WHERE i.control_id=c.id) AS mapped_items,
                 (SELECT count(DISTINCT sub.review_request_id) FROM checklist_items i JOIN submission_items si ON si.source_item_id=i.id JOIN submissions sub ON sub.id=si.submission_id WHERE i.control_id=c.id) AS affected_reviews
-                FROM security_controls c LEFT JOIN users u ON u.id=c.owner_id WHERE `+where+` ORDER BY c.code LIMIT 500`, args...)
+                FROM security_controls c LEFT JOIN users u ON u.id=c.owner_id WHERE `+where+
+		` ORDER BY c.code LIMIT $`+intString(len(paged)-1)+` OFFSET $`+intString(len(paged)), paged...)
 	if err != nil {
 		problem(w, 500, "QUERY_FAILED", "Security Control을 불러오지 못했습니다.", nil)
 		return
 	}
-	jsonResponse(w, 200, scanDynamic(rows, []string{"id", "code", "title", "description", "owner_id", "owner", "created_at", "updated_at", "mapped_items", "affected_reviews"}))
+	items := scanDynamic(rows, []string{"id", "code", "title", "description", "owner_id", "owner", "created_at", "updated_at", "mapped_items", "affected_reviews"})
+	jsonResponse(w, 200, map[string]any{"items": items, "total": total, "limit": limit, "offset": offset, "has_more": int64(offset+len(items)) < total})
 }
 
 type controlInput struct {
