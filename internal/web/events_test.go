@@ -1,7 +1,10 @@
 package web
 
 import (
+	"encoding/json"
+	"fmt"
 	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -123,5 +126,48 @@ func TestOpenAPIDescribesEveryAPIRoute(t *testing.T) {
 	}
 	if api < 90 {
 		t.Fatalf("only %d API routes were registered; the table looks incomplete", api)
+	}
+}
+
+// The console's tool list is served from the same definitions the protocol
+// serves, because the hand-written copy had drifted to five entries while
+// seven were being offered.
+func TestIntegrationInfoMatchesTheServedTools(t *testing.T) {
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/integrations", nil)
+	(&Server{}).integrationInfo(rec, req)
+
+	var info struct {
+		MCPVersion string `json:"mcp_version"`
+		Tools      []struct {
+			Name        string `json:"name"`
+			Title       string `json:"title"`
+			Description string `json:"description"`
+			ReadOnly    bool   `json:"read_only"`
+		} `json:"tools"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &info); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if len(info.Tools) != len(mcpTools()) {
+		t.Fatalf("the console is told about %d tools while %d are served", len(info.Tools), len(mcpTools()))
+	}
+	if info.MCPVersion != mcpVersion {
+		t.Errorf("advertised protocol version %q, serving %q", info.MCPVersion, mcpVersion)
+	}
+	served := map[string]bool{}
+	for _, tool := range mcpTools() {
+		served[fmt.Sprint(tool["name"])] = true
+	}
+	for _, tool := range info.Tools {
+		if !served[tool.Name] {
+			t.Errorf("the console advertises %s, which is not served", tool.Name)
+		}
+		if tool.Title == "" || tool.Description == "" {
+			t.Errorf("%s is advertised without a description", tool.Name)
+		}
+		if !tool.ReadOnly {
+			t.Errorf("%s is advertised as writing, but the page promises read-only tools", tool.Name)
+		}
 	}
 }

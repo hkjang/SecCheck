@@ -186,6 +186,7 @@ func (s *Server) routes() {
 	s.handle("GET", "/api/v1/admin/system", "관리", "버전, 스키마 버전, 데이터 규모", []string{"SYSTEM_ADMIN"}, false, s.systemInfo)
 
 	// Machine interfaces.
+	s.handle("GET", "/api/v1/integrations", "machine", "연계 인터페이스 정보와 제공 중인 MCP 도구 목록", nil, false, s.integrationInfo)
 	s.handle("GET", "/api/openapi.json", "machine", "OpenAPI 3.1 명세", nil, false, s.openAPI)
 	s.handle("POST", "/mcp", "machine", "MCP 2026-07-28 Streamable HTTP endpoint", nil, false, s.mcp)
 	s.mux.Handle("/", SPA{Dir: s.WebDir})

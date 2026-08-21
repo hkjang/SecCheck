@@ -137,6 +137,29 @@ func decodeMCPHeader(v string) (string, bool) {
 	return v, true
 }
 
+// integrationInfo describes the machine interfaces for the console. The page
+// used to hard-code the tool list and had drifted to five entries while seven
+// were served, so an integrator reading it did not know two of them existed.
+// Serving the real list means it cannot drift again.
+func (s *Server) integrationInfo(w http.ResponseWriter, r *http.Request) {
+	tools := make([]map[string]any, 0, len(mcpTools()))
+	for _, tool := range mcpTools() {
+		annotations, _ := tool["annotations"].(map[string]any)
+		readOnly, _ := annotations["readOnlyHint"].(bool)
+		tools = append(tools, map[string]any{
+			"name": tool["name"], "title": tool["title"], "description": tool["description"], "read_only": readOnly,
+		})
+	}
+	jsonResponse(w, 200, map[string]any{
+		"api_version":       "v1",
+		"openapi":           "/api/openapi.json",
+		"mcp_endpoint":      "/mcp",
+		"mcp_version":       mcpVersion,
+		"mcp_compatibility": []string{"2025-11-25"},
+		"tools":             tools,
+	})
+}
+
 func mcpTools() []map[string]any {
 	return []map[string]any{
 		{"name": "seccheck.dashboard", "title": "SecCheck dashboard", "description": "권한 범위의 심의 상태별 건수와 처리할 보완 요청을 조회합니다.", "inputSchema": map[string]any{"type": "object", "additionalProperties": false}, "annotations": map[string]any{"readOnlyHint": true, "destructiveHint": false}},
