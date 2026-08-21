@@ -117,4 +117,5 @@ export type AuthValue = {
   version: string
   refresh: () => Promise<void>
   logout: () => Promise<void>
+  enrolling?: boolean
 }

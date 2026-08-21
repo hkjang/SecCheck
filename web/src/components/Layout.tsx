@@ -31,7 +31,7 @@ const titles: Record<string, [string, string]> = {
 }
 
 export default function Layout() {
-  const { user, version, logout } = useAuth()
+  const { user, version, logout, enrolling } = useAuth()
   const location = useLocation()
   const navigate = useNavigate()
   const [profile, setProfile] = useState(false)
@@ -47,7 +47,16 @@ export default function Layout() {
   useEffect(() => { const timer = window.setTimeout(async () => { if (query.trim().length >= 2) setResults(await get(`/api/v1/search?q=${encodeURIComponent(query)}`)); else setResults({}) }, 250); return () => clearTimeout(timer) }, [query])
   // The badge refreshes on every navigation and once a minute, so a reviewer
   // sees a new assignment without having to open the notifications page.
-  useEffect(() => { let alive = true; const poll = () => get<{ count: number }>('/api/v1/notifications/unread-count').then(v => { if (alive) setUnread(v.count) }).catch(() => undefined); poll(); const timer = window.setInterval(poll, 60000); return () => { alive = false; clearInterval(timer) } }, [location.pathname])
+  useEffect(() => {
+    // While a second factor is still outstanding every request but enrolment
+    // is refused, so polling would just churn.
+    if (enrolling) return
+    let alive = true
+    const poll = () => get<{ count: number }>('/api/v1/notifications/unread-count').then(v => { if (alive) setUnread(v.count) }).catch(() => undefined)
+    poll()
+    const timer = window.setInterval(poll, 60000)
+    return () => { alive = false; clearInterval(timer) }
+  }, [location.pathname, enrolling])
   let lastSection = ''
   return <div className="app-shell">
     <aside className="sidebar">

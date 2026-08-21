@@ -1339,3 +1339,68 @@ func TestSettingChangesApplyImmediately(t *testing.T) {
 		t.Errorf("time zone still %v after the second change", zone)
 	}
 }
+
+func TestReviewHistoryIsScopedAndVisibleToParticipants(t *testing.T) {
+	h := newHarness(t)
+	reviewerID := h.user("history-reviewer", "SECURITY_REVIEWER")
+	h.user("history-author", "REQUESTER")
+	h.user("history-outsider", "REQUESTER")
+	author := h.login("history-author")
+	reviewer := h.login("history-reviewer")
+
+	reviewID := author.createReview("이력 서비스")
+	other := author.createReview("다른 서비스")
+	author.do(http.MethodPatch, "/api/v1/review-requests/"+reviewID, map[string]string{"reviewer_id": reviewerID})
+
+	items := []map[string]any{}
+	_ = json.Unmarshal([]byte(author.do(http.MethodGet, "/api/v1/review-requests/"+reviewID+"/items", nil).body), &items)
+	itemID, _ := items[0]["id"].(string)
+	itemCode, _ := items[0]["item_code"].(string)
+	author.do(http.MethodPut, fmt.Sprintf("/api/v1/review-requests/%s/responses/%s", reviewID, itemID), map[string]any{"applicability": "Y", "self_assessment": "COMPLIANT"})
+	reviewer.do(http.MethodPost, fmt.Sprintf("/api/v1/review-requests/%s/items/%s/comments", reviewID, itemID), map[string]string{"body": "확인 부탁드립니다."})
+
+	page := author.do(http.MethodGet, "/api/v1/review-requests/"+reviewID+"/history", nil).json()
+	entries, _ := page["items"].([]any)
+	if len(entries) < 3 {
+		t.Fatalf("history has %d entries, want the creation, the answer and the comment at least", len(entries))
+	}
+	kinds := map[string]bool{}
+	labelled := 0
+	for _, raw := range entries {
+		entry, _ := raw.(map[string]any)
+		kinds[fmt.Sprint(entry["event_type"])] = true
+		if label, _ := entry["event_label"].(string); label != "" {
+			labelled++
+		}
+	}
+	if labelled != len(entries) {
+		t.Errorf("%d of %d history entries have a readable label", labelled, len(entries))
+	}
+	for _, want := range []string{"CREATE_SUBMISSION", "UPDATE_RESPONSE", "CREATE_COMMENT"} {
+		if !kinds[want] {
+			t.Errorf("%s is missing from the history: %v", want, kinds)
+		}
+	}
+	// Item-level events say which item they belong to.
+	foundItem := false
+	for _, raw := range entries {
+		entry, _ := raw.(map[string]any)
+		if entry["event_type"] == "UPDATE_RESPONSE" && entry["item_code"] == itemCode {
+			foundItem = true
+		}
+	}
+	if !foundItem && itemCode != "" {
+		t.Error("an item-level event does not name its checklist item")
+	}
+
+	// The other review's events must not leak in.
+	otherPage := author.do(http.MethodGet, "/api/v1/review-requests/"+other+"/history", nil).json()
+	if otherEntries, _ := otherPage["items"].([]any); len(otherEntries) >= len(entries) {
+		t.Errorf("the second review shows %d entries against the first review's %d; the scope is too wide", len(otherEntries), len(entries))
+	}
+
+	// And someone with no access to the review cannot read its history.
+	if res := h.login("history-outsider").do(http.MethodGet, "/api/v1/review-requests/"+reviewID+"/history", nil); res.status != http.StatusNotFound {
+		t.Errorf("an unrelated user read the review history: %d", res.status)
+	}
+}

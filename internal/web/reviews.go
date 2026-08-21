@@ -437,6 +437,44 @@ func (s *Server) updateReviewRequest(w http.ResponseWriter, r *http.Request) {
 	jsonResponse(w, 200, map[string]any{"id": id})
 }
 
+// reviewHistory assembles what happened to one review from the audit log.
+// Everything was already recorded, but only a system administrator or auditor
+// could look at it, so the requester could not answer "when did the change
+// request arrive" or "why was this rejected" from their own review.
+func (s *Server) reviewHistory(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	if !s.canAccessReview(r.Context(), session(r), id) {
+		problem(w, 404, "NOT_FOUND", "심의를 찾을 수 없습니다.", nil)
+		return
+	}
+	limit, offset := parsePage(r)
+	// The events that belong to a review are the ones aimed at it and at the
+	// rows that hang off it.
+	scope := `(a.target_id=$1
+                OR a.target_id IN (SELECT si.id FROM submissions sub JOIN submission_items si ON si.submission_id=sub.id WHERE sub.review_request_id=$1)
+                OR a.target_id IN (SELECT e.id FROM submissions sub JOIN submission_items si ON si.submission_id=sub.id JOIN evidences e ON e.submission_item_id=si.id WHERE sub.review_request_id=$1)
+                OR a.target_id IN (SELECT c.id FROM change_requests c WHERE c.review_request_id=$1))`
+	var total int64
+	if err := s.Store.Pool.QueryRow(r.Context(), `SELECT count(*) FROM audit_logs a WHERE `+scope, id).Scan(&total); err != nil {
+		problem(w, 500, "QUERY_FAILED", "심의 이력을 불러오지 못했습니다.", nil)
+		return
+	}
+	rows, err := s.Store.Pool.Query(r.Context(), `SELECT a.timestamp,a.event_type,a.user_name,a.target_type,a.target_id,a.result,
+                COALESCE((SELECT si.item_code FROM submission_items si WHERE si.id=a.target_id),'') AS item_code
+                FROM audit_logs a WHERE `+scope+` ORDER BY a.timestamp DESC LIMIT $2 OFFSET $3`, id, limit, offset)
+	if err != nil {
+		problem(w, 500, "QUERY_FAILED", "심의 이력을 불러오지 못했습니다.", nil)
+		return
+	}
+	items := scanDynamic(rows, []string{"timestamp", "event_type", "user_name", "target_type", "target_id", "result", "item_code"})
+	for _, item := range items {
+		if code, ok := item["event_type"].(string); ok {
+			item["event_label"] = auditEventLabels[code]
+		}
+	}
+	jsonResponse(w, 200, map[string]any{"items": items, "total": total, "limit": limit, "offset": offset, "has_more": int64(offset+len(items)) < total})
+}
+
 func (s *Server) listSubmissionItems(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 	if !s.canAccessReview(r.Context(), session(r), id) {
