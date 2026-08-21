@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/hkjang/SecCheck/internal/auth"
+	"github.com/hkjang/SecCheck/internal/notify"
 	"github.com/hkjang/SecCheck/internal/store"
 )
 
@@ -246,6 +247,12 @@ func validateSetting(key string, m map[string]any) string {
 		if n := numericSetting(m["retention_days"]); n < 30 || n > 36500 {
 			return "보존 기간은 30~36500일이어야 합니다."
 		}
+		if raw := strings.TrimSpace(stringValue(m["base_url"])); raw != "" {
+			u, err := url.Parse(raw)
+			if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
+				return "서비스 주소는 http(s)로 시작하는 완전한 URL이어야 합니다."
+			}
+		}
 	case "workflow":
 		if enabled, _ := m["approval_enabled"].(bool); enabled {
 			// The approver itself is selected per review; no extra global secret is needed.
@@ -313,6 +320,9 @@ func validateSetting(key string, m map[string]any) string {
 			if n := numericSetting(m["smtp_port"]); n < 1 || n > 65535 {
 				return "SMTP 포트 범위를 확인하세요."
 			}
+		}
+		if n := numericSetting(m["digest_hour"]); n < 0 || n > 23 {
+			return "요약 발송 시각은 0~23시여야 합니다."
 		}
 	}
 	return ""
@@ -547,6 +557,32 @@ func intString(v int) string {
 // listJobs gives administrators the background queue that until now was only
 // visible as two numbers on /metrics. A stuck e-mail or an evidence scan that
 // never cleared has to be findable and retryable from the console.
+// testSMTP sends one message with the saved settings so an administrator can
+// confirm the path before the first real notification depends on it.
+func (s *Server) testSMTP(w http.ResponseWriter, r *http.Request) {
+	var in struct {
+		Recipient string `json:"recipient"`
+	}
+	if !decodeOptionalJSON(w, r, &in) {
+		return
+	}
+	recipient := strings.TrimSpace(in.Recipient)
+	if recipient == "" {
+		recipient = session(r).User.Email
+	}
+	if recipient == "" {
+		problem(w, 422, "VALIDATION_FAILED", "받는 주소를 입력하거나 프로필에 이메일을 등록하세요.", nil)
+		return
+	}
+	if err := notify.New(s.Store, s.Box).SendTest(r.Context(), recipient); err != nil {
+		_ = s.Store.Audit(r.Context(), auditFrom(r, "TEST_SMTP", "SETTING", "notification", nil, map[string]any{"recipient": recipient, "error": err.Error()}))
+		problem(w, 502, "SMTP_FAILED", "테스트 메일을 보내지 못했습니다: "+err.Error(), nil)
+		return
+	}
+	_ = s.Store.Audit(r.Context(), auditFrom(r, "TEST_SMTP", "SETTING", "notification", nil, map[string]any{"recipient": recipient}))
+	jsonResponse(w, 200, map[string]any{"sent_to": recipient})
+}
+
 func (s *Server) listJobs(w http.ResponseWriter, r *http.Request) {
 	limit := parseLimit(r)
 	where := "TRUE"

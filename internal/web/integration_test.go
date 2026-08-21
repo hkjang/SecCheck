@@ -481,3 +481,164 @@ func TestOnlyAdministratorsReachTheJobQueue(t *testing.T) {
 		t.Errorf("a requester reached the job queue: %d", res.status)
 	}
 }
+
+func TestNotificationPreferencesGovernEmailButNeverTheRecord(t *testing.T) {
+	h := newHarness(t)
+	ctx := context.Background()
+	reviewerID := h.user("prefreviewer", "SECURITY_REVIEWER")
+	h.user("prefwriter", "REQUESTER")
+	writer := h.login("prefwriter")
+	reviewer := h.login("prefreviewer")
+	// E-mail has to be on globally for the per-user preference to matter.
+	admin := h.login(adminOf(h))
+	if res := admin.do(http.MethodPut, "/api/v1/admin/settings/notification", map[string]any{
+		"email_enabled": true, "smtp_host": "smtp.internal", "smtp_port": 25, "smtp_username": "", "smtp_tls_mode": "none", "from": "seccheck@example.test", "digest_hour": 8,
+	}); res.status != http.StatusOK {
+		t.Fatalf("enable e-mail: %d %s", res.status, res.body)
+	}
+
+	reviewID := writer.createReview("알림 서비스")
+	assign := func() {
+		if res := writer.do(http.MethodPatch, "/api/v1/review-requests/"+reviewID, map[string]string{"reviewer_id": reviewerID}); res.status != http.StatusOK && res.status != http.StatusNoContent {
+			t.Fatalf("assign reviewer: %d %s", res.status, res.body)
+		}
+	}
+	assign()
+	emailed := func() int {
+		var n int
+		if err := h.db.Pool.QueryRow(ctx, `SELECT count(*) FROM jobs WHERE type='SEND_EMAIL'`).Scan(&n); err != nil {
+			t.Fatal(err)
+		}
+		return n
+	}
+	if emailed() != 1 {
+		t.Fatalf("the default preference should have queued one e-mail, got %d", emailed())
+	}
+
+	// Muting the event stops the mail but must not stop the record.
+	if res := reviewer.do(http.MethodPut, "/api/v1/me/notification-preferences", map[string]any{"email_enabled": true, "digest": "IMMEDIATE", "muted_events": []string{"REVIEW_ASSIGNED"}}); res.status != http.StatusNoContent {
+		t.Fatalf("save preference: %d %s", res.status, res.body)
+	}
+	assign()
+	if emailed() != 1 {
+		t.Errorf("a muted event still queued an e-mail (%d jobs)", emailed())
+	}
+	var recorded int
+	if err := h.db.Pool.QueryRow(ctx, `SELECT count(*) FROM notifications WHERE recipient_id=$1 AND event_type='REVIEW_ASSIGNED'`, reviewerID).Scan(&recorded); err != nil {
+		t.Fatal(err)
+	}
+	if recorded != 2 {
+		t.Errorf("in-app notifications recorded = %d, want 2 regardless of e-mail preference", recorded)
+	}
+
+	// A daily-digest recipient is left for the digest worker: queued now, no
+	// job, and emailed_at still null so the summary can pick it up.
+	if res := reviewer.do(http.MethodPut, "/api/v1/me/notification-preferences", map[string]any{"email_enabled": true, "digest": "DAILY", "muted_events": []string{}}); res.status != http.StatusNoContent {
+		t.Fatalf("save digest preference: %d %s", res.status, res.body)
+	}
+	assign()
+	if emailed() != 1 {
+		t.Errorf("a digest recipient should not queue an immediate e-mail (%d jobs)", emailed())
+	}
+	var awaiting int
+	if err := h.db.Pool.QueryRow(ctx, `SELECT count(*) FROM notifications WHERE recipient_id=$1 AND emailed_at IS NULL`, reviewerID).Scan(&awaiting); err != nil {
+		t.Fatal(err)
+	}
+	if awaiting == 0 {
+		t.Error("nothing was left for the daily digest to send")
+	}
+	if res := reviewer.do(http.MethodPut, "/api/v1/me/notification-preferences", map[string]any{"email_enabled": true, "digest": "HOURLY", "muted_events": []string{}}); res.status != http.StatusUnprocessableEntity {
+		t.Errorf("an unknown digest period was accepted: %d", res.status)
+	}
+	if res := reviewer.do(http.MethodPut, "/api/v1/me/notification-preferences", map[string]any{"email_enabled": true, "digest": "IMMEDIATE", "muted_events": []string{"NOT_AN_EVENT"}}); res.status != http.StatusUnprocessableEntity {
+		t.Errorf("an unknown event code was accepted: %d", res.status)
+	}
+}
+
+func TestNotificationsLinkBackToTheirReview(t *testing.T) {
+	h := newHarness(t)
+	reviewerID := h.user("linkreviewer", "SECURITY_REVIEWER")
+	h.user("linkwriter", "REQUESTER")
+	writer := h.login("linkwriter")
+	reviewer := h.login("linkreviewer")
+	reviewID := writer.createReview("링크 서비스")
+	writer.do(http.MethodPatch, "/api/v1/review-requests/"+reviewID, map[string]string{"reviewer_id": reviewerID})
+
+	page := reviewer.do(http.MethodGet, "/api/v1/notifications", nil).json()
+	items, _ := page["items"].([]any)
+	if len(items) == 0 {
+		t.Fatalf("the reviewer received no notification: %v", page)
+	}
+	first, _ := items[0].(map[string]any)
+	if first["target_type"] != "REVIEW_REQUEST" || first["target_id"] != reviewID {
+		t.Errorf("notification points at %v/%v, want REVIEW_REQUEST/%s", first["target_type"], first["target_id"], reviewID)
+	}
+	if unread := reviewer.do(http.MethodGet, "/api/v1/notifications?unread=1", nil).json(); unread["total"] == float64(0) {
+		t.Error("the unread filter returned nothing while an unread notification exists")
+	}
+	if filtered := reviewer.do(http.MethodGet, "/api/v1/notifications?event=CHANGE_REQUEST", nil).json(); filtered["total"] != float64(0) {
+		t.Errorf("the event filter matched unrelated notifications: %v", filtered["total"])
+	}
+}
+
+func TestSMTPTestEndpointAcceptsAnEmptyBody(t *testing.T) {
+	h := newHarness(t)
+	admin := h.login(adminOf(h))
+	admin.do(http.MethodPatch, "/api/v1/me", map[string]string{"display_name": "관리자", "email": "admin@example.test", "department": ""})
+	// No SMTP server is reachable from the test, so a delivery failure is the
+	// expected outcome; what matters is that the request itself is accepted
+	// rather than rejected for having no JSON body, which is what the console
+	// sends.
+	res := admin.do(http.MethodPost, "/api/v1/admin/settings/notification/test", nil)
+	if res.errorCode() == "INVALID_JSON" {
+		t.Fatalf("an empty body was rejected: %s", res.body)
+	}
+	if res.status != http.StatusBadGateway && res.status != http.StatusOK {
+		t.Fatalf("unexpected status %d: %s", res.status, res.body)
+	}
+	if res := admin.do(http.MethodPost, "/api/v1/admin/settings/notification/test", map[string]string{"recipient": "not-an-address"}); res.status == http.StatusOK {
+		t.Error("an invalid recipient was accepted")
+	}
+}
+
+func TestTemplateDeletionOnlyWhileUnused(t *testing.T) {
+	h := newHarness(t)
+	admin := h.login(adminOf(h))
+
+	created := admin.do(http.MethodPost, "/api/v1/templates", map[string]string{"name": "삭제 가능 템플릿", "category": "DEVELOPMENT", "description": "", "version": "V1.0"})
+	if created.status != http.StatusCreated {
+		t.Fatalf("create template: %d %s", created.status, created.body)
+	}
+	draftID, _ := created.json()["id"].(string)
+	if res := admin.do(http.MethodDelete, "/api/v1/templates/"+draftID, nil); res.status != http.StatusNoContent {
+		t.Fatalf("deleting an unused draft returned %d %s", res.status, res.body)
+	}
+	if res := admin.do(http.MethodGet, "/api/v1/templates/"+draftID, nil); res.status != http.StatusNotFound {
+		t.Errorf("the template survived deletion: %d", res.status)
+	}
+
+	// A template the seeded workbook published is in use and must be refused.
+	list := []map[string]any{}
+	if err := json.Unmarshal([]byte(admin.do(http.MethodGet, "/api/v1/templates", nil).body), &list); err != nil {
+		t.Fatal(err)
+	}
+	var publishedID string
+	for _, tpl := range list {
+		versions, _ := tpl["versions"].([]any)
+		for _, v := range versions {
+			if version, ok := v.(map[string]any); ok && version["status"] == "PUBLISHED" {
+				publishedID, _ = tpl["id"].(string)
+			}
+		}
+	}
+	if publishedID == "" {
+		t.Fatal("the seeded workbook should have published at least one template")
+	}
+	res := admin.do(http.MethodDelete, "/api/v1/templates/"+publishedID, nil)
+	if res.status != http.StatusConflict || res.errorCode() != "TEMPLATE_IN_USE" {
+		t.Fatalf("a published template was deletable: %d %s", res.status, res.body)
+	}
+	if res := admin.do(http.MethodDelete, "/api/v1/templates/does-not-exist", nil); res.status != http.StatusNotFound {
+		t.Errorf("deleting a missing template returned %d", res.status)
+	}
+}

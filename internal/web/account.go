@@ -208,3 +208,79 @@ func (s *Server) bulkSaveResponses(w http.ResponseWriter, r *http.Request) {
 	_ = s.Store.Audit(r.Context(), auditFrom(r, "BULK_UPDATE_RESPONSE", "REVIEW_REQUEST", reviewID, nil, map[string]any{"items": len(in.ItemIDs), "applied": tag.RowsAffected(), "applicability": in.Applicability, "overwrite": in.Overwrite}))
 	jsonResponse(w, 200, map[string]any{"requested": len(in.ItemIDs), "applied": tag.RowsAffected(), "skipped": int64(len(in.ItemIDs)) - tag.RowsAffected()})
 }
+
+// notificationEvents is the catalogue the preference screen renders. Keeping
+// it here means a new event type has one place to be registered.
+var notificationEvents = []map[string]string{
+	{"code": "REVIEW_SUBMITTED", "label": "심의 제출·재제출", "description": "담당 심의가 제출되거나 재제출되었을 때"},
+	{"code": "REVIEW_ASSIGNED", "label": "심의 배정", "description": "심의 담당자로 배정되었을 때"},
+	{"code": "CHANGE_REQUEST", "label": "보완 요청", "description": "작성한 항목에 보완 요청이 등록되었을 때"},
+	{"code": "CHANGE_DONE", "label": "보완 조치 완료", "description": "요청한 보완이 조치되었을 때"},
+	{"code": "CHANGE_REQUEST_DUE", "label": "보완 기한 임박·초과", "description": "보완 조치 기한이 다가오거나 지났을 때"},
+	{"code": "APPROVAL_PENDING", "label": "최종 승인 요청", "description": "승인자로서 결재가 필요할 때"},
+	{"code": "APPROVED", "label": "심의 완료", "description": "심의가 승인되거나 검토 완료되었을 때"},
+	{"code": "REJECTED", "label": "심의 반려", "description": "심의가 반려되었을 때"},
+	{"code": "EVIDENCE_INFECTED", "label": "증적 악성코드 탐지", "description": "업로드한 증적에서 악성코드가 발견되었을 때"},
+	{"code": "AUDIT_CHAIN_BROKEN", "label": "감사로그 무결성 실패", "description": "해시 체인 검증이 실패했을 때 (시스템 관리자)"},
+}
+
+type notificationPreference struct {
+	EmailEnabled bool     `json:"email_enabled"`
+	Digest       string   `json:"digest"`
+	MutedEvents  []string `json:"muted_events"`
+}
+
+func (s *Server) getNotificationPreferences(w http.ResponseWriter, r *http.Request) {
+	pref := notificationPreference{EmailEnabled: true, Digest: "IMMEDIATE", MutedEvents: []string{}}
+	var muted []string
+	err := s.Store.Pool.QueryRow(r.Context(), `SELECT email_enabled,digest,muted_events FROM notification_preferences WHERE user_id=$1`, session(r).User.ID).
+		Scan(&pref.EmailEnabled, &pref.Digest, &muted)
+	if err == nil && muted != nil {
+		pref.MutedEvents = muted
+	}
+	var global struct {
+		EmailEnabled bool `json:"email_enabled"`
+	}
+	_, _ = s.Store.Setting(r.Context(), "notification", &global)
+	jsonResponse(w, 200, map[string]any{
+		"preference":     pref,
+		"events":         notificationEvents,
+		"email_capable":  global.EmailEnabled,
+		"email_address":  session(r).User.Email,
+		"digest_options": []map[string]string{{"code": "IMMEDIATE", "label": "발생 즉시"}, {"code": "DAILY", "label": "하루 한 번 요약"}},
+	})
+}
+
+func (s *Server) updateNotificationPreferences(w http.ResponseWriter, r *http.Request) {
+	var in notificationPreference
+	if !decodeJSON(w, r, &in) {
+		return
+	}
+	if in.Digest != "IMMEDIATE" && in.Digest != "DAILY" {
+		problem(w, 422, "VALIDATION_FAILED", "수신 주기를 확인하세요.", nil)
+		return
+	}
+	known := map[string]bool{}
+	for _, event := range notificationEvents {
+		known[event["code"]] = true
+	}
+	muted := []string{}
+	for _, code := range in.MutedEvents {
+		if !known[code] {
+			problem(w, 422, "VALIDATION_FAILED", "알 수 없는 알림 유형입니다: "+code, nil)
+			return
+		}
+		if !contains(muted, code) {
+			muted = append(muted, code)
+		}
+	}
+	_, err := s.Store.Pool.Exec(r.Context(), `INSERT INTO notification_preferences(user_id,email_enabled,digest,muted_events) VALUES($1,$2,$3,$4)
+                ON CONFLICT(user_id) DO UPDATE SET email_enabled=EXCLUDED.email_enabled,digest=EXCLUDED.digest,muted_events=EXCLUDED.muted_events,updated_at=now()`,
+		session(r).User.ID, in.EmailEnabled, in.Digest, muted)
+	if err != nil {
+		problem(w, 500, "UPDATE_FAILED", "알림 설정을 저장하지 못했습니다.", nil)
+		return
+	}
+	_ = s.Store.Audit(r.Context(), auditFrom(r, "UPDATE_NOTIFICATION_PREFERENCE", "USER", session(r).User.ID, nil, map[string]any{"email_enabled": in.EmailEnabled, "digest": in.Digest, "muted": len(muted)}))
+	w.WriteHeader(204)
+}

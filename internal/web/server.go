@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"net"
 	"net/http"
@@ -85,6 +86,8 @@ func (s *Server) routes() {
 	s.mux.Handle("GET /api/v1/notifications", s.require(nil, http.HandlerFunc(s.notifications)))
 	s.mux.Handle("GET /api/v1/notifications/unread-count", s.require(nil, http.HandlerFunc(s.unreadNotifications)))
 	s.mux.Handle("POST /api/v1/notifications/read-all", s.require(nil, http.HandlerFunc(s.readAllNotifications)))
+	s.mux.Handle("GET /api/v1/me/notification-preferences", s.require(nil, http.HandlerFunc(s.getNotificationPreferences)))
+	s.mux.Handle("PUT /api/v1/me/notification-preferences", s.require(nil, http.HandlerFunc(s.updateNotificationPreferences)))
 	s.mux.Handle("GET /api/v1/users/directory", s.require(nil, http.HandlerFunc(s.userDirectory)))
 	s.mux.Handle("POST /api/v1/notifications/{id}/read", s.require(nil, http.HandlerFunc(s.readNotification)))
 	s.mux.Handle("GET /api/v1/review-requests", s.require(nil, http.HandlerFunc(s.listReviewRequests)))
@@ -127,6 +130,7 @@ func (s *Server) routes() {
 	s.mux.Handle("POST /api/v1/templates", s.require([]string{"TEMPLATE_ADMIN"}, http.HandlerFunc(s.createTemplate)))
 	s.mux.Handle("GET /api/v1/templates/{id}", s.require(nil, http.HandlerFunc(s.getTemplate)))
 	s.mux.Handle("PATCH /api/v1/templates/{id}", s.require([]string{"TEMPLATE_ADMIN"}, http.HandlerFunc(s.updateTemplate)))
+	s.mux.Handle("DELETE /api/v1/templates/{id}", s.require([]string{"TEMPLATE_ADMIN"}, http.HandlerFunc(s.deleteTemplate)))
 	s.mux.Handle("POST /api/v1/templates/{id}/copy", s.require([]string{"TEMPLATE_ADMIN"}, http.HandlerFunc(s.copyTemplate)))
 	s.mux.Handle("POST /api/v1/templates/{id}/versions", s.require([]string{"TEMPLATE_ADMIN"}, http.HandlerFunc(s.createTemplateVersion)))
 	s.mux.Handle("POST /api/v1/templates/{id}/versions/{versionID}/items", s.require([]string{"TEMPLATE_ADMIN"}, http.HandlerFunc(s.createTemplateItem)))
@@ -158,6 +162,7 @@ func (s *Server) routes() {
 	s.mux.Handle("GET /api/v1/admin/settings", s.require([]string{"SYSTEM_ADMIN"}, http.HandlerFunc(s.listSettings)))
 	s.mux.Handle("PUT /api/v1/admin/settings/{key}", s.require([]string{"SYSTEM_ADMIN"}, http.HandlerFunc(s.updateSetting)))
 	s.mux.Handle("POST /api/v1/admin/settings/oidc/test", s.require([]string{"SYSTEM_ADMIN"}, http.HandlerFunc(s.testOIDC)))
+	s.mux.Handle("POST /api/v1/admin/settings/notification/test", s.require([]string{"SYSTEM_ADMIN"}, http.HandlerFunc(s.testSMTP)))
 	s.mux.Handle("GET /api/v1/admin/audit", s.require([]string{"SYSTEM_ADMIN", "AUDITOR"}, http.HandlerFunc(s.listAudit)))
 	s.mux.Handle("GET /api/v1/admin/audit/verify", s.require([]string{"SYSTEM_ADMIN", "AUDITOR"}, http.HandlerFunc(s.verifyAudit)))
 	s.mux.Handle("GET /api/v1/admin/logs", s.require([]string{"SYSTEM_ADMIN"}, http.HandlerFunc(s.listLogs)))
@@ -341,6 +346,22 @@ func decodeJSON(w http.ResponseWriter, r *http.Request, out any) bool {
 // clientIP returns the address the request is attributed to for rate limiting
 // and audit logging. The middleware resolves it once per request; the direct
 // peer address is the fallback for handlers reached outside that path.
+// decodeOptionalJSON accepts an absent body, for endpoints whose fields are
+// all optional. decodeJSON would reject the empty request the UI sends.
+func decodeOptionalJSON(w http.ResponseWriter, r *http.Request, out any) bool {
+	r.Body = http.MaxBytesReader(w, r.Body, 2<<20)
+	d := json.NewDecoder(r.Body)
+	d.DisallowUnknownFields()
+	if err := d.Decode(out); err != nil {
+		if errors.Is(err, io.EOF) {
+			return true
+		}
+		problem(w, 400, "INVALID_JSON", "입력 형식이 올바르지 않습니다.", err.Error())
+		return false
+	}
+	return true
+}
+
 func clientIP(r *http.Request) string {
 	if value, ok := r.Context().Value(clientIPKey).(string); ok && value != "" {
 		return value

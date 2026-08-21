@@ -23,13 +23,14 @@ type Worker struct {
 }
 
 type emailSettings struct {
-	Enabled  bool   `json:"email_enabled"`
-	Host     string `json:"smtp_host"`
-	Port     int    `json:"smtp_port"`
-	Username string `json:"smtp_username"`
-	TLSMode  string `json:"smtp_tls_mode"`
-	From     string `json:"from"`
-	Password string `json:"-"`
+	Enabled    bool   `json:"email_enabled"`
+	Host       string `json:"smtp_host"`
+	Port       int    `json:"smtp_port"`
+	Username   string `json:"smtp_username"`
+	TLSMode    string `json:"smtp_tls_mode"`
+	From       string `json:"from"`
+	DigestHour int    `json:"digest_hour"`
+	Password   string `json:"-"`
 }
 
 type job struct {
@@ -41,10 +42,15 @@ type job struct {
 func New(s *store.Store, box *cryptox.Box) *Worker { return &Worker{Store: s, Box: box} }
 
 func (w *Worker) Run(ctx context.Context) {
-	_, _ = w.Store.Pool.Exec(ctx, `UPDATE jobs SET status='PENDING',locked_at=NULL,available_at=now(),updated_at=now() WHERE status='RUNNING' AND locked_at<now()-interval '5 minutes'`)
+	_, _ = w.Store.Pool.Exec(ctx, `UPDATE jobs SET status='PENDING',locked_at=NULL,available_at=now(),updated_at=now() WHERE type='SEND_EMAIL' AND status='RUNNING' AND locked_at<now()-interval '5 minutes'`)
 	ticker := time.NewTicker(5 * time.Second)
 	defer ticker.Stop()
+	digestChecked := time.Time{}
 	for {
+		if time.Since(digestChecked) >= 10*time.Minute {
+			w.sendDigests(ctx)
+			digestChecked = time.Now()
+		}
 		for i := 0; i < 10; i++ {
 			j, err := w.claim(ctx)
 			if errors.Is(err, pgx.ErrNoRows) {
@@ -68,6 +74,95 @@ func (w *Worker) Run(ctx context.Context) {
 	}
 }
 
+// sendDigests delivers one summary per recipient who asked for a daily digest
+// instead of a message per event. It runs at most once per person per day,
+// after the configured hour in the server's local time.
+func (w *Worker) sendDigests(ctx context.Context) {
+	var cfg emailSettings
+	encrypted, err := w.Store.Setting(ctx, "notification", &cfg)
+	if err != nil || !cfg.Enabled {
+		return
+	}
+	if cfg.DigestHour < 0 || cfg.DigestHour > 23 {
+		cfg.DigestHour = 8
+	}
+	if time.Now().Hour() < cfg.DigestHour {
+		return
+	}
+	if encrypted != "" {
+		plain, decryptErr := w.Box.Decrypt(encrypted, []byte("setting:notification"))
+		if decryptErr != nil {
+			return
+		}
+		cfg.Password = string(plain)
+	}
+	rows, err := w.Store.Pool.Query(ctx, `SELECT p.user_id,u.email FROM notification_preferences p JOIN users u ON u.id=p.user_id
+                WHERE p.digest='DAILY' AND p.email_enabled AND u.active AND u.email<>''
+                  AND (p.digest_sent_at IS NULL OR p.digest_sent_at < date_trunc('day', now()))
+                  AND EXISTS(SELECT 1 FROM notifications n WHERE n.recipient_id=p.user_id AND n.emailed_at IS NULL)`)
+	if err != nil {
+		return
+	}
+	type recipient struct{ id, email string }
+	var recipients []recipient
+	for rows.Next() {
+		var rec recipient
+		if rows.Scan(&rec.id, &rec.email) == nil {
+			recipients = append(recipients, rec)
+		}
+	}
+	rows.Close()
+
+	for _, rec := range recipients {
+		items, err := w.Store.Pool.Query(ctx, `SELECT title,body,created_at FROM notifications WHERE recipient_id=$1 AND emailed_at IS NULL ORDER BY created_at LIMIT 200`, rec.id)
+		if err != nil {
+			continue
+		}
+		var lines []string
+		for items.Next() {
+			var title, body string
+			var at time.Time
+			if items.Scan(&title, &body, &at) != nil {
+				continue
+			}
+			lines = append(lines, fmt.Sprintf("[%s] %s\n%s", at.Format("01-02 15:04"), title, truncate(body, 300)))
+		}
+		items.Close()
+		if len(lines) == 0 {
+			continue
+		}
+		subject := fmt.Sprintf("[SecCheck] 알림 요약 %d건", len(lines))
+		body := strings.Join(lines, "\n\n") + "\n\n" + serviceLink(ctx, w.Store, "")
+		if err = send(ctx, cfg, rec.email, subject, body); err != nil {
+			w.Store.Log(ctx, "ERROR", "", "notification", "digest delivery failed", map[string]any{"user_id": rec.id, "error": truncate(err.Error(), 300)})
+			continue
+		}
+		_, _ = w.Store.Pool.Exec(ctx, `UPDATE notifications SET emailed_at=now() WHERE recipient_id=$1 AND emailed_at IS NULL`, rec.id)
+		_, _ = w.Store.Pool.Exec(ctx, `UPDATE notification_preferences SET digest_sent_at=now() WHERE user_id=$1`, rec.id)
+		w.Store.Log(ctx, "INFO", "", "notification", "digest delivered", map[string]any{"user_id": rec.id, "items": len(lines)})
+	}
+}
+
+// serviceLink turns a notification target into an address people can click.
+// Without a configured base URL the e-mail simply omits the link rather than
+// guessing a hostname.
+func serviceLink(ctx context.Context, s *store.Store, targetID string) string {
+	var general struct {
+		BaseURL string `json:"base_url"`
+	}
+	if _, err := s.Setting(ctx, "general", &general); err != nil {
+		return ""
+	}
+	base := strings.TrimRight(strings.TrimSpace(general.BaseURL), "/")
+	if base == "" {
+		return ""
+	}
+	if targetID == "" {
+		return base + "/notifications"
+	}
+	return base + "/reviews/" + targetID
+}
+
 func (w *Worker) claim(ctx context.Context) (job, error) {
 	var j job
 	err := pgx.BeginFunc(ctx, w.Store.Pool, func(tx pgx.Tx) error {
@@ -83,10 +178,15 @@ func (w *Worker) deliver(ctx context.Context, j job) error {
 	if err := json.Unmarshal(j.Payload, &payload); err != nil || payload.NotificationID == "" {
 		return errors.New("invalid email job payload")
 	}
-	var to, title, body string
-	err := w.Store.Pool.QueryRow(ctx, `SELECT u.email,n.title,n.body FROM notifications n JOIN users u ON u.id=n.recipient_id WHERE n.id=$1`, payload.NotificationID).Scan(&to, &title, &body)
+	var to, title, body, targetType, targetID string
+	err := w.Store.Pool.QueryRow(ctx, `SELECT u.email,n.title,n.body,n.target_type,n.target_id FROM notifications n JOIN users u ON u.id=n.recipient_id WHERE n.id=$1`, payload.NotificationID).Scan(&to, &title, &body, &targetType, &targetID)
 	if err != nil {
 		return err
+	}
+	if targetType == "REVIEW_REQUEST" {
+		if link := serviceLink(ctx, w.Store, targetID); link != "" {
+			body = body + "\n\n" + link
+		}
 	}
 	if _, err = mail.ParseAddress(to); err != nil {
 		return errors.New("recipient has no valid email address")
@@ -106,9 +206,10 @@ func (w *Worker) deliver(ctx context.Context, j job) error {
 		}
 		cfg.Password = string(plain)
 	}
-	if err = send(ctx, cfg, to, title, body); err != nil {
+	if err = send(ctx, cfg, to, "[SecCheck] "+title, body); err != nil {
 		return err
 	}
+	_, _ = w.Store.Pool.Exec(ctx, `UPDATE notifications SET emailed_at=COALESCE(emailed_at,now()) WHERE id=$1`, payload.NotificationID)
 	w.Store.Log(ctx, "INFO", "", "notification", "email notification delivered", map[string]any{"notification_id": payload.NotificationID})
 	return nil
 }
@@ -202,4 +303,29 @@ func truncate(v string, n int) string {
 		return v
 	}
 	return v[:n]
+}
+
+// SendTest lets an administrator prove the SMTP settings before relying on
+// them, the way the OIDC discovery button proves the identity provider.
+func (w *Worker) SendTest(ctx context.Context, recipient string) error {
+	var cfg emailSettings
+	encrypted, err := w.Store.Setting(ctx, "notification", &cfg)
+	if err != nil {
+		return err
+	}
+	if encrypted != "" {
+		plain, decryptErr := w.Box.Decrypt(encrypted, []byte("setting:notification"))
+		if decryptErr != nil {
+			return decryptErr
+		}
+		cfg.Password = string(plain)
+	}
+	if _, err = mail.ParseAddress(recipient); err != nil {
+		return errors.New("받는 주소가 올바르지 않습니다")
+	}
+	body := "SecCheck SMTP 설정 테스트 메일입니다. 이 메일이 도착했다면 알림 발송 경로가 정상입니다."
+	if link := serviceLink(ctx, w.Store, ""); link != "" {
+		body += "\n\n" + link
+	}
+	return send(ctx, cfg, recipient, "[SecCheck] SMTP 설정 테스트", body)
 }

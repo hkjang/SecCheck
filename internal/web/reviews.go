@@ -213,7 +213,7 @@ func (s *Server) createReviewRequest(w http.ResponseWriter, r *http.Request) {
 	}
 	_ = s.Store.Audit(r.Context(), auditFrom(r, "CREATE_SUBMISSION", "REVIEW_REQUEST", id, nil, map[string]any{"review_number": number, "items": n}))
 	if in.ReviewerID != "" {
-		s.addNotification(r.Context(), in.ReviewerID, "REVIEW_ASSIGNED", "심의 담당자 배정", number+" 심의가 배정되었습니다.")
+		s.addTargetedNotification(r.Context(), in.ReviewerID, "REVIEW_ASSIGNED", "심의 담당자 배정", number+" 심의가 배정되었습니다.", "REVIEW_REQUEST", id)
 	}
 	jsonResponse(w, 201, map[string]any{"id": id, "review_number": number, "submission_id": submissionID, "assigned_items": n})
 }
@@ -414,7 +414,7 @@ func (s *Server) updateReviewRequest(w http.ResponseWriter, r *http.Request) {
 	}
 	_ = s.Store.Audit(r.Context(), auditFrom(r, "UPDATE_SUBMISSION", "REVIEW_REQUEST", id, nil, in))
 	if in.ReviewerID != "" {
-		s.addNotification(r.Context(), in.ReviewerID, "REVIEW_ASSIGNED", "심의 담당자 배정", id+" 심의가 배정되었습니다.")
+		s.addTargetedNotification(r.Context(), in.ReviewerID, "REVIEW_ASSIGNED", "심의 담당자 배정", "배정된 심의를 확인하세요.", "REVIEW_REQUEST", id)
 	}
 	jsonResponse(w, 200, map[string]any{"id": id})
 }
@@ -823,7 +823,7 @@ func (s *Server) createChangeRequest(w http.ResponseWriter, r *http.Request) {
 	if recipient == "" {
 		_ = s.Store.Pool.QueryRow(r.Context(), `SELECT requester_id FROM review_requests WHERE id=$1`, id).Scan(&recipient)
 	}
-	s.addNotification(r.Context(), recipient, "CHANGE_REQUEST", "보완 요청", in.Reason)
+	s.addTargetedNotification(r.Context(), recipient, "CHANGE_REQUEST", "보완 요청", in.Reason, "REVIEW_REQUEST", id)
 	_ = s.Store.Audit(r.Context(), auditFrom(r, "REQUEST_CHANGE", "CHANGE_REQUEST", crid, nil, in))
 	jsonResponse(w, 201, map[string]any{"id": crid, "status": "OPEN"})
 }
@@ -869,7 +869,7 @@ func (s *Server) updateChangeRequest(w http.ResponseWriter, r *http.Request) {
 	}
 	_ = s.Store.Audit(r.Context(), auditFrom(r, "UPDATE_CHANGE_REQUEST", "CHANGE_REQUEST", id, map[string]string{"status": status}, in))
 	if in.Status == "DONE" {
-		s.addNotification(r.Context(), requester, "CHANGE_DONE", "보완 조치 완료", in.Answer)
+		s.addTargetedNotification(r.Context(), requester, "CHANGE_DONE", "보완 조치 완료", in.Answer, "REVIEW_REQUEST", reviewID)
 	}
 	jsonResponse(w, 200, map[string]string{"status": in.Status})
 }
@@ -920,12 +920,12 @@ func (s *Server) completeReview(w http.ResponseWriter, r *http.Request) {
 		var approver string
 		_ = s.Store.Pool.QueryRow(r.Context(), `SELECT COALESCE(approver_id,'') FROM review_requests WHERE id=$1`, id).Scan(&approver)
 		if approver != "" {
-			s.addNotification(r.Context(), approver, "APPROVAL_PENDING", "최종 승인 요청", in.FinalOpinion)
+			s.addTargetedNotification(r.Context(), approver, "APPROVAL_PENDING", "최종 승인 요청", in.FinalOpinion, "REVIEW_REQUEST", id)
 		}
 	} else {
 		var requester string
 		_ = s.Store.Pool.QueryRow(r.Context(), `SELECT requester_id FROM review_requests WHERE id=$1`, id).Scan(&requester)
-		s.addNotification(r.Context(), requester, "APPROVED", "심의 검토 완료", in.FinalOpinion)
+		s.addTargetedNotification(r.Context(), requester, "APPROVED", "심의 검토 완료", in.FinalOpinion, "REVIEW_REQUEST", id)
 	}
 	_ = s.Store.Audit(r.Context(), auditFrom(r, event, "REVIEW_REQUEST", id, nil, map[string]any{"status": next, "result": in.FinalResult}))
 	jsonResponse(w, 200, map[string]string{"status": next})
@@ -975,7 +975,7 @@ func (s *Server) decideApproval(w http.ResponseWriter, r *http.Request, decision
 	_, _ = s.Store.Pool.Exec(r.Context(), `INSERT INTO approvals(id,review_request_id,approver_id,decision,comment) VALUES($1,$2,$3,$4,$5)`, store.NewID(), id, sess.User.ID, decision, in.Comment)
 	var requester string
 	_ = s.Store.Pool.QueryRow(r.Context(), `SELECT requester_id FROM review_requests WHERE id=$1`, id).Scan(&requester)
-	s.addNotification(r.Context(), requester, decision, "심의 "+decision, in.Comment)
+	s.addTargetedNotification(r.Context(), requester, decision, "심의 "+decision, in.Comment, "REVIEW_REQUEST", id)
 	event := "APPROVE"
 	if decision == "REJECTED" {
 		event = "REJECT"
@@ -1164,7 +1164,15 @@ func (s *Server) canReview(ctx context.Context, sess auth.Session, id string) bo
 	return ok
 }
 
+// addNotification records an in-app notification and decides whether it also
+// leaves as e-mail. In-app delivery is unconditional: the notification centre
+// is the record of what happened. E-mail obeys the global switch and then the
+// recipient's own preferences, so nobody is forced to receive every event.
 func (s *Server) addNotification(ctx context.Context, recipient, event, title, body string) {
+	s.addTargetedNotification(ctx, recipient, event, title, body, "", "")
+}
+
+func (s *Server) addTargetedNotification(ctx context.Context, recipient, event, title, body, targetType, targetID string) {
 	if recipient == "" {
 		return
 	}
@@ -1174,23 +1182,52 @@ func (s *Server) addNotification(ctx context.Context, recipient, event, title, b
 		return
 	}
 	defer tx.Rollback(ctx)
-	_, err = tx.Exec(ctx, `INSERT INTO notifications(id,recipient_id,event_type,title,body) VALUES($1,$2,$3,$4,$5)`, id, recipient, event, title, body)
+	_, err = tx.Exec(ctx, `INSERT INTO notifications(id,recipient_id,event_type,title,body,target_type,target_id) VALUES($1,$2,$3,$4,$5,$6,$7)`, id, recipient, event, title, body, targetType, targetID)
+	if err == nil && s.emailWanted(ctx, tx, recipient, event) {
+		_, err = tx.Exec(ctx, `INSERT INTO jobs(id,type,payload) VALUES($1,'SEND_EMAIL',jsonb_build_object('notification_id',$2::text))`, store.NewID(), id)
+		if err == nil {
+			_, err = tx.Exec(ctx, `UPDATE notifications SET emailed_at=now() WHERE id=$1`, id)
+		}
+	}
+	// A swallowed failure here used to roll the whole notification away in
+	// silence, so the error is recorded even though delivery is best-effort.
+	if err == nil {
+		err = tx.Commit(ctx)
+	}
+	if err != nil {
+		s.Store.Log(ctx, "ERROR", "", "notification", "notification could not be recorded", map[string]any{"error": err.Error(), "event": event, "recipient": recipient})
+	}
+}
+
+// emailWanted answers whether this event should be queued for immediate
+// e-mail. A daily-digest recipient is left alone here; the digest worker picks
+// the notification up later because emailed_at stays null.
+func (s *Server) emailWanted(ctx context.Context, tx pgx.Tx, recipient, event string) bool {
 	var cfg struct {
 		EmailEnabled bool `json:"email_enabled"`
 	}
-	_, _ = s.Store.Setting(ctx, "notification", &cfg)
-	if err == nil && cfg.EmailEnabled {
-		_, err = tx.Exec(ctx, `INSERT INTO jobs(id,type,payload) VALUES($1,'SEND_EMAIL',jsonb_build_object('notification_id',$2))`, store.NewID(), id)
+	if _, err := s.Store.Setting(ctx, "notification", &cfg); err != nil || !cfg.EmailEnabled {
+		return false
 	}
-	if err == nil {
-		_ = tx.Commit(ctx)
+	var enabled bool
+	var digest string
+	var muted []string
+	err := tx.QueryRow(ctx, `SELECT email_enabled,digest,muted_events FROM notification_preferences WHERE user_id=$1`, recipient).Scan(&enabled, &digest, &muted)
+	if errors.Is(err, pgx.ErrNoRows) {
+		// No preference recorded means the default: everything, immediately.
+		return true
 	}
+	if err != nil || !enabled || contains(muted, event) {
+		return false
+	}
+	return digest != "DAILY"
 }
+
 func (s *Server) notifyReviewer(ctx context.Context, id, event, body string) {
 	var recipient string
 	_ = s.Store.Pool.QueryRow(ctx, `SELECT COALESCE(reviewer_id,'') FROM review_requests WHERE id=$1`, id).Scan(&recipient)
 	if recipient != "" {
-		s.addNotification(ctx, recipient, event, "새 심의 제출", body)
+		s.addTargetedNotification(ctx, recipient, event, "새 심의 제출", body, "REVIEW_REQUEST", id)
 	}
 }
 

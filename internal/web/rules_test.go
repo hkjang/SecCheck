@@ -62,3 +62,39 @@ func TestImportNormalizesCodesAndDuplicates(t *testing.T) {
 		t.Fatalf("unexpected codes: %q %q %q", items[0].ItemCode, items[1].ItemCode, items[2].ItemCode)
 	}
 }
+
+// The import preview is a dry run: it must report what the parser will do to
+// the workbook, not just echo the first few rows.
+func TestImportReportExplainsWhatWillHappen(t *testing.T) {
+	rows := [][]string{
+		{"구분", "항목코드", "보안 요건 항목", "항목설명"},
+		{"공통", "1.1", "첫 항목", "질문1"},
+		{"공통", "1.1", "중복 코드 항목", "질문2"},
+		{"공통", "", "코드 없는 항목", "질문3"},
+		{"", "", "", ""},
+		{"메모", "", "", "여기는 비고입니다"},
+	}
+	header, mapping := detectHeaders(rows)
+	items, report := parseImportRowsWithReport(rows, header, mapping, "DEVELOPMENT")
+	if report.Parsed != len(items) {
+		t.Fatalf("report.Parsed=%d but %d items were produced", report.Parsed, len(items))
+	}
+	if report.Parsed != 4 {
+		t.Errorf("parsed %d items, want 4 (three coded rows plus the note row that has a question)", report.Parsed)
+	}
+	if report.GeneratedCodes != 2 {
+		t.Errorf("generated codes = %d, want 2", report.GeneratedCodes)
+	}
+	if len(report.DuplicateCodes) != 1 || report.DuplicateCodes[0] != "1.1" {
+		t.Errorf("duplicate codes = %v, want [1.1]", report.DuplicateCodes)
+	}
+	if report.SkippedRows != 0 {
+		t.Errorf("skipped rows = %d; a fully blank row is not counted as skipped work", report.SkippedRows)
+	}
+	if contains(report.MissingFields, "title") || contains(report.MissingFields, "item_code") {
+		t.Errorf("mapped fields were reported as missing: %v", report.MissingFields)
+	}
+	if !contains(report.MissingFields, "severity") {
+		t.Errorf("an unmapped column should be reported: %v", report.MissingFields)
+	}
+}

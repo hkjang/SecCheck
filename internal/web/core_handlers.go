@@ -363,12 +363,27 @@ func scanDynamic(rows interface {
 }
 
 func (s *Server) notifications(w http.ResponseWriter, r *http.Request) {
-	rows, err := s.Store.Pool.Query(r.Context(), `SELECT id,event_type,title,body,status,read_at,created_at FROM notifications WHERE recipient_id=$1 ORDER BY created_at DESC LIMIT 50`, session(r).User.ID)
+	where := "recipient_id=$1"
+	args := []any{session(r).User.ID}
+	if r.URL.Query().Get("unread") == "1" {
+		where += " AND read_at IS NULL"
+	}
+	if event := strings.TrimSpace(r.URL.Query().Get("event")); event != "" {
+		args = append(args, event)
+		where += " AND event_type=$" + intString(len(args))
+	}
+	limit, offset := parsePage(r)
+	var total int64
+	_ = s.Store.Pool.QueryRow(r.Context(), `SELECT count(*) FROM notifications WHERE `+where, args...).Scan(&total)
+	args = append(args, limit, offset)
+	rows, err := s.Store.Pool.Query(r.Context(), `SELECT id,event_type,title,body,status,target_type,target_id,read_at,created_at FROM notifications WHERE `+where+
+		` ORDER BY created_at DESC LIMIT $`+intString(len(args)-1)+` OFFSET $`+intString(len(args)), args...)
 	if err != nil {
 		problem(w, 500, "QUERY_FAILED", "알림을 불러오지 못했습니다.", nil)
 		return
 	}
-	jsonResponse(w, 200, scanDynamic(rows, []string{"id", "event_type", "title", "body", "status", "read_at", "created_at"}))
+	items := scanDynamic(rows, []string{"id", "event_type", "title", "body", "status", "target_type", "target_id", "read_at", "created_at"})
+	jsonResponse(w, 200, map[string]any{"items": items, "total": total, "limit": limit, "offset": offset, "has_more": int64(offset+len(items)) < total})
 }
 
 func (s *Server) userDirectory(w http.ResponseWriter, r *http.Request) {

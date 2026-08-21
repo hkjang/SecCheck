@@ -11,6 +11,8 @@ func (s *Server) openAPI(w http.ResponseWriter, r *http.Request) {
 		"security":   []map[string]any{{"bearerAuth": []string{}}, {"cookieAuth": []string{}}},
 		"paths": map[string]any{
 			"/api/v1/templates":                            map[string]any{"get": operation("템플릿 목록", "templates"), "post": operation("템플릿 생성", "templates")},
+			"/api/v1/templates/{id}":                       map[string]any{"get": operation("템플릿 상세", "templates"), "patch": operation("템플릿 수정", "templates"), "delete": operation("미사용 템플릿 삭제", "templates")},
+			"/api/v1/templates/import/preview":             map[string]any{"post": operation("Excel 가져오기 드라이런", "templates")},
 			"/api/v1/review-requests":                      map[string]any{"get": operation("권한 범위의 심의 목록", "reviews"), "post": operation("심의 생성 및 체크리스트 스냅샷 배정", "reviews")},
 			"/api/v1/review-requests/{id}":                 map[string]any{"get": operation("심의 상세", "reviews"), "patch": operation("심의 기본정보 수정", "reviews")},
 			"/api/v1/review-requests/{id}/items":           map[string]any{"get": operation("응답, 검토결과, 증적을 포함한 스냅샷 항목", "reviews")},
@@ -33,6 +35,8 @@ func (s *Server) openAPI(w http.ResponseWriter, r *http.Request) {
 			"/api/v1/admin/jobs":                           map[string]any{"get": operation("백그라운드 작업 큐 상태", "admin")},
 			"/api/v1/admin/jobs/{id}/retry":                map[string]any{"post": operation("실패한 작업 재시도", "admin")},
 			"/api/v1/admin/audit/verify":                   map[string]any{"get": operation("해시 체인 검증. full=1이면 전체 재검증", "admin")},
+			"/api/v1/admin/settings/notification/test":     map[string]any{"post": operation("SMTP 설정 테스트 메일 발송", "admin")},
+			"/api/v1/me/notification-preferences":          map[string]any{"get": operation("알림 수신 설정 조회", "notifications"), "put": operation("알림 수신 설정 저장", "notifications")},
 			"/api/v1/security-controls":                    map[string]any{"get": operation("통합 Security Control과 영향 건수", "controls"), "post": operation("Security Control 생성", "controls")},
 			"/mcp":                                         map[string]any{"post": operation("MCP 2026-07-28 Streamable HTTP endpoint", "mcp")},
 		},

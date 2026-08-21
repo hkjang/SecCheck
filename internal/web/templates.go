@@ -93,6 +93,35 @@ func (s *Server) updateTemplate(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(204)
 }
 
+// deleteTemplate removes a template that was never used. A mis-imported
+// workbook previously had to be left behind for ever; anything that has been
+// published or snapshotted into a review is refused, because a submission
+// snapshot must stay explainable.
+func (s *Server) deleteTemplate(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	var name string
+	var published, used int
+	err := s.Store.Pool.QueryRow(r.Context(), `SELECT t.name,
+                (SELECT count(*) FROM checklist_versions v WHERE v.template_id=t.id AND v.status<>'DRAFT'),
+                (SELECT count(*) FROM submission_items si JOIN checklist_items i ON i.id=si.source_item_id JOIN checklist_versions v ON v.id=i.version_id WHERE v.template_id=t.id)
+                FROM checklist_templates t WHERE t.id=$1`, id).Scan(&name, &published, &used)
+	if err != nil {
+		problem(w, 404, "NOT_FOUND", "템플릿을 찾을 수 없습니다.", nil)
+		return
+	}
+	if published > 0 || used > 0 {
+		problem(w, 409, "TEMPLATE_IN_USE", "게시되었거나 심의에 사용된 템플릿은 삭제할 수 없습니다. 사용 중지로 변경하세요.",
+			map[string]any{"published_versions": published, "snapshotted_items": used})
+		return
+	}
+	if _, err = s.Store.Pool.Exec(r.Context(), `DELETE FROM checklist_templates WHERE id=$1`, id); err != nil {
+		problem(w, 409, "DELETE_FAILED", "템플릿을 삭제하지 못했습니다.", nil)
+		return
+	}
+	_ = s.Store.Audit(r.Context(), auditFrom(r, "DELETE_TEMPLATE", "TEMPLATE", id, map[string]any{"name": name}, nil))
+	w.WriteHeader(204)
+}
+
 func (s *Server) copyTemplate(w http.ResponseWriter, r *http.Request) {
 	source := r.PathValue("id")
 	var in struct {
@@ -457,7 +486,20 @@ func (s *Server) previewImport(w http.ResponseWriter, r *http.Request) {
 		for i := headerRow; i < len(rows) && i < headerRow+5; i++ {
 			preview = append(preview, rows[i])
 		}
-		sheets = append(sheets, map[string]any{"name": sheet, "rows": len(rows), "header_row": headerRow + 1, "mapping": mapping, "columns": columns, "preview": preview})
+		// Run the real parser so the wizard shows what would actually be
+		// created, not just the first few spreadsheet rows.
+		category := inferCategory(sheet)
+		parsed, report := parseImportRowsWithReport(rows, headerRow, mapping, category)
+		sample := []itemInput{}
+		for i := 0; i < len(parsed) && i < 10; i++ {
+			sample = append(sample, parsed[i])
+		}
+		sheets = append(sheets, map[string]any{
+			"name": sheet, "rows": len(rows), "header_row": headerRow + 1,
+			"mapping": mapping, "columns": columns, "preview": preview,
+			"category": category, "version": extractVersion(sheet),
+			"report": report, "items": sample,
+		})
 	}
 	jsonResponse(w, 200, map[string]any{"filename": name, "sheets": sheets})
 }
@@ -592,7 +634,23 @@ func (s *Server) importTemplate(w http.ResponseWriter, r *http.Request) {
 	jsonResponse(w, 201, map[string]any{"id": tid, "version_id": vid, "items": len(items), "status": map[bool]string{true: "PUBLISHED", false: "DRAFT"}[publish]})
 }
 
+// importReport explains what the parser did to the workbook, so the preview
+// can be a real dry run instead of five raw rows.
+type importReport struct {
+	Parsed         int      `json:"parsed"`
+	SkippedRows    int      `json:"skipped_rows"`
+	GeneratedCodes int      `json:"generated_codes"`
+	DuplicateCodes []string `json:"duplicate_codes"`
+	MissingFields  []string `json:"missing_fields"`
+}
+
 func parseImportRows(rows [][]string, header int, mapping []importColumn, category string) []itemInput {
+	items, _ := parseImportRowsWithReport(rows, header, mapping, category)
+	return items
+}
+
+func parseImportRowsWithReport(rows [][]string, header int, mapping []importColumn, category string) ([]itemInput, importReport) {
+	report := importReport{DuplicateCodes: []string{}, MissingFields: []string{}}
 	items := []itemInput{}
 	idx := map[string]int{}
 	seenCodes := map[string]int{}
@@ -618,19 +676,34 @@ func parseImportRows(rows [][]string, header int, mapping []importColumn, catego
 			question = title
 		}
 		if title == "" {
+			// A row with neither a requirement nor a question is a spacer or a
+			// note, not a checklist item.
+			if strings.TrimSpace(strings.Join(row, "")) != "" {
+				report.SkippedRows++
+			}
 			continue
 		}
 		if code == "" {
 			code = fmt.Sprintf("%s-%03d", strings.ToUpper(category), i-header)
+			report.GeneratedCodes++
 		}
 		seenCodes[code]++
 		if seenCodes[code] > 1 {
+			if !contains(report.DuplicateCodes, code) {
+				report.DuplicateCodes = append(report.DuplicateCodes, code)
+			}
 			code = fmt.Sprintf("%s-DUP%d", code, seenCodes[code])
 		}
 		severity := normalizeSeverity(get("severity"))
 		items = append(items, itemInput{Section: get("section"), ItemCode: code, Category: category, Title: title, Question: question, Guide: get("guide"), LegalBasis: get("legal_basis"), Example: get("example"), Severity: severity, Required: true, AnswerType: "YNNA", SortOrder: i - header})
 	}
-	return items
+	report.Parsed = len(items)
+	for _, field := range []string{"item_code", "title", "question", "guide", "severity"} {
+		if _, mapped := idx[field]; !mapped {
+			report.MissingFields = append(report.MissingFields, field)
+		}
+	}
+	return items, report
 }
 
 func normalizeItemCode(code string) string {
