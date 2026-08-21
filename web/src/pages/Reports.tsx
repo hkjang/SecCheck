@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from 'react'
 import { BarChart3, CalendarRange, Download, Timer } from 'lucide-react'
 import { errorMessage, get } from '../lib/api'
-import { Badge, Button, Empty, Field, Loading, StatusBadge, useToast } from '../components/ui'
+import { Badge, Button, Empty, Field, Loading, StatusBadge, useDownload, useToast } from '../components/ui'
 
 type Row = Record<string, string | number>
 type Report = {
@@ -18,6 +18,7 @@ function today() { return new Date().toISOString().slice(0, 10) }
 
 export default function Reports() {
   const toast = useToast()
+  const save = useDownload()
   const [filter, setFilter] = useState({ from: monthStart(), to: today(), department: '' })
   const [data, setData] = useState<Report>()
   const params = useMemo(() => { const qs = new URLSearchParams(); Object.entries(filter).forEach(([k, v]) => { if (v) qs.set(k, v) }); return qs }, [filter])
@@ -27,7 +28,7 @@ export default function Reports() {
 
   return <div className="page">
     <div className="page-header"><div><h1 className="page-title">심의 리포트</h1><p className="page-description">기간별 심의 처리 현황과 반복 지적 사항을 집계합니다. 보고용 Excel로 내려받을 수 있습니다.</p></div>
-      <a className="button primary" href={`/api/v1/reports/reviews?${new URLSearchParams({ ...Object.fromEntries(params), format: 'xlsx' })}`}><Download size={14} /> Excel 리포트</a></div>
+      <Button variant="primary" onClick={() => save(`/api/v1/reports/reviews?${new URLSearchParams({ ...Object.fromEntries(params), format: 'xlsx' })}`)}><Download size={14} /> Excel 리포트</Button></div>
 
     <div className="card"><div className="card-body"><div className="form-grid compact">
       <Field label="시작일"><input type="date" className="input" max={filter.to} value={filter.from} onChange={e => set('from', e.target.value)} /></Field>

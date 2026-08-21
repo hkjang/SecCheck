@@ -71,3 +71,28 @@ func TestPagesThatBlockOnLoadingAlsoHandleFailure(t *testing.T) {
 		}
 	}
 }
+
+// An <a href> to an API path hands failure to the browser: a 403, a 409 on
+// evidence still being scanned, or a PDF export without the Korean font
+// installed all navigate the tab to a JSON problem document. Downloads have
+// to go through the fetch helper so the error lands on the page instead.
+func TestNoScreenLinksStraightToAnApiDownload(t *testing.T) {
+	// Signing in really does hand the browser over to the identity provider.
+	allowed := map[string]bool{"/api/v1/auth/oidc/start": true}
+	sources, err := filepath.Glob(filepath.Join("..", "..", "web", "src", "pages", "*.tsx"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	link := regexp.MustCompile("href=[{\"'`]+(/api/v1[a-zA-Z0-9/_.-]*)")
+	for _, source := range sources {
+		body, err := os.ReadFile(source)
+		if err != nil {
+			t.Fatalf("read %s: %v", source, err)
+		}
+		for _, m := range link.FindAllStringSubmatch(string(body), -1) {
+			if !allowed[m[1]] {
+				t.Errorf("%s links straight to %s; use useDownload() so a failed download stays on the page", filepath.Base(source), m[1])
+			}
+		}
+	}
+}

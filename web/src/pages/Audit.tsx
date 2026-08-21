@@ -1,12 +1,13 @@
 import { useEffect, useMemo, useState } from 'react'
 import { Download, RotateCcw, Search, ShieldCheck } from 'lucide-react'
 import { errorMessage, get } from '../lib/api'
-import { Badge, Button, Empty, Field, Loading, formatDate, useToast } from '../components/ui'
+import { Badge, Button, Empty, Field, Loading, formatDate, useDownload, useToast } from '../components/ui'
 
 const today = () => new Date().toISOString().slice(0, 10)
 
 export default function AuditPage() {
   const toast = useToast()
+  const save = useDownload()
   const [items, setItems] = useState<Record<string, unknown>[]>()
   const [events, setEvents] = useState<{ code: string; label: string }[]>([])
   const [filter, setFilter] = useState({ event: '', user: '', from: '', to: '', limit: '200' })
@@ -29,7 +30,7 @@ export default function AuditPage() {
   const set = (key: keyof typeof filter, value: string) => setFilter(v => ({ ...v, [key]: value }))
   const active = Boolean(filter.event || filter.user || filter.from || filter.to)
   return <div className="page">
-    <div className="page-header"><div><h1 className="page-title">감사로그</h1><p className="page-description">이전 이벤트 해시를 연결한 위변조 탐지 체인입니다. 애플리케이션에서 수정·삭제 API를 제공하지 않습니다.</p></div><div className="header-actions"><a className="button" href={`/api/v1/admin/audit?${new URLSearchParams({ ...Object.fromEntries(params), format: 'csv' })}`}><Download size={14} /> CSV 내보내기</a><Button disabled={verifying} onClick={() => verify(false)}><ShieldCheck size={14} /> 체인 검증</Button><Button disabled={verifying} onClick={() => verify(true)}>전체 재검증</Button></div></div>
+    <div className="page-header"><div><h1 className="page-title">감사로그</h1><p className="page-description">이전 이벤트 해시를 연결한 위변조 탐지 체인입니다. 애플리케이션에서 수정·삭제 API를 제공하지 않습니다.</p></div><div className="header-actions"><Button onClick={() => save(`/api/v1/admin/audit?${new URLSearchParams({ ...Object.fromEntries(params), format: 'csv' })}`)}><Download size={14} /> CSV 내보내기</Button><Button disabled={verifying} onClick={() => verify(false)}><ShieldCheck size={14} /> 체인 검증</Button><Button disabled={verifying} onClick={() => verify(true)}>전체 재검증</Button></div></div>
     <div className="card"><div className="card-body"><div className="form-grid">
       <Field label="이벤트 유형" help="앞부분만 입력해도 됩니다. 예: LOGIN"><div className="search-box"><Search /><input className="input" list="audit-events" placeholder="목록에서 고르거나 직접 입력" value={filter.event} onChange={e => set('event', e.target.value)} /><datalist id="audit-events">{events.map(e => <option key={e.code} value={e.code}>{e.label}</option>)}</datalist></div></Field>
       <Field label="사용자 / 접속 IP"><input className="input" placeholder="이름 또는 IP 일부" value={filter.user} onChange={e => set('user', e.target.value)} /></Field>

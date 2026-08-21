@@ -3,12 +3,13 @@ import { Link } from 'react-router-dom'
 import { AlertTriangle, ChevronLeft, ChevronRight, Download, Filter, Plus, RotateCcw, Search, ShieldCheck } from 'lucide-react'
 import { get } from '../lib/api'
 import { DirectoryUser, Page, Review } from '../lib/types'
-import { Badge, Button, Empty, Field, Loading, StatusBadge, formatDate } from '../components/ui'
+import { Badge, Button, Empty, Field, Loading, StatusBadge, formatDate, useDownload } from '../components/ui'
 
 const emptyFilter = { q: '', status: '', department: '', reviewer_id: '', from: '', to: '', overdue: '', mine: '' }
 const sorts: [string, string][] = [['updated', '최근 변경순'], ['created', '생성일순'], ['open_date', '오픈 예정일순'], ['number', '심의번호순'], ['service', '서비스명순'], ['status', '상태순']]
 
 export default function Reviews({ security = false }: { security?: boolean }) {
+  const save = useDownload()
   const [page, setPage] = useState<Page<Review>>()
   const [filter, setFilter] = useState({ ...emptyFilter, status: security ? 'SUBMITTED,RESUBMITTED' : '' })
   const [sort, setSort] = useState(security ? 'open_date' : 'updated')
@@ -27,7 +28,7 @@ export default function Reviews({ security = false }: { security?: boolean }) {
   const shown = page?.items || []
   const from = page && page.total ? offset + 1 : 0
   return <div className="page">
-    <div className="page-header"><div><h1 className="page-title">{security ? '보안 검토 Queue' : '심의 목록'}</h1><p className="page-description">{security ? '제출·재제출된 건을 시작하고 항목별 검토를 진행하세요.' : '권한이 있는 심의 건만 표시됩니다.'}</p></div><div className="header-actions"><a className="button" href={`/api/v1/review-requests?${new URLSearchParams({ ...Object.fromEntries(params), format: 'csv' })}`}><Download size={14} /> CSV</a>{!security && <Link to="/reviews/new"><Button variant="primary"><Plus size={15} /> 신규 심의</Button></Link>}</div></div>
+    <div className="page-header"><div><h1 className="page-title">{security ? '보안 검토 Queue' : '심의 목록'}</h1><p className="page-description">{security ? '제출·재제출된 건을 시작하고 항목별 검토를 진행하세요.' : '권한이 있는 심의 건만 표시됩니다.'}</p></div><div className="header-actions"><Button onClick={() => save(`/api/v1/review-requests?${new URLSearchParams({ ...Object.fromEntries(params), format: 'csv' })}`)}><Download size={14} /> CSV</Button>{!security && <Link to="/reviews/new"><Button variant="primary"><Plus size={15} /> 신규 심의</Button></Link>}</div></div>
     <div className="card"><div className="card-body">
       <div className="toolbar"><div className="search-box"><Search /><input className="input" aria-label="심의 검색" placeholder="심의번호, 서비스명, 부서 검색" value={filter.q} onChange={e => set('q', e.target.value)} /></div>
         <Filter size={16} color="#6d7a8e" aria-hidden="true" />

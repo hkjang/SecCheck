@@ -1,6 +1,6 @@
 import { PropsWithChildren, ReactNode, createContext, useCallback, useContext, useEffect, useState } from 'react'
 import { AlertCircle, Inbox, RefreshCw } from 'lucide-react'
-import { errorMessage } from '../lib/api'
+import { download, errorMessage } from '../lib/api'
 
 export function Button({ children, variant = '', small, ...props }: PropsWithChildren<React.ButtonHTMLAttributes<HTMLButtonElement> & { variant?: 'primary' | 'danger' | 'success' | 'ghost' | ''; small?: boolean }>) {
   return <button className={`button ${variant} ${small ? 'small' : ''}`} {...props}>{children}</button>
@@ -23,6 +23,15 @@ export function Empty({ title = '표시할 항목이 없습니다.', description
 }
 
 export function Loading() { return <div className="loading"><div className="spinner" aria-label="불러오는 중" /></div> }
+
+// Saving a file is a request like any other, so its failure belongs in a
+// toast next to the button, not in a tab that navigated away to JSON.
+export function useDownload() {
+  const toast = useToast()
+  return async (path: string) => {
+    try { await download(path) } catch (error) { toast.push(errorMessage(error), 'error') }
+  }
+}
 
 // Pages gate their whole body on `!data`, so a first load that fails used to
 // leave the spinner turning for good -- at best with a toast that vanished

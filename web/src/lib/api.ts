@@ -63,6 +63,39 @@ export const patch = <T>(path: string, data: unknown) => api<T>(path, { method: 
 export const del = <T>(path: string) => api<T>(path, { method: 'DELETE' })
 export const upload = <T>(path: string, form: FormData) => api<T>(path, { method: 'POST', body: form })
 
+// A plain <a href> to an API path hands failure to the browser: the tab
+// navigates to the JSON problem document, the reader loses the page they were
+// on and is shown machine output. Exporting a PDF without the Korean font
+// installed does exactly that. Fetching first keeps the failure on the page.
+export async function download(path: string) {
+  const response = await fetch(path, { credentials: 'same-origin', headers: { Accept: '*/*' } })
+  if (!response.ok) {
+    const type = response.headers.get('content-type') || ''
+    const value = type.includes('json') ? await response.json() : await response.text()
+    const problem = value?.error || {}
+    if (response.status === 401) { setCSRF(''); announce('expired') }
+    throw new ApiError(response.status, problem.code || 'REQUEST_FAILED', problem.message || '파일을 내려받지 못했습니다.', problem.details)
+  }
+  const url = URL.createObjectURL(await response.blob())
+  const link = document.createElement('a')
+  link.href = url
+  link.download = filenameOf(response.headers.get('content-disposition'))
+  document.body.appendChild(link)
+  link.click()
+  link.remove()
+  // Revoking immediately can cancel the download in some browsers.
+  window.setTimeout(() => URL.revokeObjectURL(url), 60_000)
+}
+
+// Content-Disposition carries the server's name for the file, either plain or
+// RFC 5987 percent-encoded for the Korean filenames this product produces.
+function filenameOf(header: string | null) {
+  const encoded = /filename\*=UTF-8''([^;]+)/i.exec(header || '')
+  if (encoded) { try { return decodeURIComponent(encoded[1]) } catch { return encoded[1] } }
+  const plain = /filename="?([^";]+)"?/i.exec(header || '')
+  return plain ? plain[1] : 'download'
+}
+
 export function errorMessage(error: unknown) {
   return error instanceof Error ? error.message : '요청을 처리하지 못했습니다.'
 }
