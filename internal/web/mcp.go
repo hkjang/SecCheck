@@ -160,6 +160,21 @@ func (s *Server) integrationInfo(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// mcpToolIsReadOnly answers for the tool as it is actually advertised. An
+// unknown name is not read-only: a tool that reaches the dispatcher without
+// being in the catalogue has no declaration to trust.
+func mcpToolIsReadOnly(name string) bool {
+	for _, tool := range mcpTools() {
+		if tool["name"] != name {
+			continue
+		}
+		annotations, _ := tool["annotations"].(map[string]any)
+		readOnly, _ := annotations["readOnlyHint"].(bool)
+		return readOnly
+	}
+	return false
+}
+
 func mcpTools() []map[string]any {
 	return []map[string]any{
 		{"name": "seccheck.dashboard", "title": "SecCheck dashboard", "description": "권한 범위의 심의 상태별 건수와 처리할 보완 요청을 조회합니다.", "inputSchema": map[string]any{"type": "object", "additionalProperties": false}, "annotations": map[string]any{"readOnlyHint": true, "destructiveHint": false}},
@@ -181,6 +196,13 @@ func (s *Server) callMCPTool(r *http.Request, raw json.RawMessage) (any, *rpcErr
 		return nil, &rpcError{Code: -32602, Message: "Invalid tool parameters"}
 	}
 	sess := session(r)
+	// The middleware lets any API key POST to /mcp because the transport is a
+	// POST even for a read. That exemption is only sound while the tool being
+	// called is itself read-only, so the write scope is enforced per tool
+	// here rather than left as an assumption about the catalogue.
+	if sess.APIKey && !contains(sess.Scopes, "read:write") && !mcpToolIsReadOnly(p.Name) {
+		return nil, &rpcError{Code: -32003, Message: "이 API 키에는 쓰기 범위가 없습니다."}
+	}
 	var data any
 	var err error
 	switch p.Name {

@@ -171,3 +171,56 @@ func TestIntegrationInfoMatchesTheServedTools(t *testing.T) {
 		}
 	}
 }
+
+// The write-scope check in the middleware waves /mcp through, because a
+// JSON-RPC read is still a POST. That is safe only while every tool in the
+// catalogue is a read -- and the dispatcher now enforces it per tool, so this
+// checks the two halves agree.
+func TestEveryMCPToolIsDeclaredReadOnly(t *testing.T) {
+	for _, tool := range mcpTools() {
+		name, _ := tool["name"].(string)
+		annotations, ok := tool["annotations"].(map[string]any)
+		if !ok {
+			t.Errorf("%s carries no annotations, so its scope cannot be judged", name)
+			continue
+		}
+		if readOnly, _ := annotations["readOnlyHint"].(bool); !readOnly {
+			t.Errorf("%s is not declared read-only; a read-scoped API key can still reach /mcp", name)
+		}
+		if destructive, _ := annotations["destructiveHint"].(bool); destructive {
+			t.Errorf("%s is declared destructive", name)
+		}
+		if !mcpToolIsReadOnly(name) {
+			t.Errorf("mcpToolIsReadOnly(%q) disagrees with the catalogue", name)
+		}
+	}
+	if mcpToolIsReadOnly("seccheck.not_a_tool") {
+		t.Error("an unknown tool name was treated as read-only")
+	}
+}
+
+// Every name the dispatcher answers has to be in the catalogue: one that is
+// not has no declaration, and the per-tool scope check would refuse it.
+func TestTheMCPDispatcherAnswersOnlyCataloguedTools(t *testing.T) {
+	body, err := os.ReadFile("mcp.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	dispatch := regexp.MustCompile(`case "(seccheck\.[a-z_]+)":`).FindAllStringSubmatch(string(body), -1)
+	if len(dispatch) == 0 {
+		t.Fatal("no tool cases found; callMCPTool must have changed shape")
+	}
+	catalogue := map[string]bool{}
+	for _, tool := range mcpTools() {
+		name, _ := tool["name"].(string)
+		catalogue[name] = true
+	}
+	for _, m := range dispatch {
+		if !catalogue[m[1]] {
+			t.Errorf("callMCPTool answers %s but tools/list never advertises it", m[1])
+		}
+	}
+	if len(dispatch) != len(catalogue) {
+		t.Errorf("%d tools dispatched, %d advertised", len(dispatch), len(catalogue))
+	}
+}

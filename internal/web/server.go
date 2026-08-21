@@ -220,6 +220,8 @@ func (s *Server) require(roles []string, next http.Handler) http.Handler {
 			problem(w, http.StatusForbidden, "TOTP_ENROLLMENT_REQUIRED", "보안 정책에 따라 일회용 코드를 먼저 등록해야 합니다.", nil)
 			return
 		}
+		// /mcp is exempt because JSON-RPC reads travel by POST; the write
+		// scope is enforced against the named tool in callMCPTool instead.
 		if sess.APIKey && r.Method != http.MethodGet && r.Method != http.MethodHead && r.Method != http.MethodOptions && r.URL.Path != "/mcp" && !contains(sess.Scopes, "read:write") {
 			problem(w, http.StatusForbidden, "API_SCOPE_FORBIDDEN", "이 API 키에는 쓰기 범위가 없습니다.", nil)
 			return
