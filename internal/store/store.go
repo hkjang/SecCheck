@@ -11,7 +11,9 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
+	_ "time/tzdata" // the image must resolve zone names even without system tzdata
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -20,7 +22,14 @@ import (
 //go:embed migrations/*.sql
 var migrations embed.FS
 
-type Store struct{ Pool *pgxpool.Pool }
+type Store struct {
+	Pool *pgxpool.Pool
+
+	zoneMu   sync.Mutex
+	zoneAt   time.Time
+	zoneName string
+	zone     *time.Location
+}
 
 type User struct {
 	ID, Username, DisplayName, Email, Department, PasswordHash, AuthSource string
@@ -141,6 +150,71 @@ func (s *Store) SchemaVersion(ctx context.Context) int {
 	var version int
 	_ = s.Pool.QueryRow(ctx, `SELECT COALESCE(max(version),0) FROM schema_migrations`).Scan(&version)
 	return version
+}
+
+// Location returns the administrator-configured display time zone. Everything
+// the server renders or schedules — the daily digest hour, exported
+// timestamps, the zone the browser formats in — has to agree on it, otherwise
+// a container running UTC quietly shifts an 08:00 digest to 17:00 local.
+// Unknown or empty names fall back to UTC rather than to the host zone, so two
+// nodes with different host settings still behave identically.
+func (s *Store) Location(ctx context.Context) *time.Location {
+	s.zoneMu.Lock()
+	defer s.zoneMu.Unlock()
+	if s.zone != nil && time.Since(s.zoneAt) < time.Minute {
+		return s.zone
+	}
+	var general struct {
+		Timezone string `json:"timezone"`
+	}
+	_, _ = s.Setting(ctx, "general", &general)
+	name := strings.TrimSpace(general.Timezone)
+	if name == s.zoneName && s.zone != nil {
+		s.zoneAt = time.Now()
+		return s.zone
+	}
+	zone := time.UTC
+	if name != "" {
+		if loaded, err := time.LoadLocation(name); err == nil {
+			zone = loaded
+		}
+	}
+	s.zone, s.zoneName, s.zoneAt = zone, name, time.Now()
+	return zone
+}
+
+// LocalTime renders a timestamp in the configured zone, for exports and
+// e-mails that are read outside the browser.
+func (s *Store) LocalTime(ctx context.Context, v any, layout string) string {
+	at, ok := AsTime(v)
+	if !ok {
+		return ""
+	}
+	return at.In(s.Location(ctx)).Format(layout)
+}
+
+// AsTime accepts the shapes a timestamp arrives in: a time.Time from pgx, or
+// an RFC3339 string once it has been through JSON.
+func AsTime(v any) (time.Time, bool) {
+	switch value := v.(type) {
+	case time.Time:
+		return value, true
+	case *time.Time:
+		if value == nil {
+			return time.Time{}, false
+		}
+		return *value, true
+	case string:
+		if value == "" {
+			return time.Time{}, false
+		}
+		for _, layout := range []string{time.RFC3339Nano, time.RFC3339, "2006-01-02T15:04:05", "2006-01-02"} {
+			if at, err := time.Parse(layout, value); err == nil {
+				return at, true
+			}
+		}
+	}
+	return time.Time{}, false
 }
 
 func (s *Store) GetUserByUsername(ctx context.Context, username string) (User, error) {

@@ -86,7 +86,9 @@ func (w *Worker) sendDigests(ctx context.Context) {
 	if cfg.DigestHour < 0 || cfg.DigestHour > 23 {
 		cfg.DigestHour = 8
 	}
-	if time.Now().Hour() < cfg.DigestHour {
+	// The container almost always runs UTC, so an administrator asking for
+	// 08:00 means 08:00 in the configured display zone, not in the container's.
+	if time.Now().In(w.Store.Location(ctx)).Hour() < cfg.DigestHour {
 		return
 	}
 	if encrypted != "" {
@@ -125,7 +127,7 @@ func (w *Worker) sendDigests(ctx context.Context) {
 			if items.Scan(&title, &body, &at) != nil {
 				continue
 			}
-			lines = append(lines, fmt.Sprintf("[%s] %s\n%s", at.Format("01-02 15:04"), title, truncate(body, 300)))
+			lines = append(lines, fmt.Sprintf("[%s] %s\n%s", at.In(w.Store.Location(ctx)).Format("01-02 15:04"), title, truncate(body, 300)))
 		}
 		items.Close()
 		if len(lines) == 0 {

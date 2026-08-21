@@ -642,3 +642,84 @@ func TestTemplateDeletionOnlyWhileUnused(t *testing.T) {
 		t.Errorf("deleting a missing template returned %d", res.status)
 	}
 }
+
+func TestRuleSimulationExplainsAssignmentWithoutCreatingAReview(t *testing.T) {
+	h := newHarness(t)
+	admin := h.login(adminOf(h))
+	ctx := context.Background()
+	before := func() int {
+		var n int
+		if err := h.db.Pool.QueryRow(ctx, `SELECT count(*) FROM review_requests`).Scan(&n); err != nil {
+			t.Fatal(err)
+		}
+		return n
+	}()
+
+	cloud := admin.do(http.MethodPost, "/api/v1/templates/rule-simulation", map[string]any{
+		"service_name": "시뮬", "description": "d", "service_type": "WEB", "change_type": "NEW",
+		"department": "보안팀", "exposure": "EXTERNAL", "uses_cloud": true, "processes_personal_data": false,
+	}).json()
+	plain := admin.do(http.MethodPost, "/api/v1/templates/rule-simulation", map[string]any{
+		"service_name": "시뮬", "description": "d", "service_type": "WEB", "change_type": "NEW",
+		"department": "보안팀", "exposure": "EXTERNAL", "uses_cloud": false, "processes_personal_data": false,
+	}).json()
+
+	cloudApplied, _ := cloud["applied"].(float64)
+	plainApplied, _ := plain["applied"].(float64)
+	if cloudApplied == 0 {
+		t.Fatalf("a cloud profile was assigned nothing: %v", cloud)
+	}
+	if cloudApplied <= plainApplied {
+		t.Errorf("enabling cloud assigned %v items, not more than the %v without it", cloudApplied, plainApplied)
+	}
+	items, _ := cloud["items"].([]any)
+	if len(items) == 0 {
+		t.Fatal("the simulation returned no per-item outcome")
+	}
+	excludedHasReason := false
+	for _, raw := range items {
+		item, _ := raw.(map[string]any)
+		if applied, _ := item["applied"].(bool); !applied {
+			if reason, _ := item["reason"].(string); reason != "" {
+				excludedHasReason = true
+			}
+		}
+	}
+	if !excludedHasReason {
+		t.Error("excluded items came back without a reason")
+	}
+	if after := func() int {
+		var n int
+		_ = h.db.Pool.QueryRow(ctx, `SELECT count(*) FROM review_requests`).Scan(&n)
+		return n
+	}(); after != before {
+		t.Errorf("the simulation created %d review requests", after-before)
+	}
+
+	h.user("plainrequester", "REQUESTER")
+	if res := h.login("plainrequester").do(http.MethodPost, "/api/v1/templates/rule-simulation", map[string]any{"service_name": "x", "service_type": "WEB"}); res.status != http.StatusForbidden {
+		t.Errorf("a requester reached the rule simulator: %d", res.status)
+	}
+}
+
+func TestConfiguredTimezoneReachesTheClients(t *testing.T) {
+	h := newHarness(t)
+	admin := h.login(adminOf(h))
+	if res := admin.do(http.MethodPut, "/api/v1/admin/settings/general", map[string]any{
+		"service_name": "SecCheck", "timezone": "Asia/Seoul", "session_minutes": 480, "retention_days": 1825, "base_url": "",
+	}); res.status != http.StatusOK {
+		t.Fatalf("save timezone: %d %s", res.status, res.body)
+	}
+	if zone := admin.do(http.MethodGet, "/api/v1/me", nil).json()["timezone"]; zone != "Asia/Seoul" {
+		t.Errorf("/me reported timezone %v", zone)
+	}
+	anon := &client{h: h}
+	if zone := anon.do(http.MethodGet, "/api/v1/public/config", nil).json()["timezone"]; zone != "Asia/Seoul" {
+		t.Errorf("public config reported timezone %v", zone)
+	}
+	if res := admin.do(http.MethodPut, "/api/v1/admin/settings/general", map[string]any{
+		"service_name": "SecCheck", "timezone": "Mars/Olympus", "session_minutes": 480, "retention_days": 1825, "base_url": "",
+	}); res.status != http.StatusUnprocessableEntity {
+		t.Errorf("an unknown zone name was accepted: %d %s", res.status, res.body)
+	}
+}

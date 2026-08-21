@@ -247,6 +247,11 @@ func validateSetting(key string, m map[string]any) string {
 		if n := numericSetting(m["retention_days"]); n < 30 || n > 36500 {
 			return "보존 기간은 30~36500일이어야 합니다."
 		}
+		if tz := strings.TrimSpace(stringValue(m["timezone"])); tz != "" {
+			if _, err := time.LoadLocation(tz); err != nil {
+				return "표시 시간대는 IANA 이름이어야 합니다. 예: Asia/Seoul"
+			}
+		}
 		if raw := strings.TrimSpace(stringValue(m["base_url"])); raw != "" {
 			u, err := url.Parse(raw)
 			if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {

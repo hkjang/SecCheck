@@ -830,3 +830,81 @@ func urlEncode(v string) string {
 
 var _ = sort.Strings
 var _ = strconv.Itoa
+
+// simulateRules answers "which checklist would this service profile get?"
+// without creating a review. Applicability rules were previously only
+// observable after the fact, so a template administrator had no way to check
+// a rule before publishing it — and a published version cannot be edited.
+func (s *Server) simulateRules(w http.ResponseWriter, r *http.Request) {
+	var in reviewInput
+	if !decodeJSON(w, r, &in) {
+		return
+	}
+	rows, err := s.Store.Pool.Query(r.Context(), `SELECT t.name,v.version,v.status,i.item_code,i.category,i.title,i.severity,i.applicability_rule
+                FROM checklist_items i
+                JOIN checklist_versions v ON v.id=i.version_id
+                JOIN checklist_templates t ON t.id=v.template_id
+                WHERE t.active AND v.status='PUBLISHED'
+                  AND v.id=(SELECT v2.id FROM checklist_versions v2 WHERE v2.template_id=t.id AND v2.status='PUBLISHED' ORDER BY v2.published_at DESC NULLS LAST,v2.created_at DESC LIMIT 1)
+                ORDER BY t.name,i.sort_order`)
+	if err != nil {
+		problem(w, 500, "QUERY_FAILED", "체크리스트를 불러오지 못했습니다.", nil)
+		return
+	}
+	defer rows.Close()
+
+	fields := reviewFields(in)
+	type outcome struct {
+		Template string `json:"template"`
+		Version  string `json:"version"`
+		ItemCode string `json:"item_code"`
+		Category string `json:"category"`
+		Title    string `json:"title"`
+		Severity string `json:"severity"`
+		Applied  bool   `json:"applied"`
+		Reason   string `json:"reason"`
+	}
+	items := []outcome{}
+	byTemplate := map[string]map[string]int{}
+	applied, excluded := 0, 0
+	for rows.Next() {
+		var o outcome
+		var rule []byte
+		if err = rows.Scan(&o.Template, &o.Version, new(string), &o.ItemCode, &o.Category, &o.Title, &o.Severity, &rule); err != nil {
+			problem(w, 500, "QUERY_FAILED", "체크리스트를 불러오지 못했습니다.", nil)
+			return
+		}
+		switch {
+		case !categoryApplies(o.Category, in):
+			o.Reason = "서비스 특성상 해당 분류가 적용되지 않습니다"
+		case !evaluateRule(rule, fields):
+			o.Reason = "항목의 적용 규칙 조건을 만족하지 않습니다"
+		default:
+			o.Applied = true
+			o.Reason = "적용"
+		}
+		if o.Applied {
+			applied++
+		} else {
+			excluded++
+		}
+		if byTemplate[o.Template] == nil {
+			byTemplate[o.Template] = map[string]int{}
+		}
+		byTemplate[o.Template]["total"]++
+		if o.Applied {
+			byTemplate[o.Template]["applied"]++
+		}
+		items = append(items, o)
+	}
+	if err = rows.Err(); err != nil {
+		problem(w, 500, "QUERY_FAILED", "체크리스트를 불러오지 못했습니다.", nil)
+		return
+	}
+	summary := []map[string]any{}
+	for name, counts := range byTemplate {
+		summary = append(summary, map[string]any{"template": name, "applied": counts["applied"], "total": counts["total"]})
+	}
+	sort.Slice(summary, func(i, j int) bool { return summary[i]["template"].(string) < summary[j]["template"].(string) })
+	jsonResponse(w, 200, map[string]any{"applied": applied, "excluded": excluded, "profile": fields, "templates": summary, "items": items})
+}

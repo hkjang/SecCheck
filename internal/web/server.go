@@ -140,6 +140,7 @@ func (s *Server) routes() {
 	s.mux.Handle("POST /api/v1/templates/{id}/versions/{versionID}/retire", s.require([]string{"TEMPLATE_ADMIN"}, http.HandlerFunc(s.retireVersion)))
 	s.mux.Handle("GET /api/v1/templates/{id}/versions/{versionID}/diff", s.require(nil, http.HandlerFunc(s.versionDiff)))
 	s.mux.Handle("GET /api/v1/templates/{id}/versions/{versionID}/changes", s.require(nil, http.HandlerFunc(s.versionChanges)))
+	s.mux.Handle("POST /api/v1/templates/rule-simulation", s.require([]string{"TEMPLATE_ADMIN", "SECURITY_REVIEWER"}, http.HandlerFunc(s.simulateRules)))
 	s.mux.Handle("POST /api/v1/templates/import/preview", s.require([]string{"TEMPLATE_ADMIN"}, http.HandlerFunc(s.previewImport)))
 	s.mux.Handle("POST /api/v1/templates/import", s.require([]string{"TEMPLATE_ADMIN"}, http.HandlerFunc(s.importTemplate)))
 	s.mux.Handle("GET /api/v1/templates/{id}/export", s.require([]string{"TEMPLATE_ADMIN"}, http.HandlerFunc(s.exportTemplate)))

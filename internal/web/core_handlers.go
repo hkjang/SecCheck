@@ -44,7 +44,7 @@ func (s *Server) publicConfig(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		cfg = auth.OIDCSettings{}
 	}
-	jsonResponse(w, 200, map[string]any{"service_name": "SecCheck", "version": s.Version, "oidc_enabled": cfg.Enabled, "oidc_issuer": cfg.Issuer})
+	jsonResponse(w, 200, map[string]any{"service_name": "SecCheck", "version": s.Version, "oidc_enabled": cfg.Enabled, "oidc_issuer": cfg.Issuer, "timezone": s.Store.Location(r.Context()).String()})
 }
 
 func (s *Server) login(w http.ResponseWriter, r *http.Request) {
@@ -142,7 +142,7 @@ func (s *Server) oidcCallback(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) me(w http.ResponseWriter, r *http.Request) {
 	sess := session(r)
-	jsonResponse(w, 200, map[string]any{"user": publicUser(sess.User), "csrf_token": sess.CSRF, "version": s.Version, "totp_enrollment_required": sess.EnrollTOTP})
+	jsonResponse(w, 200, map[string]any{"user": publicUser(sess.User), "csrf_token": sess.CSRF, "version": s.Version, "totp_enrollment_required": sess.EnrollTOTP, "timezone": s.Store.Location(r.Context()).String()})
 }
 func (s *Server) updateMe(w http.ResponseWriter, r *http.Request) {
 	var in struct {

@@ -45,11 +45,25 @@ export function StatusBadge({ status }: { status: string }) {
   return <Badge tone={tone}>{statusLabel[status] || status}</Badge>
 }
 
+// The service decides which zone dates are read in, so a reviewer in another
+// region sees the same timestamp as the audit log and the exported report
+// rather than one shifted by their laptop's setting.
+let displayTimezone = ''
+export function setDisplayTimezone(zone: string) { displayTimezone = zone }
+
 export function formatDate(value: unknown, withTime = false) {
   if (!value) return '-'
   const date = new Date(String(value))
   if (Number.isNaN(date.getTime())) return String(value)
-  return new Intl.DateTimeFormat('ko-KR', { year: 'numeric', month: '2-digit', day: '2-digit', ...(withTime ? { hour: '2-digit', minute: '2-digit' } : {}) }).format(date)
+  const options: Intl.DateTimeFormatOptions = { year: 'numeric', month: '2-digit', day: '2-digit', ...(withTime ? { hour: '2-digit', minute: '2-digit' } : {}) }
+  if (displayTimezone) options.timeZone = displayTimezone
+  try {
+    return new Intl.DateTimeFormat('ko-KR', options).format(date)
+  } catch {
+    // An unusable zone name must not blank out every date on the page.
+    delete options.timeZone
+    return new Intl.DateTimeFormat('ko-KR', options).format(date)
+  }
 }
 
 export function formatBytes(value: number) {

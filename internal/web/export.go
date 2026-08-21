@@ -3,6 +3,7 @@ package web
 import (
 	"archive/zip"
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -66,6 +67,22 @@ func (s *Server) loadExportData(r *http.Request, id string) (exportData, error) 
 	return exportData{Review: review, Items: scanDynamic(rows, []string{"item_code", "section", "category", "title", "question", "severity", "template_name", "template_version", "applicability", "self_assessment", "current_state", "na_reason", "action_plan", "review_result", "review_opinion", "evidence_adequacy", "na_approved", "follow_up", "evidences"})}, nil
 }
 
+// localTimestamp renders a stored timestamp in the configured display zone.
+// Exports are read in spreadsheets and print-outs where the browser cannot
+// convert anything, so UTC would simply be wrong by the offset.
+func (s *Server) localTimestamp(v any) string {
+	at, ok := store.AsTime(v)
+	if !ok {
+		return ""
+	}
+	return at.In(s.Store.Location(context.Background())).Format("2006-01-02 15:04")
+}
+
+func (s *Server) exportedAt() string {
+	zone := s.Store.Location(context.Background())
+	return time.Now().In(zone).Format("2006-01-02 15:04") + " (" + zone.String() + ")"
+}
+
 func (s *Server) writeJSONExport(w http.ResponseWriter, data exportData, base string) {
 	w.Header().Set("Content-Type", "application/json; charset=utf-8")
 	w.Header().Set("Content-Disposition", `attachment; filename*=UTF-8''`+urlEncode(base+".json"))
@@ -77,7 +94,8 @@ func (s *Server) writeExcelExport(w http.ResponseWriter, data exportData, base s
 	defer f.Close()
 	summary := "심의 결과"
 	f.SetSheetName("Sheet1", summary)
-	summaryRows := [][]any{{"SecCheck 보안성 심의 결과"}, {"심의번호", data.Review["review_number"]}, {"서비스명", data.Review["service_name"]}, {"상태", data.Review["status"]}, {"작성자", data.Review["requester"]}, {"검토자", data.Review["reviewer"]}, {"승인자", data.Review["approver"]}, {"최초 제출일", data.Review["first_submitted_at"]}, {"최종 제출일", data.Review["final_submitted_at"]}, {"최종 승인일", data.Review["approved_at"]}, {"최종 결과", data.Review["final_result"]}, {"최종 의견", data.Review["final_opinion"]}}
+	when := func(key string) string { return s.localTimestamp(data.Review[key]) }
+	summaryRows := [][]any{{"SecCheck 보안성 심의 결과"}, {"심의번호", data.Review["review_number"]}, {"서비스명", data.Review["service_name"]}, {"상태", data.Review["status"]}, {"작성자", data.Review["requester"]}, {"검토자", data.Review["reviewer"]}, {"승인자", data.Review["approver"]}, {"최초 제출일", when("first_submitted_at")}, {"최종 제출일", when("final_submitted_at")}, {"최종 승인일", when("approved_at")}, {"최종 결과", data.Review["final_result"]}, {"최종 의견", data.Review["final_opinion"]}, {"내보낸 시각", s.exportedAt()}}
 	for y, row := range summaryRows {
 		for x, v := range row {
 			cell, _ := excelize.CoordinatesToCellName(x+1, y+1)
@@ -124,7 +142,7 @@ func (s *Server) writePDFExport(w http.ResponseWriter, data exportData, base str
 	pdf.SetFont("kr", "", 18)
 	pdf.CellFormat(0, 10, "SecCheck 보안성 심의 결과", "", 1, "L", false, 0, "")
 	pdf.SetFont("kr", "", 10)
-	fields := [][2]string{{"심의번호", fmt.Sprint(data.Review["review_number"])}, {"서비스명", fmt.Sprint(data.Review["service_name"])}, {"상태", fmt.Sprint(data.Review["status"])}, {"작성자", fmt.Sprint(data.Review["requester"])}, {"검토자", fmt.Sprint(data.Review["reviewer"])}, {"승인자", fmt.Sprint(data.Review["approver"])}, {"최종 결과", fmt.Sprint(data.Review["final_result"])}, {"최종 의견", fmt.Sprint(data.Review["final_opinion"])}}
+	fields := [][2]string{{"심의번호", fmt.Sprint(data.Review["review_number"])}, {"서비스명", fmt.Sprint(data.Review["service_name"])}, {"상태", fmt.Sprint(data.Review["status"])}, {"작성자", fmt.Sprint(data.Review["requester"])}, {"검토자", fmt.Sprint(data.Review["reviewer"])}, {"승인자", fmt.Sprint(data.Review["approver"])}, {"최초 제출일", s.localTimestamp(data.Review["first_submitted_at"])}, {"최종 승인일", s.localTimestamp(data.Review["approved_at"])}, {"최종 결과", fmt.Sprint(data.Review["final_result"])}, {"최종 의견", fmt.Sprint(data.Review["final_opinion"])}, {"내보낸 시각", s.exportedAt()}}
 	for _, f := range fields {
 		pdf.SetFont("kr", "", 9)
 		pdf.CellFormat(32, 7, f[0], "B", 0, "L", false, 0, "")

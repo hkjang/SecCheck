@@ -1,0 +1,60 @@
+import { useState } from 'react'
+import { FlaskConical, Play } from 'lucide-react'
+import { errorMessage, post } from '../lib/api'
+import { Badge, Button, Empty, Field, Loading, Toggle, useToast } from '../components/ui'
+
+type Outcome = { template: string; version: string; item_code: string; category: string; title: string; severity: string; applied: boolean; reason: string }
+type Result = { applied: number; excluded: number; templates: { template: string; applied: number; total: number }[]; items: Outcome[] }
+
+const profileToggles: [string, string][] = [
+  ['has_admin_page', '관리자 페이지 있음'], ['processes_personal_data', '개인정보 처리'], ['processes_credit_data', '신용정보 처리'],
+  ['external_customer_service', '대외 고객 서비스'], ['uses_cloud', '클라우드 사용'], ['uses_docker', 'Docker 사용'],
+  ['uses_kubernetes', 'Kubernetes 사용'], ['external_integration', '외부 연계'], ['internet_access', '인터넷 접점'],
+]
+
+export default function RuleSimulator() {
+  const toast = useToast()
+  const [profile, setProfile] = useState<Record<string, unknown>>({
+    service_name: '시뮬레이션', description: '규칙 검증', service_type: 'WEB', change_type: 'NEW',
+    department: '보안팀', exposure: 'EXTERNAL', business_criticality: 'HIGH',
+    has_admin_page: true, processes_personal_data: true, processes_credit_data: false,
+    external_customer_service: true, uses_cloud: false, uses_docker: false,
+    uses_kubernetes: false, external_integration: false, internet_access: true,
+  })
+  const [result, setResult] = useState<Result>()
+  const [busy, setBusy] = useState(false)
+  const [showExcluded, setShowExcluded] = useState(false)
+  const set = (key: string, value: unknown) => setProfile(v => ({ ...v, [key]: value }))
+  const run = async () => {
+    setBusy(true)
+    try { setResult(await post<Result>('/api/v1/templates/rule-simulation', profile)) }
+    catch (e) { toast.push(errorMessage(e), 'error') } finally { setBusy(false) }
+  }
+  const shown = (result?.items || []).filter(i => showExcluded || i.applied)
+  return <div className="page">
+    <div className="page-header"><div><h1 className="page-title">Rule Engine 시뮬레이터</h1><p className="page-description">심의를 만들지 않고 서비스 특성만으로 어떤 체크리스트가 배정되는지 확인합니다. 게시 버전은 수정할 수 없으므로 게시 전에 규칙을 검증하세요.</p></div><Button variant="primary" disabled={busy} onClick={run}><Play size={14} /> {busy ? '계산 중…' : '시뮬레이션 실행'}</Button></div>
+
+    <section className="card"><div className="card-header"><h2><FlaskConical size={17} /> 서비스 특성</h2></div><div className="card-body">
+      <div className="form-grid">
+        <Field label="서비스 유형"><select className="select" value={String(profile.service_type)} onChange={e => set('service_type', e.target.value)}><option>WEB</option><option>APP</option><option>API</option><option>BATCH</option><option>INFRA</option></select></Field>
+        <Field label="변경 유형"><select className="select" value={String(profile.change_type)} onChange={e => set('change_type', e.target.value)}><option>NEW</option><option>CHANGE</option><option>RENEWAL</option></select></Field>
+        <Field label="노출 범위"><select className="select" value={String(profile.exposure)} onChange={e => set('exposure', e.target.value)}><option>EXTERNAL</option><option>INTERNAL</option><option>PARTNER</option></select></Field>
+        <Field label="중요도"><select className="select" value={String(profile.business_criticality)} onChange={e => set('business_criticality', e.target.value)}><option>HIGH</option><option>MEDIUM</option><option>LOW</option></select></Field>
+      </div>
+      <div className="grid two">{profileToggles.map(([key, label]) => <Toggle key={key} label={label} value={Boolean(profile[key])} onChange={v => set(key, v)} />)}</div>
+    </div></section>
+
+    {busy && !result ? <Loading /> : result ? <>
+      <div className="grid stats">
+        <div className="card stat-card"><div className="stat-icon green"><Play /></div><div><span className="stat-value">{result.applied}</span><div className="stat-label">배정될 항목</div></div></div>
+        <div className="card stat-card"><div className="stat-icon"><FlaskConical /></div><div><span className="stat-value">{result.excluded}</span><div className="stat-label">제외될 항목</div></div></div>
+      </div>
+      <section className="card"><div className="card-header"><h2>템플릿별 배정</h2><button type="button" className={`chip ${showExcluded ? 'on' : ''}`} aria-pressed={showExcluded} onClick={() => setShowExcluded(!showExcluded)}>제외 항목도 보기</button></div>
+        <div className="table-wrap"><table><caption className="sr-only">템플릿별 배정 결과</caption><thead><tr><th scope="col">템플릿</th><th scope="col">배정 / 전체</th></tr></thead><tbody>{result.templates.map(t => <tr key={t.template}><td>{t.template}</td><td><Badge tone={t.applied ? 'green' : ''}>{t.applied} / {t.total}</Badge></td></tr>)}</tbody></table></div></section>
+      <section className="card"><div className="card-header"><h2>항목별 결과</h2><Badge>{shown.length}개</Badge></div>
+        {shown.length ? <div className="table-wrap"><table><caption className="sr-only">항목별 적용 여부</caption><thead><tr><th scope="col">항목코드</th><th scope="col">템플릿</th><th scope="col">보안요건</th><th scope="col">중요도</th><th scope="col">결과</th></tr></thead>
+          <tbody>{shown.map((item, i) => <tr key={`${item.template}-${item.item_code}-${i}`}><td><code>{item.item_code}</code></td><td className="subtle">{item.template} {item.version}</td><td>{item.title}</td><td>{item.severity}</td><td>{item.applied ? <Badge tone="green">배정</Badge> : <><Badge>제외</Badge><div className="subtle">{item.reason}</div></>}</td></tr>)}</tbody></table></div>
+          : <Empty title="배정되는 항목이 없습니다." description="서비스 특성을 조정하거나 템플릿의 적용 규칙을 확인하세요." />}</section>
+    </> : null}
+  </div>
+}
