@@ -134,8 +134,11 @@ docker compose exec seccheck /app/seccheck verify-evidence --json         # 파�
 - `COMPLETED` 7일, `FAILED` 90일 경과 알림 Job
 - 일반 설정 `retention_days`(기본 1825일)가 지난 서버 로그와 인앱 알림
 - 잠금 시간이 지난 계정의 실패 카운터
+- 논리 삭제 후 `upload.deleted_evidence_retention_days`(기본 90일)가 지난 증적의 **암호문 파일**
 
-감사로그는 해시 체인 검증을 위해 자동 삭제하지 않습니다. 정리 결과는 `maintenance` component 서버 로그에서 확인합니다.
+감사로그는 해시 체인 검증을 위해 자동 삭제하지 않습니다. 증적도 메타데이터 행(파일명, SHA-256, 삭제자, 삭제 시각)은 보존하고 암호문만 제거하므로, 삭제된 증적이 존재했다는 사실은 감사 시 그대로 확인할 수 있습니다. 정리 결과는 `maintenance` component 서버 로그에서 확인합니다.
+
+`verify-evidence`는 데이터베이스에 대응 레코드가 없는 **고아 파일**도 함께 보고합니다. 고아 파일은 자동 삭제하지 않습니다. 볼륨에 예상치 못한 파일이 있다는 것은 운영자가 확인해야 할 사안이지 유지보수 작업이 조용히 지울 일이 아니기 때문입니다.
 
 ## 업그레이드와 롤백
 

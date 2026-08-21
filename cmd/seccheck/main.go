@@ -90,7 +90,7 @@ func main() {
 	authService := auth.New(db, box)
 	blobs := vault.New(cfg.DataDir, box, db)
 	go notify.New(db, box).Run(ctx)
-	go maintenance.New(db).Run(ctx)
+	go maintenance.New(db, blobs).Run(ctx)
 	go scanner.New(db, blobs).Run(ctx)
 	handler := api.NewServer(api.Options{Store: db, Auth: authService, Box: box, Version: version, WebDir: cfg.WebDir, DataDir: cfg.DataDir})
 	srv := &http.Server{Addr: cfg.ListenAddr, Handler: handler, ReadHeaderTimeout: 10 * time.Second, ReadTimeout: 30 * time.Second, WriteTimeout: 2 * time.Minute, IdleTimeout: 60 * time.Second, MaxHeaderBytes: 1 << 20}

@@ -283,6 +283,9 @@ func validateSetting(key string, m map[string]any) string {
 		if enabled, _ := m["clamav_enabled"].(bool); enabled && strings.TrimSpace(stringValue(m["clamav_address"])) == "" {
 			return "ClamAV 활성화 시 서버 주소가 필요합니다."
 		}
+		if n := numericSetting(m["deleted_evidence_retention_days"]); n < 1 || n > 36500 {
+			return "삭제 증적 보관 기간은 1~36500일이어야 합니다."
+		}
 	case "security":
 		if n := numericSetting(m["rate_limit_per_minute"]); n < 30 || n > 10000 {
 			return "분당 요청 제한은 30~10000이어야 합니다."

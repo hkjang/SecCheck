@@ -7,9 +7,11 @@ package maintenance
 import (
 	"context"
 	"fmt"
+	"os"
 	"time"
 
 	"github.com/hkjang/SecCheck/internal/store"
+	"github.com/hkjang/SecCheck/internal/vault"
 )
 
 // Deletes run in bounded batches so a first sweep over a long-neglected
@@ -23,9 +25,12 @@ const (
 	failedJobs    = 90
 )
 
-type Worker struct{ Store *store.Store }
+type Worker struct {
+	Store *store.Store
+	Vault *vault.Vault
+}
 
-func New(s *store.Store) *Worker { return &Worker{Store: s} }
+func New(s *store.Store, v *vault.Vault) *Worker { return &Worker{Store: s, Vault: v} }
 
 func (w *Worker) Run(ctx context.Context) {
 	timer := time.NewTimer(startupDelay)
@@ -58,6 +63,7 @@ func (w *Worker) Sweep(ctx context.Context) map[string]int64 {
 		removed["expired_lockouts"] = tag.RowsAffected()
 	}
 	removed["due_reminders"] = w.remindDueChangeRequests(ctx)
+	removed["purged_evidence_files"] = w.purgeDeletedEvidence(ctx)
 	total := int64(0)
 	for _, n := range removed {
 		total += n
@@ -66,6 +72,67 @@ func (w *Worker) Sweep(ctx context.Context) map[string]int64 {
 		w.Store.Log(ctx, "INFO", "", "maintenance", "retention sweep completed", map[string]any{"retention_days": retention, "removed": removed})
 	}
 	return removed
+}
+
+// purgeDeletedEvidence reclaims the encrypted blobs behind evidence that was
+// deleted longer ago than the configured window. The metadata row stays, so
+// the audit trail still shows the file existed, its hash and who removed it;
+// only the ciphertext goes.
+func (w *Worker) purgeDeletedEvidence(ctx context.Context) int64 {
+	if w.Vault == nil {
+		return 0
+	}
+	var cfg struct {
+		Days int `json:"deleted_evidence_retention_days"`
+	}
+	if _, err := w.Store.Setting(ctx, "upload", &cfg); err != nil {
+		return 0
+	}
+	if cfg.Days < 1 || cfg.Days > 36500 {
+		cfg.Days = 90
+	}
+	rows, err := w.Store.Pool.Query(ctx, `SELECT ev.id,ev.evidence_id,ev.stored_filename FROM evidence_versions ev
+                JOIN evidences e ON e.id=ev.evidence_id
+                WHERE e.deleted_at IS NOT NULL AND e.deleted_at < now()-make_interval(days=>$1)
+                  AND ev.purged_at IS NULL
+                ORDER BY e.deleted_at LIMIT 2000`, cfg.Days)
+	if err != nil {
+		w.Store.Log(ctx, "ERROR", "", "maintenance", "evidence purge query failed", map[string]any{"error": err.Error()})
+		return 0
+	}
+	type blob struct{ versionID, evidenceID, stored string }
+	var blobs []blob
+	for rows.Next() {
+		var b blob
+		if rows.Scan(&b.versionID, &b.evidenceID, &b.stored) == nil {
+			blobs = append(blobs, b)
+		}
+	}
+	rows.Close()
+
+	var purged int64
+	touched := map[string]bool{}
+	for _, b := range blobs {
+		// A file that is already gone still counts as purged: the point is that
+		// the ciphertext is not on the volume any more.
+		if err := os.Remove(w.Vault.Path(b.stored)); err != nil && !os.IsNotExist(err) {
+			w.Store.Log(ctx, "ERROR", "", "maintenance", "evidence blob could not be removed", map[string]any{"evidence_id": b.evidenceID, "error": err.Error()})
+			continue
+		}
+		if _, err := w.Store.Pool.Exec(ctx, `UPDATE evidence_versions SET purged_at=now() WHERE id=$1`, b.versionID); err != nil {
+			continue
+		}
+		purged++
+		touched[b.evidenceID] = true
+	}
+	for evidenceID := range touched {
+		_, _ = w.Store.Pool.Exec(ctx, `UPDATE evidences SET purged_at=now() WHERE id=$1 AND purged_at IS NULL
+                        AND NOT EXISTS(SELECT 1 FROM evidence_versions v WHERE v.evidence_id=$1 AND v.purged_at IS NULL)`, evidenceID)
+	}
+	if purged > 0 {
+		w.Store.Log(ctx, "INFO", "", "maintenance", "deleted evidence purged from the volume", map[string]any{"files": purged, "retention_days": cfg.Days})
+	}
+	return purged
 }
 
 // remindDueChangeRequests notifies the assignee once when a change request is
