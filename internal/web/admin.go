@@ -14,12 +14,12 @@ import (
 )
 
 func (s *Server) listUsers(w http.ResponseWriter, r *http.Request) {
-	rows, err := s.Store.Pool.Query(r.Context(), `SELECT u.id,u.username,u.display_name,u.email,u.department,u.auth_source,u.active,u.last_login_at,u.created_at,COALESCE(array_agg(ur.role_code ORDER BY ur.role_code) FILTER(WHERE ur.role_code IS NOT NULL),'{}') FROM users u LEFT JOIN user_roles ur ON ur.user_id=u.id GROUP BY u.id ORDER BY u.display_name`)
+	rows, err := s.Store.Pool.Query(r.Context(), `SELECT u.id,u.username,u.display_name,u.email,u.department,u.auth_source,u.active,u.last_login_at,u.created_at,u.failed_login_count,CASE WHEN u.locked_until>now() THEN u.locked_until END,COALESCE(array_agg(ur.role_code ORDER BY ur.role_code) FILTER(WHERE ur.role_code IS NOT NULL),'{}') FROM users u LEFT JOIN user_roles ur ON ur.user_id=u.id GROUP BY u.id ORDER BY u.display_name`)
 	if err != nil {
 		problem(w, 500, "QUERY_FAILED", "사용자를 불러오지 못했습니다.", nil)
 		return
 	}
-	jsonResponse(w, 200, scanDynamic(rows, []string{"id", "username", "display_name", "email", "department", "auth_source", "active", "last_login_at", "created_at", "roles"}))
+	jsonResponse(w, 200, scanDynamic(rows, []string{"id", "username", "display_name", "email", "department", "auth_source", "active", "last_login_at", "created_at", "failed_login_count", "locked_until", "roles"}))
 }
 
 func (s *Server) createUser(w http.ResponseWriter, r *http.Request) {
@@ -127,6 +127,16 @@ func (s *Server) setUserActive(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(204)
 }
 
+func (s *Server) unlockUser(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	if err := s.Auth.Unlock(r.Context(), id); err != nil {
+		problem(w, 404, "NOT_FOUND", "사용자를 찾을 수 없습니다.", nil)
+		return
+	}
+	_ = s.Store.Audit(r.Context(), auditFrom(r, "UNLOCK_USER", "USER", id, nil, nil))
+	w.WriteHeader(204)
+}
+
 func (s *Server) listSettings(w http.ResponseWriter, r *http.Request) {
 	rows, err := s.Store.Pool.Query(r.Context(), `SELECT key,value_json,encrypted_value<>'',sensitive,updated_at FROM settings ORDER BY key`)
 	if err != nil {
@@ -230,6 +240,25 @@ func validateSetting(key string, m map[string]any) string {
 		}
 		if n := numericSetting(m["inactive_admin_lock_days"]); n < 0 || n > 3650 {
 			return "장기 미접속 잠금 기간은 0~3650일이어야 합니다."
+		}
+		if n := numericSetting(m["login_rate_limit_per_minute"]); n < 1 || n > 600 {
+			return "분당 로그인 시도 제한은 1~600이어야 합니다."
+		}
+		if n := numericSetting(m["max_login_failures"]); n < 0 || n > 100 {
+			return "계정 잠금 실패 횟수는 0~100이어야 합니다. 0은 잠금을 사용하지 않습니다."
+		}
+		if n := numericSetting(m["lockout_minutes"]); n < 1 || n > 1440 {
+			return "계정 잠금 시간은 1~1440분이어야 합니다."
+		}
+		if n := numericSetting(m["idle_timeout_minutes"]); n < 0 || n > 10080 {
+			return "유휴 세션 만료는 0~10080분이어야 합니다. 0은 사용하지 않습니다."
+		}
+		if proxies, ok := m["trusted_proxies"].([]any); ok {
+			for _, raw := range proxies {
+				if _, err := parseProxyPrefix(stringValue(raw)); err != nil {
+					return "신뢰 Reverse Proxy는 IP 주소 또는 CIDR이어야 합니다."
+				}
+			}
 		}
 		if origins, ok := m["cors_origins"].([]any); ok {
 			for _, raw := range origins {

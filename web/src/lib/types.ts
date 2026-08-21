@@ -7,6 +7,8 @@ export type User = {
   auth_source: string
   active: boolean
   roles: string[]
+  locked_until?: string | null
+  failed_login_count?: number
 }
 
 export type DirectoryUser = Pick<User, 'id' | 'username' | 'display_name' | 'department'>

@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/url"
@@ -30,12 +31,12 @@ func (s *Server) ready(w http.ResponseWriter, r *http.Request) {
 	jsonResponse(w, 200, map[string]any{"status": "ready"})
 }
 func (s *Server) metrics(w http.ResponseWriter, r *http.Request) {
-	var users, reviews, pending, failedJobs, requests, requestErrors, loginOK, loginFail, storageBytes, scanFailures, submissionFailures int64
+	var users, reviews, pending, failedJobs, requests, requestErrors, loginOK, loginFail, storageBytes, scanFailures, submissionFailures, sessions, lockedAccounts int64
 	var avgDuration float64
-	_ = s.Store.Pool.QueryRow(r.Context(), `SELECT (SELECT count(*) FROM users),(SELECT count(*) FROM review_requests),(SELECT count(*) FROM jobs WHERE status='PENDING'),(SELECT count(*) FROM jobs WHERE status='FAILED'),(SELECT count(*) FROM application_logs WHERE component='http' AND timestamp>now()-interval '5 minutes'),(SELECT count(*) FROM application_logs WHERE component='http' AND timestamp>now()-interval '5 minutes' AND (fields->>'status')::int>=500),(SELECT COALESCE(avg((fields->>'duration_ms')::numeric),0) FROM application_logs WHERE component='http' AND timestamp>now()-interval '5 minutes' AND fields->>'duration_ms' ~ '^[0-9]+$'),(SELECT count(*) FROM audit_logs WHERE event_type='LOGIN' AND timestamp>now()-interval '24 hours'),(SELECT count(*) FROM audit_logs WHERE event_type='LOGIN_FAIL' AND timestamp>now()-interval '24 hours'),(SELECT COALESCE(sum(size_bytes),0) FROM evidence_versions),(SELECT count(*) FROM evidences WHERE scan_status NOT IN ('CLEAN','SKIPPED')),(SELECT count(*) FROM application_logs WHERE component='http' AND timestamp>now()-interval '24 hours' AND fields->>'path' LIKE '%/submit' AND (fields->>'status')::int>=400)`).Scan(&users, &reviews, &pending, &failedJobs, &requests, &requestErrors, &avgDuration, &loginOK, &loginFail, &storageBytes, &scanFailures, &submissionFailures)
+	_ = s.Store.Pool.QueryRow(r.Context(), `SELECT (SELECT count(*) FROM users),(SELECT count(*) FROM review_requests),(SELECT count(*) FROM jobs WHERE status='PENDING'),(SELECT count(*) FROM jobs WHERE status='FAILED'),(SELECT count(*) FROM application_logs WHERE component='http' AND timestamp>now()-interval '5 minutes'),(SELECT count(*) FROM application_logs WHERE component='http' AND timestamp>now()-interval '5 minutes' AND (fields->>'status')::int>=500),(SELECT COALESCE(avg((fields->>'duration_ms')::numeric),0) FROM application_logs WHERE component='http' AND timestamp>now()-interval '5 minutes' AND fields->>'duration_ms' ~ '^[0-9]+$'),(SELECT count(*) FROM audit_logs WHERE event_type='LOGIN' AND timestamp>now()-interval '24 hours'),(SELECT count(*) FROM audit_logs WHERE event_type='LOGIN_FAIL' AND timestamp>now()-interval '24 hours'),(SELECT COALESCE(sum(size_bytes),0) FROM evidence_versions),(SELECT count(*) FROM evidences WHERE scan_status NOT IN ('CLEAN','SKIPPED')),(SELECT count(*) FROM application_logs WHERE component='http' AND timestamp>now()-interval '24 hours' AND fields->>'path' LIKE '%/submit' AND (fields->>'status')::int>=400),(SELECT count(*) FROM sessions WHERE expires_at>now()),(SELECT count(*) FROM users WHERE locked_until>now())`).Scan(&users, &reviews, &pending, &failedJobs, &requests, &requestErrors, &avgDuration, &loginOK, &loginFail, &storageBytes, &scanFailures, &submissionFailures, &sessions, &lockedAccounts)
 	pool := s.Store.Pool.Stat()
 	w.Header().Set("Content-Type", "text/plain; version=0.0.4")
-	fmt.Fprintf(w, "# HELP seccheck_info SecCheck build information\n# TYPE seccheck_info gauge\nseccheck_info{version=%q} 1\n# TYPE seccheck_users_total gauge\nseccheck_users_total %d\n# TYPE seccheck_reviews_total gauge\nseccheck_reviews_total %d\n# TYPE seccheck_jobs_pending gauge\nseccheck_jobs_pending %d\n# TYPE seccheck_jobs_failed gauge\nseccheck_jobs_failed %d\n# TYPE seccheck_http_requests_5m gauge\nseccheck_http_requests_5m %d\n# TYPE seccheck_http_errors_5m gauge\nseccheck_http_errors_5m %d\n# TYPE seccheck_http_duration_ms_5m gauge\nseccheck_http_duration_ms_5m %.3f\n# TYPE seccheck_login_success_24h gauge\nseccheck_login_success_24h %d\n# TYPE seccheck_login_failure_24h gauge\nseccheck_login_failure_24h %d\n# TYPE seccheck_evidence_version_bytes gauge\nseccheck_evidence_version_bytes %d\n# TYPE seccheck_scan_failures gauge\nseccheck_scan_failures %d\n# TYPE seccheck_submission_failures_24h gauge\nseccheck_submission_failures_24h %d\n# TYPE seccheck_db_connections gauge\nseccheck_db_connections{state=\"total\"} %d\nseccheck_db_connections{state=\"acquired\"} %d\nseccheck_db_connections{state=\"idle\"} %d\n", s.Version, users, reviews, pending, failedJobs, requests, requestErrors, avgDuration, loginOK, loginFail, storageBytes, scanFailures, submissionFailures, pool.TotalConns(), pool.AcquiredConns(), pool.IdleConns())
+	fmt.Fprintf(w, "# HELP seccheck_info SecCheck build information\n# TYPE seccheck_info gauge\nseccheck_info{version=%q} 1\n# TYPE seccheck_users_total gauge\nseccheck_users_total %d\n# TYPE seccheck_reviews_total gauge\nseccheck_reviews_total %d\n# TYPE seccheck_jobs_pending gauge\nseccheck_jobs_pending %d\n# TYPE seccheck_jobs_failed gauge\nseccheck_jobs_failed %d\n# TYPE seccheck_http_requests_5m gauge\nseccheck_http_requests_5m %d\n# TYPE seccheck_http_errors_5m gauge\nseccheck_http_errors_5m %d\n# TYPE seccheck_http_duration_ms_5m gauge\nseccheck_http_duration_ms_5m %.3f\n# TYPE seccheck_login_success_24h gauge\nseccheck_login_success_24h %d\n# TYPE seccheck_login_failure_24h gauge\nseccheck_login_failure_24h %d\n# TYPE seccheck_evidence_version_bytes gauge\nseccheck_evidence_version_bytes %d\n# TYPE seccheck_scan_failures gauge\nseccheck_scan_failures %d\n# TYPE seccheck_submission_failures_24h gauge\nseccheck_submission_failures_24h %d\n# TYPE seccheck_sessions_active gauge\nseccheck_sessions_active %d\n# TYPE seccheck_accounts_locked gauge\nseccheck_accounts_locked %d\n# TYPE seccheck_db_connections gauge\nseccheck_db_connections{state=\"total\"} %d\nseccheck_db_connections{state=\"acquired\"} %d\nseccheck_db_connections{state=\"idle\"} %d\n", s.Version, users, reviews, pending, failedJobs, requests, requestErrors, avgDuration, loginOK, loginFail, storageBytes, scanFailures, submissionFailures, sessions, lockedAccounts, pool.TotalConns(), pool.AcquiredConns(), pool.IdleConns())
 }
 
 func (s *Server) publicConfig(w http.ResponseWriter, r *http.Request) {
@@ -51,7 +52,22 @@ func (s *Server) login(w http.ResponseWriter, r *http.Request) {
 	if !decodeJSON(w, r, &in) {
 		return
 	}
+	// Password login carries its own, much tighter budget than the general API
+	// limit so that credential spraying is throttled long before it becomes
+	// useful, even when it spreads across many accounts.
+	policy := s.Auth.Policy(r.Context())
+	if !s.loginLimiter.allow(clientIP(r), policy.LoginRateLimitPerMinute) {
+		_ = s.Store.Audit(r.Context(), store.AuditEvent{UserName: in.Username, SourceIP: clientIP(r), EventType: "LOGIN_FAIL", TargetType: "USER", RequestID: requestID(r), Result: "FAILURE", After: map[string]any{"reason": "rate_limited"}})
+		problem(w, 429, "LOGIN_RATE_LIMITED", "로그인 시도가 너무 많습니다. 잠시 후 다시 시도하세요.", nil)
+		return
+	}
 	u, token, csrf, expires, err := s.Auth.PasswordLogin(r.Context(), in.Username, in.Password, clientIP(r), r.UserAgent())
+	var locked *auth.LockedError
+	if errors.As(err, &locked) {
+		_ = s.Store.Audit(r.Context(), store.AuditEvent{UserID: u.ID, UserName: in.Username, SourceIP: clientIP(r), EventType: "LOGIN_LOCKED", TargetType: "USER", TargetID: u.ID, RequestID: requestID(r), Result: "FAILURE", After: map[string]any{"locked_until": locked.Until.UTC()}})
+		problem(w, 423, "ACCOUNT_LOCKED", fmt.Sprintf("로그인 실패가 반복되어 계정이 잠겼습니다. %d분 후 또는 관리자 잠금 해제 후 다시 시도하세요.", policy.LockoutMinutes), map[string]any{"locked_until": locked.Until.UTC()})
+		return
+	}
 	if err != nil {
 		_ = s.Store.Audit(r.Context(), store.AuditEvent{UserName: in.Username, SourceIP: clientIP(r), EventType: "LOGIN_FAIL", TargetType: "USER", RequestID: requestID(r), Result: "FAILURE"})
 		problem(w, 401, "INVALID_CREDENTIALS", "아이디 또는 비밀번호가 올바르지 않습니다.", nil)

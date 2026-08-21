@@ -15,6 +15,7 @@ import (
 	"github.com/hkjang/SecCheck/internal/app"
 	"github.com/hkjang/SecCheck/internal/auth"
 	"github.com/hkjang/SecCheck/internal/cryptox"
+	"github.com/hkjang/SecCheck/internal/maintenance"
 	"github.com/hkjang/SecCheck/internal/notify"
 	"github.com/hkjang/SecCheck/internal/store"
 	api "github.com/hkjang/SecCheck/internal/web"
@@ -75,6 +76,7 @@ func main() {
 	}
 	authService := auth.New(db, box)
 	go notify.New(db, box).Run(ctx)
+	go maintenance.New(db).Run(ctx)
 	handler := api.NewServer(api.Options{Store: db, Auth: authService, Box: box, Version: version, WebDir: cfg.WebDir, DataDir: cfg.DataDir})
 	srv := &http.Server{Addr: cfg.ListenAddr, Handler: handler, ReadHeaderTimeout: 10 * time.Second, ReadTimeout: 30 * time.Second, WriteTimeout: 2 * time.Minute, IdleTimeout: 60 * time.Second, MaxHeaderBytes: 1 << 20}
 	go func() {

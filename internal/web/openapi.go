@@ -18,6 +18,7 @@ func (s *Server) openAPI(w http.ResponseWriter, r *http.Request) {
 			"/api/v1/review-requests/{id}/export/{format}": map[string]any{"get": operation("xlsx, pdf, json, zip 결과 내보내기", "export")},
 			"/api/v1/admin/audit":                          map[string]any{"get": operation("위변조 탐지 해시 체인 감사로그", "admin")},
 			"/api/v1/admin/settings":                       map[string]any{"get": operation("관리 설정 목록", "admin")},
+			"/api/v1/admin/users/{id}/unlock":              map[string]any{"post": operation("로그인 실패로 잠긴 계정 잠금 해제", "admin")},
 			"/api/v1/security-controls":                    map[string]any{"get": operation("통합 Security Control과 영향 건수", "controls"), "post": operation("Security Control 생성", "controls")},
 			"/mcp":                                         map[string]any{"post": operation("MCP 2026-07-28 Streamable HTTP endpoint", "mcp")},
 		},

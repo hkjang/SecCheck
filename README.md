@@ -8,7 +8,7 @@
   <img src="https://img.shields.io/badge/PostgreSQL-17-4169E1?style=flat-square&logo=postgresql&logoColor=white" alt="PostgreSQL" />
   <img src="https://img.shields.io/badge/Docker-Ready-2496ED?style=flat-square&logo=docker&logoColor=white" alt="Docker" />
   <img src="https://img.shields.io/badge/MCP-2026--07--28-8A2BE2?style=flat-square" alt="MCP" />
-  <img src="https://img.shields.io/badge/Release-v0.1.0-success?style=flat-square" alt="v0.1.0" />
+  <img src="https://img.shields.io/badge/Release-v0.2.0-success?style=flat-square" alt="v0.2.0" />
 </p>
 
 <h3>Excel 보안 심의를 넘어 추적 가능한 Security Control로.</h3>
@@ -121,7 +121,20 @@ docker run -d --name seccheck --restart unless-stopped \
   -e BOOTSTRAP_ADMIN='admin' \
   -e BOOTSTRAP_ADMIN_PASSWORD='your-strong-password' \
   -e ENCRYPTION_KEY='your-32-char-random-encryption-key' \
-  seccheck:v0.1.0
+  seccheck:v0.2.0
 ```
 
 - **접속 주소**: `http://localhost:8080` (초기 관리자 계정: `admin`)
+
+---
+
+## 🔐 접근 보안 기본값
+
+| 항목 | 기본값 | 관리자 설정 |
+| :--- | :--- | :--- |
+| 계정 잠금 | 연속 로그인 실패 5회 → 15분 잠금 | `max_login_failures`, `lockout_minutes` |
+| 로그인 시도 제한 | IP별 분당 10회 | `login_rate_limit_per_minute` |
+| 유휴 세션 만료 | 사용 안 함 | `idle_timeout_minutes` |
+| 실제 클라이언트 IP 판별 | 사용 안 함 | `trusted_proxies` (Reverse Proxy IP/CIDR) |
+
+잠긴 계정은 관리자 > 사용자 및 역할 화면에서 즉시 해제하며, 잠금과 해제 모두 해시 체인 감사로그에 남습니다. 만료 세션, 완료된 알림 Job, 보존 기간이 지난 서버 로그와 인앱 알림은 매시간 자동 정리되고 감사로그는 체인 검증을 위해 보존됩니다. Reverse Proxy 뒤에 배치할 때는 `trusted_proxies`를 반드시 설정해야 요청 제한과 감사로그가 사용자 단위로 동작합니다. 자세한 내용은 [운영 가이드](docs/operations.md)를 참고하세요.

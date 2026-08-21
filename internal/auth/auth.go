@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/coreos/go-oidc/v3/oidc"
@@ -22,10 +23,78 @@ import (
 
 const CookieName = "seccheck_session"
 
+// lastSeenWriteInterval keeps session liveness tracking cheap: a busy user
+// would otherwise cause one UPDATE per API request.
+const lastSeenWriteInterval = time.Minute
+
+// decoyHash is a bcrypt hash of random bytes generated at start-up. Comparing
+// against it when the account does not exist keeps the failed-login response
+// time indistinguishable from a wrong password, so the login form cannot be
+// used to enumerate usernames.
+var decoyHash = func() []byte {
+	secret, _ := cryptox.RandomBytes(32)
+	h, _ := bcrypt.GenerateFromPassword(secret, bcrypt.DefaultCost)
+	return h
+}()
+
+var ErrInvalidCredentials = errors.New("invalid credentials")
+
+// LockedError reports that an account is temporarily closed to password logins
+// after repeated failures.
+type LockedError struct{ Until time.Time }
+
+func (e *LockedError) Error() string {
+	return "account locked until " + e.Until.UTC().Format(time.RFC3339)
+}
+
+// SecurityPolicy is the effective access-security configuration shared by the
+// authentication service and the HTTP layer.
+type SecurityPolicy struct {
+	LoginRateLimitPerMinute int
+	MaxLoginFailures        int // zero disables account lockout
+	LockoutMinutes          int
+	IdleTimeoutMinutes      int
+}
+
+// securitySettings mirrors the stored JSON. MaxLoginFailures is a pointer so a
+// deliberate 0, meaning lockout is switched off, stays distinguishable from a
+// settings row written before the option existed, which has to fall back to
+// the secure default instead.
+type securitySettings struct {
+	LoginRateLimitPerMinute int  `json:"login_rate_limit_per_minute"`
+	MaxLoginFailures        *int `json:"max_login_failures"`
+	LockoutMinutes          int  `json:"lockout_minutes"`
+	IdleTimeoutMinutes      int  `json:"idle_timeout_minutes"`
+}
+
+// policy applies the supported ranges, replacing every out-of-range or missing
+// value with its default.
+func (c securitySettings) policy() SecurityPolicy {
+	p := SecurityPolicy{LoginRateLimitPerMinute: c.LoginRateLimitPerMinute, MaxLoginFailures: 5, LockoutMinutes: c.LockoutMinutes, IdleTimeoutMinutes: c.IdleTimeoutMinutes}
+	if p.LoginRateLimitPerMinute < 1 || p.LoginRateLimitPerMinute > 600 {
+		p.LoginRateLimitPerMinute = 10
+	}
+	if c.MaxLoginFailures != nil && *c.MaxLoginFailures >= 0 && *c.MaxLoginFailures <= 100 {
+		p.MaxLoginFailures = *c.MaxLoginFailures
+	}
+	if p.LockoutMinutes < 1 || p.LockoutMinutes > 1440 {
+		p.LockoutMinutes = 15
+	}
+	if p.IdleTimeoutMinutes < 0 || p.IdleTimeoutMinutes > 10080 {
+		p.IdleTimeoutMinutes = 0
+	}
+	return p
+}
+
 type Service struct {
 	Store *store.Store
 	Box   *cryptox.Box
 	HTTP  *http.Client
+
+	policyMu     sync.Mutex
+	policyAt     time.Time
+	policyLoaded bool
+	policy       SecurityPolicy
 }
 
 type Session struct {
@@ -58,6 +127,23 @@ func New(s *store.Store, b *cryptox.Box) *Service {
 	return &Service{Store: s, Box: b, HTTP: &http.Client{Timeout: 10 * time.Second}}
 }
 
+// Policy returns the effective access-security policy, refreshed from the
+// settings table at most every 15 seconds so it can be changed at runtime
+// without adding a query to every authenticated request.
+func (a *Service) Policy(ctx context.Context) SecurityPolicy {
+	a.policyMu.Lock()
+	defer a.policyMu.Unlock()
+	if a.policyLoaded && time.Since(a.policyAt) < 15*time.Second {
+		return a.policy
+	}
+	var raw securitySettings
+	if _, err := a.Store.Setting(ctx, "security", &raw); err != nil {
+		raw = securitySettings{}
+	}
+	a.policy, a.policyAt, a.policyLoaded = raw.policy(), time.Now(), true
+	return a.policy
+}
+
 func PasswordHash(password string) (string, error) {
 	if len(password) < 12 {
 		return "", errors.New("password must have at least 12 characters")
@@ -67,18 +153,71 @@ func PasswordHash(password string) (string, error) {
 }
 
 func (a *Service) PasswordLogin(ctx context.Context, username, password, ip, userAgent string) (store.User, string, string, time.Time, error) {
+	policy := a.Policy(ctx)
 	u, err := a.Store.GetUserByUsername(ctx, strings.TrimSpace(username))
 	if err != nil {
-		return u, "", "", time.Time{}, errors.New("invalid credentials")
+		_ = bcrypt.CompareHashAndPassword(decoyHash, []byte(password))
+		return u, "", "", time.Time{}, ErrInvalidCredentials
 	}
-	if !u.Active || u.AuthSource != "local" || bcrypt.CompareHashAndPassword([]byte(u.PasswordHash), []byte(password)) != nil {
-		return u, "", "", time.Time{}, errors.New("invalid credentials")
+	if until, locked := a.lockedUntil(ctx, u.ID); locked {
+		return u, "", "", time.Time{}, &LockedError{Until: until}
+	}
+	passwordOK := bcrypt.CompareHashAndPassword([]byte(u.PasswordHash), []byte(password)) == nil
+	if !passwordOK || !u.Active || u.AuthSource != "local" {
+		if until, locked := a.registerLoginFailure(ctx, u.ID, policy); locked {
+			return u, "", "", time.Time{}, &LockedError{Until: until}
+		}
+		return u, "", "", time.Time{}, ErrInvalidCredentials
 	}
 	token, csrf, expires, err := a.NewSession(ctx, u.ID, ip, userAgent)
 	if err == nil {
-		_, _ = a.Store.Pool.Exec(ctx, `UPDATE users SET last_login_at=now(),updated_at=now() WHERE id=$1`, u.ID)
+		_, _ = a.Store.Pool.Exec(ctx, `UPDATE users SET last_login_at=now(),failed_login_count=0,locked_until=NULL,updated_at=now() WHERE id=$1`, u.ID)
 	}
 	return u, token, csrf, expires, err
+}
+
+func (a *Service) lockedUntil(ctx context.Context, userID string) (time.Time, bool) {
+	var until *time.Time
+	if err := a.Store.Pool.QueryRow(ctx, `SELECT locked_until FROM users WHERE id=$1`, userID).Scan(&until); err != nil || until == nil {
+		return time.Time{}, false
+	}
+	if until.After(time.Now()) {
+		return *until, true
+	}
+	// The window has elapsed. Clear the counter now so the user starts from a
+	// full budget instead of being locked again by a single mistyped password.
+	_, _ = a.Store.Pool.Exec(ctx, `UPDATE users SET failed_login_count=0,locked_until=NULL WHERE id=$1 AND locked_until<=now()`, userID)
+	return time.Time{}, false
+}
+
+// registerLoginFailure counts the attempt and locks the account once the
+// configured threshold is reached. Existing sessions are deliberately left
+// alone so that a third party cannot use the lockout to sign a user out.
+func (a *Service) registerLoginFailure(ctx context.Context, userID string, policy SecurityPolicy) (time.Time, bool) {
+	if policy.MaxLoginFailures <= 0 {
+		return time.Time{}, false
+	}
+	var until *time.Time
+	err := a.Store.Pool.QueryRow(ctx, `UPDATE users SET failed_login_count=failed_login_count+1,
+                locked_until=CASE WHEN failed_login_count+1>=$2 THEN now()+make_interval(mins=>$3) ELSE locked_until END,
+                updated_at=now() WHERE id=$1 RETURNING locked_until`, userID, policy.MaxLoginFailures, policy.LockoutMinutes).Scan(&until)
+	if err != nil || until == nil {
+		return time.Time{}, false
+	}
+	return *until, until.After(time.Now())
+}
+
+// Unlock clears a lockout so an administrator can restore access before the
+// window elapses.
+func (a *Service) Unlock(ctx context.Context, userID string) error {
+	tag, err := a.Store.Pool.Exec(ctx, `UPDATE users SET failed_login_count=0,locked_until=NULL,updated_at=now() WHERE id=$1`, userID)
+	if err != nil {
+		return err
+	}
+	if tag.RowsAffected() == 0 {
+		return pgx.ErrNoRows
+	}
+	return nil
 }
 
 func (a *Service) NewSession(ctx context.Context, userID, ip, userAgent string) (string, string, time.Time, error) {
@@ -114,15 +253,23 @@ func (a *Service) Authenticate(r *http.Request) (Session, error) {
 	h := sha256.Sum256([]byte(c.Value))
 	var sess Session
 	var uid string
-	err = a.Store.Pool.QueryRow(r.Context(), `SELECT id,user_id,csrf_token,expires_at FROM sessions WHERE token_hash=$1 AND expires_at>now()`, h[:]).Scan(&sess.ID, &uid, &sess.CSRF, &sess.ExpiresAt)
+	var lastSeen time.Time
+	err = a.Store.Pool.QueryRow(r.Context(), `SELECT id,user_id,csrf_token,expires_at,last_seen_at FROM sessions WHERE token_hash=$1 AND expires_at>now()`, h[:]).Scan(&sess.ID, &uid, &sess.CSRF, &sess.ExpiresAt, &lastSeen)
 	if err != nil {
 		return Session{}, errors.New("authentication required")
+	}
+	idle := time.Since(lastSeen)
+	if timeout := a.Policy(r.Context()).IdleTimeoutMinutes; timeout > 0 && idle > time.Duration(timeout)*time.Minute {
+		_, _ = a.Store.Pool.Exec(r.Context(), `DELETE FROM sessions WHERE id=$1`, sess.ID)
+		return Session{}, errors.New("session expired after inactivity")
 	}
 	sess.User, err = a.Store.GetUser(r.Context(), uid)
 	if err != nil || !sess.User.Active {
 		return Session{}, errors.New("authentication required")
 	}
-	_, _ = a.Store.Pool.Exec(r.Context(), `UPDATE sessions SET last_seen_at=now() WHERE id=$1`, sess.ID)
+	if idle >= lastSeenWriteInterval {
+		_, _ = a.Store.Pool.Exec(r.Context(), `UPDATE sessions SET last_seen_at=now() WHERE id=$1`, sess.ID)
+	}
 	return sess, nil
 }
 

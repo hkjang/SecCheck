@@ -16,6 +16,8 @@ CREATE TABLE IF NOT EXISTS users (
   created_at timestamptz NOT NULL DEFAULT now(),
   updated_at timestamptz NOT NULL DEFAULT now()
 );
+ALTER TABLE users ADD COLUMN IF NOT EXISTS failed_login_count integer NOT NULL DEFAULT 0;
+ALTER TABLE users ADD COLUMN IF NOT EXISTS locked_until timestamptz;
 
 CREATE TABLE IF NOT EXISTS roles (
   code text PRIMARY KEY,
@@ -50,6 +52,7 @@ CREATE TABLE IF NOT EXISTS sessions (
   last_seen_at timestamptz NOT NULL DEFAULT now()
 );
 CREATE INDEX IF NOT EXISTS idx_sessions_expiry ON sessions(expires_at);
+CREATE INDEX IF NOT EXISTS idx_sessions_last_seen ON sessions(last_seen_at);
 
 CREATE TABLE IF NOT EXISTS oidc_states (
   state_hash bytea PRIMARY KEY,
@@ -59,6 +62,7 @@ CREATE TABLE IF NOT EXISTS oidc_states (
   expires_at timestamptz NOT NULL,
   created_at timestamptz NOT NULL DEFAULT now()
 );
+CREATE INDEX IF NOT EXISTS idx_oidc_states_expiry ON oidc_states(expires_at);
 
 CREATE TABLE IF NOT EXISTS settings (
   key text PRIMARY KEY,
@@ -422,6 +426,7 @@ CREATE TABLE IF NOT EXISTS jobs (
   updated_at timestamptz NOT NULL DEFAULT now()
 );
 CREATE INDEX IF NOT EXISTS idx_jobs_claim ON jobs(status,available_at,created_at);
+CREATE INDEX IF NOT EXISTS idx_jobs_retention ON jobs(status,updated_at);
 
 INSERT INTO settings(key,value_json,sensitive) VALUES
  ('general', '{"service_name":"SecCheck","timezone":"Asia/Seoul","session_minutes":480,"retention_days":1825}'::jsonb, false),
@@ -429,5 +434,9 @@ INSERT INTO settings(key,value_json,sensitive) VALUES
  ('upload', '{"max_size_mb":25,"allowed_extensions":["pdf","png","jpg","jpeg","xlsx","xls","docx","zip","txt","json"],"clamav_enabled":false,"clamav_address":""}'::jsonb, false),
  ('oidc', '{"enabled":false,"issuer":"","client_id":"","redirect_url":"","scopes":["openid","profile","email"],"username_claim":"preferred_username","default_role":"REQUESTER"}'::jsonb, false),
  ('notification', '{"email_enabled":false,"smtp_host":"","smtp_port":25,"smtp_username":"","smtp_tls_mode":"starttls","from":""}'::jsonb, false),
- ('security', '{"cookie_secure":false,"cors_origins":[],"rate_limit_per_minute":120,"inactive_admin_lock_days":90}'::jsonb, false)
+ ('security', '{"cookie_secure":false,"cors_origins":[],"rate_limit_per_minute":120,"inactive_admin_lock_days":90,"login_rate_limit_per_minute":10,"max_login_failures":5,"lockout_minutes":15,"idle_timeout_minutes":0,"trusted_proxies":[]}'::jsonb, false)
 ON CONFLICT (key) DO NOTHING;
+
+-- Existing installations keep their configured values; only missing policy keys
+-- are filled in so the running service never has to guess a default.
+UPDATE settings SET value_json = '{"login_rate_limit_per_minute":10,"max_login_failures":5,"lockout_minutes":15,"idle_timeout_minutes":0,"trusted_proxies":[]}'::jsonb || value_json WHERE key='security';

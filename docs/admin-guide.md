@@ -80,3 +80,33 @@
 | `/ready` | GET | Readiness Probe | DB 풀 및 테이블 쿼리 가능 상태 확인 |
 | `/metrics` | GET | Prometheus Metrics | API 요청수, 지연시간, 심의 상태별 통계, 증적 저장량, 실패 작업 수 수집 |
 | `/mcp` | POST | Model Context Protocol | AI 에이전트 연계 인터페이스 (`2026-07-28`) |
+
+---
+
+## 7. 로그인 보호와 계정 잠금 (`/admin/settings` → `접근 보안`)
+
+| 설정 | 기본값 | 설명 |
+| :--- | :---: | :--- |
+| `login_rate_limit_per_minute` | `10` | IP별 분당 비밀번호 로그인 시도 횟수 |
+| `max_login_failures` | `5` | 계정 잠금까지 허용할 연속 실패 횟수. `0`이면 잠금 미사용 |
+| `lockout_minutes` | `15` | 자동 잠금 유지 시간 |
+| `idle_timeout_minutes` | `0` | 유휴 세션 만료. `0`이면 세션 시간까지 유지 |
+| `trusted_proxies` | (비어 있음) | X-Forwarded-For를 신뢰할 Reverse Proxy IP 또는 CIDR |
+
+- 잠금은 `LOGIN_LOCKED` 감사 이벤트로 남고 `seccheck_accounts_locked` 지표로 관측합니다.
+- 잠긴 계정은 `/admin/users` 화면의 `잠금 해제` 버튼으로 즉시 복구하며, 해제 역시 감사로그에 기록됩니다.
+- 잠금은 신규 로그인만 차단하고 이미 열려 있는 세션은 종료하지 않으므로, 제3자가 잠금을 이용해 사용자를 강제 로그아웃시킬 수 없습니다.
+- **Reverse Proxy 뒤에 배치하는 구성에서는 `trusted_proxies` 설정이 필수입니다.** 비워 두면 모든 요청이 Proxy 한 IP로 집계되어 요청 제한과 감사로그의 접속 IP가 조직 전체 단위로 묶입니다.
+
+---
+
+## 8. 데이터 보존 자동 정리
+
+서비스 시작 1분 뒤부터 매시간 다음을 5,000행 단위로 정리하므로 별도 cron이 필요하지 않습니다.
+
+- 만료된 세션과 OIDC state
+- `COMPLETED` 7일, `FAILED` 90일이 지난 알림 Job
+- 일반 설정 `retention_days`(기본 1825일)가 지난 서버 로그와 인앱 알림
+- 잠금 시간이 지난 계정의 로그인 실패 카운터
+
+감사로그는 해시 체인 검증을 위해 자동 삭제하지 않습니다. 정리 결과는 `maintenance` component 서버 로그에서 확인합니다.

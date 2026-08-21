@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
+	"net/netip"
 	"runtime/debug"
 	"strings"
 	"sync"
@@ -29,6 +30,7 @@ type Server struct {
 	Options
 	mux          *http.ServeMux
 	limiter      *rateLimiter
+	loginLimiter *rateLimiter
 	securityMu   sync.Mutex
 	securityAt   time.Time
 	securityConf runtimeSecurity
@@ -37,14 +39,18 @@ type Server struct {
 type runtimeSecurity struct {
 	CORSOrigins        []string `json:"cors_origins"`
 	RateLimitPerMinute int      `json:"rate_limit_per_minute"`
+	TrustedProxies     []string `json:"trusted_proxies"`
+
+	trusted []netip.Prefix
 }
 
 type ctxKey string
 
 const sessionKey ctxKey = "session"
+const clientIPKey ctxKey = "client_ip"
 
 func NewServer(o Options) http.Handler {
-	s := &Server{Options: o, mux: http.NewServeMux(), limiter: newRateLimiter()}
+	s := &Server{Options: o, mux: http.NewServeMux(), limiter: newRateLimiter(), loginLimiter: newRateLimiter()}
 	s.routes()
 	return s.middleware(s.mux)
 }
@@ -132,6 +138,7 @@ func (s *Server) routes() {
 	s.mux.Handle("POST /api/v1/admin/users", s.require([]string{"SYSTEM_ADMIN"}, http.HandlerFunc(s.createUser)))
 	s.mux.Handle("PUT /api/v1/admin/users/{id}/roles", s.require([]string{"SYSTEM_ADMIN"}, http.HandlerFunc(s.updateUserRoles)))
 	s.mux.Handle("POST /api/v1/admin/users/{id}/active", s.require([]string{"SYSTEM_ADMIN"}, http.HandlerFunc(s.setUserActive)))
+	s.mux.Handle("POST /api/v1/admin/users/{id}/unlock", s.require([]string{"SYSTEM_ADMIN"}, http.HandlerFunc(s.unlockUser)))
 	s.mux.Handle("GET /api/v1/admin/settings", s.require([]string{"SYSTEM_ADMIN"}, http.HandlerFunc(s.listSettings)))
 	s.mux.Handle("PUT /api/v1/admin/settings/{key}", s.require([]string{"SYSTEM_ADMIN"}, http.HandlerFunc(s.updateSetting)))
 	s.mux.Handle("POST /api/v1/admin/settings/oidc/test", s.require([]string{"SYSTEM_ADMIN"}, http.HandlerFunc(s.testOIDC)))
@@ -184,6 +191,7 @@ func (s *Server) middleware(next http.Handler) http.Handler {
 		w.Header().Set("X-Request-ID", requestID)
 		setSecurityHeaders(w.Header())
 		security := s.runtimeSecurity(r.Context())
+		r = r.WithContext(context.WithValue(r.Context(), clientIPKey, resolveClientIP(r, security.trusted)))
 		if origin := r.Header.Get("Origin"); origin != "" && contains(security.CORSOrigins, origin) {
 			w.Header().Set("Access-Control-Allow-Origin", origin)
 			w.Header().Set("Access-Control-Allow-Credentials", "true")
@@ -245,6 +253,11 @@ func (s *Server) runtimeSecurity(ctx context.Context) runtimeSecurity {
 	if cfg.RateLimitPerMinute < 30 || cfg.RateLimitPerMinute > 10000 {
 		cfg.RateLimitPerMinute = 120
 	}
+	for _, raw := range cfg.TrustedProxies {
+		if prefix, err := parseProxyPrefix(raw); err == nil {
+			cfg.trusted = append(cfg.trusted, prefix)
+		}
+	}
 	s.securityConf = cfg
 	s.securityAt = time.Now()
 	return cfg
@@ -286,12 +299,73 @@ func decodeJSON(w http.ResponseWriter, r *http.Request, out any) bool {
 	}
 	return true
 }
+
+// clientIP returns the address the request is attributed to for rate limiting
+// and audit logging. The middleware resolves it once per request; the direct
+// peer address is the fallback for handlers reached outside that path.
 func clientIP(r *http.Request) string {
+	if value, ok := r.Context().Value(clientIPKey).(string); ok && value != "" {
+		return value
+	}
+	return remoteIP(r)
+}
+
+func remoteIP(r *http.Request) string {
 	h, _, err := net.SplitHostPort(r.RemoteAddr)
 	if err == nil {
 		return h
 	}
 	return r.RemoteAddr
+}
+
+// parseProxyPrefix accepts either a CIDR block or a single address so that the
+// common "one reverse proxy" deployment does not have to write /32.
+func parseProxyPrefix(raw string) (netip.Prefix, error) {
+	raw = strings.TrimSpace(raw)
+	if prefix, err := netip.ParsePrefix(raw); err == nil {
+		return prefix.Masked(), nil
+	}
+	addr, err := netip.ParseAddr(raw)
+	if err != nil {
+		return netip.Prefix{}, err
+	}
+	return netip.PrefixFrom(addr, addr.BitLen()), nil
+}
+
+// resolveClientIP walks X-Forwarded-For from right to left while the addresses
+// belong to configured reverse proxies, and returns the first address that
+// does not. Without configured proxies the header is ignored entirely, so a
+// client cannot spoof its own rate-limit bucket or audit trail.
+func resolveClientIP(r *http.Request, trusted []netip.Prefix) string {
+	remote := remoteIP(r)
+	if len(trusted) == 0 || !trustedAddr(remote, trusted) {
+		return remote
+	}
+	forwarded := strings.Split(r.Header.Get("X-Forwarded-For"), ",")
+	for i := len(forwarded) - 1; i >= 0; i-- {
+		addr, err := netip.ParseAddr(strings.TrimSpace(forwarded[i]))
+		if err != nil {
+			break
+		}
+		if candidate := addr.Unmap().String(); !trustedAddr(candidate, trusted) {
+			return candidate
+		}
+	}
+	return remote
+}
+
+func trustedAddr(value string, trusted []netip.Prefix) bool {
+	addr, err := netip.ParseAddr(value)
+	if err != nil {
+		return false
+	}
+	addr = addr.Unmap()
+	for _, prefix := range trusted {
+		if prefix.Contains(addr) {
+			return true
+		}
+	}
+	return false
 }
 func requestID(r *http.Request) string { return r.Header.Get("X-Request-ID") }
 func auditFrom(r *http.Request, event, targetType, targetID string, before, after any) store.AuditEvent {
@@ -335,20 +409,29 @@ func parseLimit(r *http.Request) int {
 	return n
 }
 
+// maxRateLimiterEntries bounds the counter table so that traffic from a large
+// number of distinct source addresses cannot grow the process memory without
+// limit. The table is swept every minute; the cap is only a backstop.
+const maxRateLimiterEntries = 50000
+
 type rateLimiter struct {
 	mu      sync.Mutex
 	entries map[string]*rateEntry
+	sweptAt time.Time
 }
 type rateEntry struct {
 	window time.Time
 	count  int
 }
 
-func newRateLimiter() *rateLimiter { return &rateLimiter{entries: map[string]*rateEntry{}} }
+func newRateLimiter() *rateLimiter {
+	return &rateLimiter{entries: map[string]*rateEntry{}, sweptAt: time.Now()}
+}
 func (l *rateLimiter) allow(key string, limit int) bool {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	now := time.Now()
+	l.sweep(now)
 	e := l.entries[key]
 	if e == nil || now.Sub(e.window) >= time.Minute {
 		l.entries[key] = &rateEntry{window: now, count: 1}
@@ -356,6 +439,21 @@ func (l *rateLimiter) allow(key string, limit int) bool {
 	}
 	e.count++
 	return e.count <= limit
+}
+
+func (l *rateLimiter) sweep(now time.Time) {
+	if now.Sub(l.sweptAt) < time.Minute && len(l.entries) < maxRateLimiterEntries {
+		return
+	}
+	for key, e := range l.entries {
+		if now.Sub(e.window) >= time.Minute {
+			delete(l.entries, key)
+		}
+	}
+	if len(l.entries) >= maxRateLimiterEntries {
+		l.entries = map[string]*rateEntry{}
+	}
+	l.sweptAt = now
 }
 
 var errForbidden = errors.New("forbidden")
