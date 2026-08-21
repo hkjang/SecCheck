@@ -405,6 +405,7 @@ func (s *Server) getReviewRequest(w http.ResponseWriter, r *http.Request) {
 		naRatio = float64(na) * 100 / float64(total)
 	}
 	out["result_summary"] = map[string]any{"total": total, "compliant": compliant, "conditional": conditional, "insufficient": insufficient, "non_compliant": nonCompliant, "na": na, "na_ratio": naRatio, "follow_up": followUp}
+	out["template_versions"] = s.snapshotTemplateVersions(r, r.PathValue("id"))
 	_ = s.Store.Audit(r.Context(), auditFrom(r, "VIEW_SUBMISSION", "REVIEW_REQUEST", r.PathValue("id"), nil, nil))
 	jsonResponse(w, 200, out)
 }
@@ -435,6 +436,31 @@ func (s *Server) updateReviewRequest(w http.ResponseWriter, r *http.Request) {
 		s.addTargetedNotification(r.Context(), in.ReviewerID, "REVIEW_ASSIGNED", "심의 담당자 배정", "배정된 심의를 확인하세요.", "REVIEW_REQUEST", id)
 	}
 	jsonResponse(w, 200, map[string]any{"id": id})
+}
+
+// snapshotTemplateVersions reports which template version each part of the
+// checklist was taken from and whether a newer one has been published since.
+// The snapshot deliberately never moves, but nobody was told that, so a
+// reviewer comparing a review against today's checklist had no way to know
+// they were looking at an older edition.
+func (s *Server) snapshotTemplateVersions(r *http.Request, reviewID string) []map[string]any {
+	rows, err := s.Store.Pool.Query(r.Context(), `SELECT DISTINCT si.template_name,si.template_version,
+                COALESCE((SELECT v.version FROM checklist_versions v JOIN checklist_templates t ON t.id=v.template_id
+                          WHERE t.name=si.template_name AND v.status='PUBLISHED'
+                          ORDER BY v.published_at DESC NULLS LAST, v.created_at DESC LIMIT 1),'') AS current_version
+                FROM submissions sub JOIN submission_items si ON si.submission_id=sub.id
+                WHERE sub.review_request_id=$1 AND sub.revision=(SELECT max(revision) FROM submissions WHERE review_request_id=$1)
+                ORDER BY si.template_name`, reviewID)
+	if err != nil {
+		return []map[string]any{}
+	}
+	out := scanDynamic(rows, []string{"template_name", "snapshot_version", "current_version"})
+	for _, entry := range out {
+		snapshot, _ := entry["snapshot_version"].(string)
+		current, _ := entry["current_version"].(string)
+		entry["outdated"] = current != "" && current != snapshot
+	}
+	return out
 }
 
 // reviewHistory assembles what happened to one review from the audit log.

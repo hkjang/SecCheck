@@ -1404,3 +1404,130 @@ func TestReviewHistoryIsScopedAndVisibleToParticipants(t *testing.T) {
 		t.Errorf("an unrelated user read the review history: %d", res.status)
 	}
 }
+
+// "게시 후 불변인 체크리스트 버전과 제출 시점 Snapshot" is the product's
+// headline promise and had no test. Both halves are checked here: a published
+// version cannot be edited, and a review's checklist does not move under it
+// when the templates change afterwards.
+func TestPublishedVersionsAreImmutableAndSnapshotsAreStable(t *testing.T) {
+	h := newHarness(t)
+	admin := h.login(adminOf(h))
+
+	created := admin.do(http.MethodPost, "/api/v1/templates", map[string]string{"name": "불변 템플릿", "category": "DEVELOPMENT", "description": "", "version": "V1.0"})
+	if created.status != http.StatusCreated {
+		t.Fatalf("create template: %d %s", created.status, created.body)
+	}
+	templateID, _ := created.json()["id"].(string)
+	detail := admin.do(http.MethodGet, "/api/v1/templates/"+templateID, nil).json()
+	versions, _ := detail["versions"].([]any)
+	if len(versions) == 0 {
+		t.Fatal("the new template has no draft version")
+	}
+	first, _ := versions[0].(map[string]any)
+	versionID, _ := first["id"].(string)
+	itemPath := fmt.Sprintf("/api/v1/templates/%s/versions/%s/items", templateID, versionID)
+
+	// An empty version must not be publishable.
+	if res := admin.do(http.MethodPost, fmt.Sprintf("/api/v1/templates/%s/versions/%s/publish", templateID, versionID), nil); res.errorCode() != "EMPTY_VERSION" {
+		t.Errorf("an empty version was publishable: %d %s", res.status, res.body)
+	}
+	// Retiring something that was never published must not work either.
+	if res := admin.do(http.MethodPost, fmt.Sprintf("/api/v1/templates/%s/versions/%s/retire", templateID, versionID), nil); res.status != http.StatusConflict {
+		t.Errorf("a draft was retirable: %d", res.status)
+	}
+
+	item := map[string]any{"item_code": "IMM-001", "title": "불변 항목", "question": "질문", "category": "DEVELOPMENT", "severity": "HIGH", "required": true, "answer_type": "YNNA", "section": "공통"}
+	added := admin.do(http.MethodPost, itemPath, item)
+	if added.status != http.StatusCreated && added.status != http.StatusOK {
+		t.Fatalf("add item to a draft: %d %s", added.status, added.body)
+	}
+	itemID, _ := added.json()["id"].(string)
+
+	if res := admin.do(http.MethodPost, fmt.Sprintf("/api/v1/templates/%s/versions/%s/publish", templateID, versionID), nil); res.status != http.StatusOK {
+		t.Fatalf("publish: %d %s", res.status, res.body)
+	}
+	// Publishing twice is a state conflict, not a silent no-op.
+	if res := admin.do(http.MethodPost, fmt.Sprintf("/api/v1/templates/%s/versions/%s/publish", templateID, versionID), nil); res.status != http.StatusConflict {
+		t.Errorf("a published version was published again: %d", res.status)
+	}
+
+	// Every way of changing a published version has to be refused.
+	changed := map[string]any{"item_code": "IMM-001", "title": "몰래 수정", "question": "질문", "category": "DEVELOPMENT", "severity": "LOW", "required": true, "answer_type": "YNNA", "section": "공통"}
+	for name, res := range map[string]response{
+		"add":    admin.do(http.MethodPost, itemPath, map[string]any{"item_code": "IMM-002", "title": "추가", "question": "질문", "category": "DEVELOPMENT", "severity": "LOW", "required": true, "answer_type": "YNNA", "section": "공통"}),
+		"update": admin.do(http.MethodPatch, itemPath+"/"+itemID, changed),
+		"delete": admin.do(http.MethodDelete, itemPath+"/"+itemID, nil),
+	} {
+		if res.status != http.StatusConflict || res.errorCode() != "IMMUTABLE_VERSION" {
+			t.Errorf("%s on a published version returned %d %s", name, res.status, res.body)
+		}
+	}
+	var storedTitle, storedSeverity string
+	if err := h.db.Pool.QueryRow(context.Background(), `SELECT title,severity FROM checklist_items WHERE id=$1`, itemID).Scan(&storedTitle, &storedSeverity); err != nil {
+		t.Fatal(err)
+	}
+	if storedTitle != "불변 항목" || storedSeverity != "HIGH" {
+		t.Errorf("the published item changed to %q/%s", storedTitle, storedSeverity)
+	}
+
+	// Second half: a review's snapshot must not move when templates change.
+	h.user("snapshot-author", "REQUESTER")
+	author := h.login("snapshot-author")
+	reviewID := author.createReview("스냅샷 서비스")
+	before := []map[string]any{}
+	_ = json.Unmarshal([]byte(author.do(http.MethodGet, "/api/v1/review-requests/"+reviewID+"/items", nil).body), &before)
+	if len(before) == 0 {
+		t.Fatal("the review was assigned no items")
+	}
+
+	// Publish a whole new version of the same template with a different item.
+	newVersion := admin.do(http.MethodPost, "/api/v1/templates/"+templateID+"/versions", map[string]string{"version": "V2.0", "change_note": "이후 변경"})
+	if newVersion.status != http.StatusCreated && newVersion.status != http.StatusOK {
+		t.Fatalf("create a second version: %d %s", newVersion.status, newVersion.body)
+	}
+	secondID, _ := newVersion.json()["id"].(string)
+	secondPath := fmt.Sprintf("/api/v1/templates/%s/versions/%s/items", templateID, secondID)
+	admin.do(http.MethodPost, secondPath, map[string]any{"item_code": "IMM-NEW", "title": "새 버전 항목", "question": "질문", "category": "DEVELOPMENT", "severity": "HIGH", "required": true, "answer_type": "YNNA", "section": "공통"})
+	if res := admin.do(http.MethodPost, fmt.Sprintf("/api/v1/templates/%s/versions/%s/publish", templateID, secondID), nil); res.status != http.StatusOK {
+		t.Fatalf("publish the second version: %d %s", res.status, res.body)
+	}
+
+	after := []map[string]any{}
+	_ = json.Unmarshal([]byte(author.do(http.MethodGet, "/api/v1/review-requests/"+reviewID+"/items", nil).body), &after)
+	if len(after) != len(before) {
+		t.Fatalf("the in-flight review went from %d items to %d after a template change", len(before), len(after))
+	}
+	for i := range before {
+		if before[i]["item_code"] != after[i]["item_code"] || before[i]["title"] != after[i]["title"] {
+			t.Errorf("snapshot item %d changed under the review: %v -> %v", i, before[i]["item_code"], after[i]["item_code"])
+		}
+	}
+	for _, entry := range after {
+		if entry["item_code"] == "IMM-NEW" {
+			t.Error("a newly published item appeared in an existing review's snapshot")
+		}
+	}
+
+	// Staying on the old edition is correct, but the review has to say so.
+	detail2 := author.do(http.MethodGet, "/api/v1/review-requests/"+reviewID, nil).json()
+	templates, _ := detail2["template_versions"].([]any)
+	if len(templates) == 0 {
+		t.Fatal("the review does not report which template versions it was built from")
+	}
+	reported := false
+	for _, raw := range templates {
+		entry, _ := raw.(map[string]any)
+		if entry["snapshot_version"] == "" {
+			t.Errorf("a snapshot template has no version: %v", entry)
+		}
+		if outdated, _ := entry["outdated"].(bool); outdated {
+			reported = true
+			if entry["current_version"] == entry["snapshot_version"] {
+				t.Errorf("an entry is flagged outdated while the versions match: %v", entry)
+			}
+		}
+	}
+	if !reported {
+		t.Error("a newer published version exists but no template is reported as outdated")
+	}
+}
