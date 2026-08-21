@@ -955,3 +955,62 @@ func TestTemplateAndControlListsArePaginatedAndSearchable(t *testing.T) {
 		t.Errorf("control search matched %v, want 1", searched["total"])
 	}
 }
+
+func TestCommentsReachTheOtherSide(t *testing.T) {
+	h := newHarness(t)
+	ctx := context.Background()
+	reviewerID := h.user("comment-reviewer", "SECURITY_REVIEWER")
+	h.user("comment-author", "REQUESTER")
+	author := h.login("comment-author")
+	reviewer := h.login("comment-reviewer")
+	reviewID := author.createReview("코멘트 서비스")
+	author.do(http.MethodPatch, "/api/v1/review-requests/"+reviewID, map[string]string{"reviewer_id": reviewerID})
+
+	items := []map[string]any{}
+	_ = json.Unmarshal([]byte(author.do(http.MethodGet, "/api/v1/review-requests/"+reviewID+"/items", nil).body), &items)
+	itemID := items[0]["id"].(string)
+	itemCode, _ := items[0]["item_code"].(string)
+
+	countFor := func(user string) int {
+		var n int
+		if err := h.db.Pool.QueryRow(ctx, `SELECT count(*) FROM notifications n JOIN users u ON u.id=n.recipient_id WHERE u.username=$1 AND n.event_type='COMMENT_ADDED'`, user).Scan(&n); err != nil {
+			t.Fatal(err)
+		}
+		return n
+	}
+
+	// The reviewer asks a question; the author has to hear about it.
+	if res := reviewer.do(http.MethodPost, fmt.Sprintf("/api/v1/review-requests/%s/items/%s/comments", reviewID, itemID), map[string]string{"body": "이 항목의 근거 자료를 보완해 주세요."}); res.status != http.StatusCreated {
+		t.Fatalf("reviewer comment: %d %s", res.status, res.body)
+	}
+	if got := countFor("comment-author"); got != 1 {
+		t.Errorf("the author received %d comment notifications, want 1", got)
+	}
+	if got := countFor("comment-reviewer"); got != 0 {
+		t.Errorf("the commenter notified themselves %d times", got)
+	}
+	var body string
+	if err := h.db.Pool.QueryRow(ctx, `SELECT body FROM notifications WHERE event_type='COMMENT_ADDED' ORDER BY created_at DESC LIMIT 1`).Scan(&body); err != nil {
+		t.Fatal(err)
+	}
+	if itemCode != "" && !strings.Contains(body, itemCode) {
+		t.Errorf("the notification does not say which item: %q", body)
+	}
+
+	// The author replies; now the reviewer is the one who needs to know.
+	if res := author.do(http.MethodPost, fmt.Sprintf("/api/v1/review-requests/%s/items/%s/comments", reviewID, itemID), map[string]string{"body": "보완했습니다."}); res.status != http.StatusCreated {
+		t.Fatalf("author comment: %d %s", res.status, res.body)
+	}
+	if got := countFor("comment-reviewer"); got != 1 {
+		t.Errorf("the reviewer received %d comment notifications, want 1", got)
+	}
+	if got := countFor("comment-author"); got != 1 {
+		t.Errorf("the author's own reply notified them again (%d)", got)
+	}
+
+	var targeted int
+	_ = h.db.Pool.QueryRow(ctx, `SELECT count(*) FROM notifications WHERE event_type='COMMENT_ADDED' AND target_type='REVIEW_REQUEST' AND target_id=$1`, reviewID).Scan(&targeted)
+	if targeted != 2 {
+		t.Errorf("%d of 2 comment notifications link back to the review", targeted)
+	}
+}

@@ -460,8 +460,49 @@ func (s *Server) addComment(w http.ResponseWriter, r *http.Request) {
 		problem(w, 500, "CREATE_FAILED", "코멘트를 저장하지 못했습니다.", nil)
 		return
 	}
+	s.notifyComment(r, reviewID, itemID, in.Body)
 	_ = s.Store.Audit(r.Context(), auditFrom(r, "CREATE_COMMENT", "SUBMISSION_ITEM", itemID, nil, map[string]any{"comment_id": id}))
 	jsonResponse(w, 201, map[string]string{"id": id})
+}
+
+// notifyComment tells the other side of the review that a question was asked.
+// Comments used to notify nobody, so a reviewer's question sat on an item
+// until the author happened to open it.
+func (s *Server) notifyComment(r *http.Request, reviewID, itemID, body string) {
+	author := session(r).User
+	var number, service, requester, reviewer, builder, developer string
+	var assignee *string
+	err := s.Store.Pool.QueryRow(r.Context(), `SELECT rq.review_number,rq.service_name,rq.requester_id,COALESCE(rq.reviewer_id,''),rq.builder_id,rq.developer_id,
+                (SELECT resp.assigned_to FROM responses resp WHERE resp.submission_item_id=$2)
+                FROM review_requests rq WHERE rq.id=$1`, reviewID, itemID).
+		Scan(&number, &service, &requester, &reviewer, &builder, &developer, &assignee)
+	if err != nil {
+		return
+	}
+	var itemCode string
+	_ = s.Store.Pool.QueryRow(r.Context(), `SELECT item_code FROM submission_items WHERE id=$1`, itemID).Scan(&itemCode)
+
+	// The people who need to know are the ones on the opposite side of the
+	// conversation, plus whoever owns the item.
+	recipients := map[string]bool{}
+	if author.ID == reviewer {
+		recipients[requester] = true
+		recipients[builder] = true
+		recipients[developer] = true
+	} else {
+		recipients[reviewer] = true
+	}
+	if assignee != nil {
+		recipients[*assignee] = true
+	}
+	delete(recipients, author.ID)
+	delete(recipients, "")
+
+	title := "체크리스트 코멘트"
+	message := fmt.Sprintf("%s(%s) %s 항목에 %s님이 코멘트를 남겼습니다.\n\n%s", number, service, itemCode, author.DisplayName, truncate(body, 300))
+	for recipient := range recipients {
+		s.addTargetedNotification(r.Context(), recipient, "COMMENT_ADDED", title, message, "REVIEW_REQUEST", reviewID)
+	}
 }
 
 func (s *Server) saveResponse(w http.ResponseWriter, r *http.Request) {

@@ -306,6 +306,7 @@ tbody tr:hover { background: #f9fbfd; }
 .bulk-bar .button:hover { background: rgba(255,255,255,.24); }
 .bulk-bar .button.primary { background: #3a86ff; border-color: #3a86ff; }
 .item-select { margin-right: 10px; }
+.evidence-preview { display: block; max-width: 100%; max-height: 62vh; margin: 0 auto; border: 1px solid var(--border); border-radius: 10px; background: #f7f9fc; }
 
 :where(a, button, input, select, textarea, [tabindex]):focus-visible { outline: 2px solid #2f6fed; outline-offset: 2px; border-radius: 6px; }
 

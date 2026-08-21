@@ -261,6 +261,7 @@ var notificationEvents = []map[string]string{
 	{"code": "APPROVED", "label": "심의 완료", "description": "심의가 승인되거나 검토 완료되었을 때"},
 	{"code": "REJECTED", "label": "심의 반려", "description": "심의가 반려되었을 때"},
 	{"code": "ITEM_ASSIGNED", "label": "체크리스트 항목 배정", "description": "체크리스트 항목의 담당자로 지정되었을 때"},
+	{"code": "COMMENT_ADDED", "label": "체크리스트 코멘트", "description": "담당 심의의 항목에 코멘트가 달렸을 때"},
 	{"code": "EVIDENCE_INFECTED", "label": "증적 악성코드 탐지", "description": "업로드한 증적에서 악성코드가 발견되었을 때"},
 	{"code": "AUDIT_CHAIN_BROKEN", "label": "감사로그 무결성 실패", "description": "해시 체인 검증이 실패했을 때 (시스템 관리자)"},
 }
