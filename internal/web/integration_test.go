@@ -387,3 +387,97 @@ func adminOf(h *harness) string {
 	h.user("integration-admin", "SYSTEM_ADMIN", "TEMPLATE_ADMIN", "SECURITY_REVIEWER", "REQUESTER", "APPROVER", "AUDITOR")
 	return "integration-admin"
 }
+
+func TestAuditChainVerificationIsIncrementalAndDetectsTampering(t *testing.T) {
+	h := newHarness(t)
+	admin := h.login(adminOf(h))
+	ctx := context.Background()
+
+	first := admin.do(http.MethodGet, "/api/v1/admin/audit/verify", nil).json()
+	if valid, _ := first["valid"].(bool); !valid {
+		t.Fatalf("a fresh chain failed verification: %s", admin.do(http.MethodGet, "/api/v1/admin/audit/verify", nil).body)
+	}
+	checkedFirst, _ := first["checked"].(float64)
+	if checkedFirst == 0 {
+		t.Fatal("the first run should have verified the login events")
+	}
+	if from, _ := first["from_sequence"].(float64); from != 0 {
+		t.Errorf("the first run started at sequence %v, want the whole chain", from)
+	}
+	// Verifying is itself an audited action, so a second run has exactly that
+	// one new event to prove rather than the whole chain again.
+	second := admin.do(http.MethodGet, "/api/v1/admin/audit/verify", nil).json()
+	if from, _ := second["from_sequence"].(float64); from == 0 {
+		t.Error("the second run did not resume from the recorded checkpoint")
+	}
+	if checked, _ := second["checked"].(float64); checked != 1 {
+		t.Errorf("the incremental run verified %v events, want only the previous run's own audit entry", checked)
+	}
+	// Three more actions make exactly three more events of work.
+	before, _ := admin.do(http.MethodGet, "/api/v1/admin/audit/verify", nil).json()["total"].(float64)
+	for i := 0; i < 3; i++ {
+		admin.do(http.MethodPatch, "/api/v1/me", map[string]string{"display_name": "감사자", "email": "", "department": ""})
+	}
+	third := admin.do(http.MethodGet, "/api/v1/admin/audit/verify", nil).json()
+	if checked, _ := third["checked"].(float64); checked != 4 {
+		t.Errorf("after three actions the incremental run verified %v events, want 4 (3 actions plus the previous verification)", checked)
+	}
+	if total, _ := third["total"].(float64); total <= before {
+		t.Errorf("the chain total did not advance: %v then %v", before, total)
+	}
+
+	// Tampering with a stored payload has to be caught by the full pass, and
+	// it must reach the administrators rather than only the caller.
+	if _, err := h.db.Pool.Exec(ctx, `UPDATE audit_logs SET canonical_payload=canonical_payload||'tampered' WHERE chain_sequence=1`); err != nil {
+		t.Fatal(err)
+	}
+	full := admin.do(http.MethodGet, "/api/v1/admin/audit/verify?full=1", nil).json()
+	if valid, _ := full["valid"].(bool); valid {
+		t.Fatal("a tampered payload passed the full verification")
+	}
+	var alerts int
+	if err := h.db.Pool.QueryRow(ctx, `SELECT count(*) FROM notifications WHERE event_type='AUDIT_CHAIN_BROKEN'`).Scan(&alerts); err != nil {
+		t.Fatal(err)
+	}
+	if alerts == 0 {
+		t.Error("no administrator was notified that the chain is broken")
+	}
+}
+
+func TestFailedJobsAreVisibleAndRetryable(t *testing.T) {
+	h := newHarness(t)
+	admin := h.login(adminOf(h))
+	ctx := context.Background()
+	if _, err := h.db.Pool.Exec(ctx, `INSERT INTO jobs(id,type,status,attempts,last_error) VALUES($1,'SEND_EMAIL','FAILED',5,'smtp: connection refused')`, store.NewID()); err != nil {
+		t.Fatal(err)
+	}
+	listed := admin.do(http.MethodGet, "/api/v1/admin/jobs?status=FAILED", nil).json()
+	items, _ := listed["items"].([]any)
+	if len(items) != 1 {
+		t.Fatalf("failed jobs listed = %d, want 1: %v", len(items), listed)
+	}
+	job, _ := items[0].(map[string]any)
+	id, _ := job["id"].(string)
+	if res := admin.do(http.MethodPost, "/api/v1/admin/jobs/"+id+"/retry", nil); res.status != http.StatusNoContent {
+		t.Fatalf("retry returned %d %s", res.status, res.body)
+	}
+	var status string
+	var attempts int
+	if err := h.db.Pool.QueryRow(ctx, `SELECT status,attempts FROM jobs WHERE id=$1`, id).Scan(&status, &attempts); err != nil {
+		t.Fatal(err)
+	}
+	if status != "PENDING" || attempts != 0 {
+		t.Errorf("after retry status=%s attempts=%d, want PENDING/0", status, attempts)
+	}
+	if res := h.login("integration-admin").do(http.MethodGet, "/api/v1/admin/jobs", nil); res.status != http.StatusOK {
+		t.Errorf("job listing returned %d", res.status)
+	}
+}
+
+func TestOnlyAdministratorsReachTheJobQueue(t *testing.T) {
+	h := newHarness(t)
+	h.user("plainuser", "REQUESTER")
+	if res := h.login("plainuser").do(http.MethodGet, "/api/v1/admin/jobs", nil); res.status != http.StatusForbidden {
+		t.Errorf("a requester reached the job queue: %d", res.status)
+	}
+}

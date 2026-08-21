@@ -143,6 +143,7 @@ func mcpTools() []map[string]any {
 		{"name": "seccheck.get_review", "title": "Get security review", "description": "심의 ID로 기본정보, 진행률, 상태와 담당자를 조회합니다.", "inputSchema": map[string]any{"type": "object", "properties": map[string]any{"review_id": map[string]any{"type": "string", "description": "SecCheck review UUID"}}, "required": []string{"review_id"}, "additionalProperties": false}, "annotations": map[string]any{"readOnlyHint": true, "destructiveHint": false}},
 		{"name": "seccheck.list_reviews", "title": "List security reviews", "description": "권한 범위의 보안성 심의를 상태 또는 검색어로 조회합니다.", "inputSchema": map[string]any{"type": "object", "properties": map[string]any{"status": map[string]any{"type": "string"}, "query": map[string]any{"type": "string"}, "limit": map[string]any{"type": "integer", "minimum": 1, "maximum": 100}}, "additionalProperties": false}, "annotations": map[string]any{"readOnlyHint": true, "destructiveHint": false}},
 		{"name": "seccheck.search_controls", "title": "Search security controls", "description": "게시된 체크리스트의 항목 코드, 보안요건, 질문과 가이드를 검색합니다.", "inputSchema": map[string]any{"type": "object", "properties": map[string]any{"query": map[string]any{"type": "string", "minLength": 2}, "category": map[string]any{"type": "string"}, "limit": map[string]any{"type": "integer", "minimum": 1, "maximum": 100}}, "required": []string{"query"}, "additionalProperties": false}, "annotations": map[string]any{"readOnlyHint": true, "destructiveHint": false}},
+		{"name": "seccheck.my_queue", "title": "My review queue", "description": "지금 본인이 처리해야 하는 심의와 기한이 임박한 보완 요청을 조회합니다.", "inputSchema": map[string]any{"type": "object", "additionalProperties": false}, "annotations": map[string]any{"readOnlyHint": true, "destructiveHint": false}},
 		{"name": "seccheck.validate_submission", "title": "Validate submission", "description": "제출 전 서버 검증을 실행하고 누락된 적용여부, N/A 사유, 증적 또는 검사 상태를 반환합니다.", "inputSchema": map[string]any{"type": "object", "properties": map[string]any{"review_id": map[string]any{"type": "string"}}, "required": []string{"review_id"}, "additionalProperties": false}, "annotations": map[string]any{"readOnlyHint": true, "destructiveHint": false}},
 	}
 }
@@ -161,6 +162,8 @@ func (s *Server) callMCPTool(r *http.Request, raw json.RawMessage) (any, *rpcErr
 	switch p.Name {
 	case "seccheck.dashboard":
 		data, err = s.mcpDashboard(r, sess)
+	case "seccheck.my_queue":
+		data = map[string]any{"my_queue": s.myQueue(r), "due_soon": s.dueChangeRequests(r)}
 	case "seccheck.get_review":
 		data, err = s.mcpGetReview(r, sess, stringValue(p.Arguments["review_id"]))
 	case "seccheck.list_reviews":

@@ -8,7 +8,7 @@
   <img src="https://img.shields.io/badge/PostgreSQL-17-4169E1?style=flat-square&logo=postgresql&logoColor=white" alt="PostgreSQL" />
   <img src="https://img.shields.io/badge/Docker-Ready-2496ED?style=flat-square&logo=docker&logoColor=white" alt="Docker" />
   <img src="https://img.shields.io/badge/MCP-2026--07--28-8A2BE2?style=flat-square" alt="MCP" />
-  <img src="https://img.shields.io/badge/Release-v0.4.0-success?style=flat-square" alt="v0.4.0" />
+  <img src="https://img.shields.io/badge/Release-v0.5.0-success?style=flat-square" alt="v0.5.0" />
 </p>
 
 <h3>Excel 보안 심의를 넘어 추적 가능한 Security Control로.</h3>
@@ -121,7 +121,7 @@ docker run -d --name seccheck --restart unless-stopped \
   -e BOOTSTRAP_ADMIN='admin' \
   -e BOOTSTRAP_ADMIN_PASSWORD='your-strong-password' \
   -e ENCRYPTION_KEY='your-32-char-random-encryption-key' \
-  seccheck:v0.4.0
+  seccheck:v0.5.0
 ```
 
 - **접속 주소**: `http://localhost:8080` (초기 관리자 계정: `admin`)
@@ -139,3 +139,9 @@ docker run -d --name seccheck --restart unless-stopped \
 | 관리자 2단계 인증 | 사용 안 함 | `require_totp_for_admins` (TOTP, RFC 6238) |
 
 잠긴 계정은 관리자 > 사용자 및 역할 화면에서 즉시 해제하거나 임시 비밀번호를 재발급하며, 잠금과 해제 모두 해시 체인 감사로그에 남습니다. 로컬 계정 사용자는 개인 프로필에서 직접 비밀번호를 변경할 수 있고, 변경 시 다른 기기의 세션이 모두 종료됩니다. 만료 세션, 완료된 알림 Job, 보존 기간이 지난 서버 로그와 인앱 알림은 매시간 자동 정리되고 감사로그는 체인 검증을 위해 보존됩니다. Reverse Proxy 뒤에 배치할 때는 `trusted_proxies`를 반드시 설정해야 요청 제한과 감사로그가 사용자 단위로 동작합니다. 업그레이드 시 확인할 스키마·설정 변경은 [CHANGELOG](CHANGELOG.md)에, 운영 절차는 [운영 가이드](docs/operations.md)에 있습니다.
+
+증적 무결성은 복구 훈련에서 직접 증명할 수 있습니다.
+
+```bash
+docker compose exec seccheck /app/seccheck verify-evidence
+```

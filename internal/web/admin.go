@@ -423,16 +423,29 @@ func csvValue(v any) string {
 	}
 }
 
+// verifyAudit proves the hash chain. A full pass re-reads and re-hashes every
+// event ever written, which grows without bound, so the last proved position
+// is remembered and the routine check covers only what has been appended
+// since. `?full=1` forces the complete pass.
 func (s *Server) verifyAudit(w http.ResponseWriter, r *http.Request) {
-	rows, err := s.Store.Pool.Query(r.Context(), `SELECT event_id,previous_hash,canonical_payload,event_hash,chain_sequence FROM audit_logs ORDER BY chain_sequence`)
+	full := r.URL.Query().Get("full") == "1"
+	var fromSequence int64
+	previous := ""
+	if !full {
+		_ = s.Store.Pool.QueryRow(r.Context(), `SELECT verified_sequence,verified_hash FROM audit_chain_state WHERE id=1`).Scan(&fromSequence, &previous)
+		if previous == "" {
+			// Nothing has been proved yet, so an incremental run has no anchor.
+			fromSequence = 0
+		}
+	}
+	rows, err := s.Store.Pool.Query(r.Context(), `SELECT event_id,previous_hash,canonical_payload,event_hash,chain_sequence FROM audit_logs WHERE chain_sequence>$1 ORDER BY chain_sequence`, fromSequence)
 	if err != nil {
 		problem(w, 500, "VERIFY_FAILED", "감사로그를 검증하지 못했습니다.", nil)
 		return
 	}
 	defer rows.Close()
-	previous := ""
-	count := 0
-	var expectedSequence int64 = 1
+	checked := 0
+	expectedSequence := fromSequence + 1
 	for rows.Next() {
 		var id, linked, payload, storedHash string
 		var sequence int64
@@ -440,26 +453,60 @@ func (s *Server) verifyAudit(w http.ResponseWriter, r *http.Request) {
 			problem(w, 500, "VERIFY_FAILED", "감사로그를 검증하지 못했습니다.", nil)
 			return
 		}
-		count++
+		checked++
 		if payload == "" || linked != previous || sequence != expectedSequence {
-			jsonResponse(w, 200, map[string]any{"valid": false, "checked": count, "failed_event_id": id, "reason": "chain link or canonical payload mismatch"})
+			s.reportChainBreak(r, id, sequence, "chain link or canonical payload mismatch")
+			jsonResponse(w, 200, map[string]any{"valid": false, "checked": checked, "from_sequence": fromSequence, "failed_event_id": id, "reason": "chain link or canonical payload mismatch"})
 			return
 		}
 		hash := sha256.Sum256([]byte(payload))
 		if hex.EncodeToString(hash[:]) != storedHash {
-			jsonResponse(w, 200, map[string]any{"valid": false, "checked": count, "failed_event_id": id, "reason": "event hash mismatch"})
+			s.reportChainBreak(r, id, sequence, "event hash mismatch")
+			jsonResponse(w, 200, map[string]any{"valid": false, "checked": checked, "from_sequence": fromSequence, "failed_event_id": id, "reason": "event hash mismatch"})
 			return
 		}
 		previous = storedHash
 		expectedSequence++
 	}
-	var head string
-	var sequence int64
-	if err = s.Store.Pool.QueryRow(r.Context(), `SELECT head_hash,sequence FROM audit_chain_state WHERE id=1`).Scan(&head, &sequence); err != nil || head != previous || sequence != int64(count) {
-		jsonResponse(w, 200, map[string]any{"valid": false, "checked": count, "reason": "chain head state mismatch"})
+	if err = rows.Err(); err != nil {
+		problem(w, 500, "VERIFY_FAILED", "감사로그를 검증하지 못했습니다.", nil)
 		return
 	}
-	jsonResponse(w, 200, map[string]any{"valid": true, "checked": count, "head_hash": previous})
+	var head string
+	var sequence int64
+	if err = s.Store.Pool.QueryRow(r.Context(), `SELECT head_hash,sequence FROM audit_chain_state WHERE id=1`).Scan(&head, &sequence); err != nil || head != previous || sequence != expectedSequence-1 {
+		s.reportChainBreak(r, "", sequence, "chain head state mismatch")
+		jsonResponse(w, 200, map[string]any{"valid": false, "checked": checked, "from_sequence": fromSequence, "reason": "chain head state mismatch"})
+		return
+	}
+	// Record how far the chain is proved so the next routine check is cheap.
+	_, _ = s.Store.Pool.Exec(r.Context(), `UPDATE audit_chain_state SET verified_sequence=$1,verified_hash=$2,verified_at=now() WHERE id=1`, sequence, head)
+	_ = s.Store.Audit(r.Context(), auditFrom(r, "VERIFY_AUDIT_CHAIN", "AUDIT_LOG", "", nil, map[string]any{"checked": checked, "from_sequence": fromSequence, "full": full, "head_sequence": sequence}))
+	jsonResponse(w, 200, map[string]any{"valid": true, "checked": checked, "from_sequence": fromSequence, "total": sequence, "full": full, "head_hash": previous})
+}
+
+// reportChainBreak makes tampering loud: it is a server-log ERROR and an
+// in-app notification to every system administrator, not just a red toast on
+// whoever happened to press the button.
+func (s *Server) reportChainBreak(r *http.Request, eventID string, sequence int64, reason string) {
+	s.Store.Log(r.Context(), "ERROR", requestID(r), "audit", "audit chain verification failed", map[string]any{"event_id": eventID, "sequence": sequence, "reason": reason})
+	rows, err := s.Store.Pool.Query(r.Context(), `SELECT user_id FROM user_roles WHERE role_code='SYSTEM_ADMIN'`)
+	if err != nil {
+		return
+	}
+	defer rows.Close()
+	var admins []string
+	for rows.Next() {
+		var id string
+		if rows.Scan(&id) == nil {
+			admins = append(admins, id)
+		}
+	}
+	for _, admin := range admins {
+		_, _ = s.Store.Pool.Exec(r.Context(), `INSERT INTO notifications(id,recipient_id,event_type,title,body) VALUES($1,$2,'AUDIT_CHAIN_BROKEN',$3,$4)`,
+			store.NewID(), admin, "감사로그 체인 검증 실패",
+			fmt.Sprintf("감사로그 %d번 이벤트에서 무결성 검증에 실패했습니다 (%s). 데이터베이스 직접 변경 여부를 즉시 확인하세요.", sequence, reason))
+	}
 }
 
 func (s *Server) listLogs(w http.ResponseWriter, r *http.Request) {
@@ -495,4 +542,73 @@ func contains(items []string, v string) bool {
 }
 func intString(v int) string {
 	return strconv.Itoa(v)
+}
+
+// listJobs gives administrators the background queue that until now was only
+// visible as two numbers on /metrics. A stuck e-mail or an evidence scan that
+// never cleared has to be findable and retryable from the console.
+func (s *Server) listJobs(w http.ResponseWriter, r *http.Request) {
+	limit := parseLimit(r)
+	where := "TRUE"
+	args := []any{}
+	if status := strings.TrimSpace(r.URL.Query().Get("status")); status != "" {
+		args = append(args, status)
+		where += ` AND status=$` + intString(len(args))
+	}
+	if jobType := strings.TrimSpace(r.URL.Query().Get("type")); jobType != "" {
+		args = append(args, jobType)
+		where += ` AND type=$` + intString(len(args))
+	}
+	args = append(args, limit)
+	rows, err := s.Store.Pool.Query(r.Context(), `SELECT id,type,status,attempts,available_at,locked_at,last_error,created_at,updated_at FROM jobs WHERE `+where+` ORDER BY updated_at DESC LIMIT $`+intString(len(args)), args...)
+	if err != nil {
+		problem(w, 500, "QUERY_FAILED", "작업 큐를 불러오지 못했습니다.", nil)
+		return
+	}
+	items := scanDynamic(rows, []string{"id", "type", "status", "attempts", "available_at", "locked_at", "last_error", "created_at", "updated_at"})
+	summary := map[string]any{}
+	counts, err := s.Store.Pool.Query(r.Context(), `SELECT type,status,count(*) FROM jobs GROUP BY type,status`)
+	if err == nil {
+		summary["counts"] = scanDynamic(counts, []string{"type", "status", "count"})
+	}
+	var pendingScans int64
+	_ = s.Store.Pool.QueryRow(r.Context(), `SELECT count(*) FROM evidences WHERE scan_status IN ('PENDING','ERROR') AND deleted_at IS NULL`).Scan(&pendingScans)
+	summary["evidence_awaiting_scan"] = pendingScans
+	jsonResponse(w, 200, map[string]any{"items": items, "summary": summary})
+}
+
+// retryJob puts a failed job back in the queue. Evidence stuck in ERROR is
+// returned to PENDING at the same time so the gate reopens once it clears.
+func (s *Server) retryJob(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	var jobType string
+	var payload []byte
+	err := s.Store.Pool.QueryRow(r.Context(), `UPDATE jobs SET status='PENDING',attempts=0,available_at=now(),locked_at=NULL,last_error='',updated_at=now() WHERE id=$1 AND status IN ('FAILED','PENDING') RETURNING type,payload`, id).Scan(&jobType, &payload)
+	if err != nil {
+		problem(w, 404, "NOT_FOUND", "재시도할 작업을 찾을 수 없습니다.", nil)
+		return
+	}
+	if jobType == "SCAN_EVIDENCE" {
+		var job struct {
+			EvidenceID string `json:"evidence_id"`
+		}
+		if json.Unmarshal(payload, &job) == nil && job.EvidenceID != "" {
+			_, _ = s.Store.Pool.Exec(r.Context(), `UPDATE evidences SET scan_status='PENDING' WHERE id=$1 AND scan_status='ERROR'`, job.EvidenceID)
+		}
+	}
+	_ = s.Store.Audit(r.Context(), auditFrom(r, "RETRY_JOB", "JOB", id, nil, map[string]any{"type": jobType}))
+	w.WriteHeader(204)
+}
+
+// retryFailedJobs is the bulk form, for when an SMTP or clamd outage has
+// filled the queue.
+func (s *Server) retryFailedJobs(w http.ResponseWriter, r *http.Request) {
+	tag, err := s.Store.Pool.Exec(r.Context(), `UPDATE jobs SET status='PENDING',attempts=0,available_at=now(),locked_at=NULL,last_error='',updated_at=now() WHERE status='FAILED'`)
+	if err != nil {
+		problem(w, 500, "UPDATE_FAILED", "작업을 재시도하지 못했습니다.", nil)
+		return
+	}
+	_, _ = s.Store.Pool.Exec(r.Context(), `UPDATE evidences SET scan_status='PENDING' WHERE scan_status='ERROR' AND deleted_at IS NULL`)
+	_ = s.Store.Audit(r.Context(), auditFrom(r, "RETRY_JOB", "JOB", "all-failed", nil, map[string]any{"requeued": tag.RowsAffected()}))
+	jsonResponse(w, 200, map[string]any{"requeued": tag.RowsAffected()})
 }

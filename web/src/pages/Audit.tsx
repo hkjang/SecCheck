@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from 'react'
 import { Download, RotateCcw, Search, ShieldCheck } from 'lucide-react'
-import { get } from '../lib/api'
+import { errorMessage, get } from '../lib/api'
 import { Badge, Button, Empty, Field, Loading, formatDate, useToast } from '../components/ui'
 
 const today = () => new Date().toISOString().slice(0, 10)
@@ -12,11 +12,23 @@ export default function AuditPage() {
   const [detail, setDetail] = useState<Record<string, unknown>>()
   const params = useMemo(() => { const qs = new URLSearchParams(); Object.entries(filter).forEach(([k, v]) => { if (v) qs.set(k, v) }); return qs }, [filter])
   useEffect(() => { setItems(undefined); const timer = window.setTimeout(() => { get<Record<string, unknown>[]>(`/api/v1/admin/audit?${params}`).then(setItems) }, 200); return () => clearTimeout(timer) }, [params])
-  const verify = async () => { const result = await get<{ valid: boolean; checked: number }>('/api/v1/admin/audit/verify'); toast.push(result.valid ? `${result.checked}개 감사 이벤트의 해시 체인이 유효합니다.` : `${result.checked}번째 이벤트에서 체인 불일치가 발견되었습니다.`, result.valid ? 'normal' : 'error') }
+  const [verifying, setVerifying] = useState(false)
+  // The routine check only proves what has been appended since the last run;
+  // a full pass re-hashes the whole chain and is offered separately.
+  const verify = async (full = false) => {
+    setVerifying(true)
+    try {
+      const r = await get<{ valid: boolean; checked: number; total?: number; from_sequence: number; reason?: string }>(`/api/v1/admin/audit/verify${full ? '?full=1' : ''}`)
+      if (!r.valid) { toast.push(`체인 불일치가 발견되었습니다 (${r.reason || '무결성 오류'}). 시스템 관리자에게 알림이 발송되었습니다.`, 'error'); return }
+      toast.push(full
+        ? `전체 ${r.checked}개 감사 이벤트의 해시 체인이 유효합니다.`
+        : r.checked === 0 ? '이전 검증 이후 추가된 이벤트가 없습니다. 체인은 유효합니다.' : `신규 ${r.checked}개 이벤트를 검증했습니다. 누적 ${r.total ?? r.checked}개까지 체인이 유효합니다.`)
+    } catch (e) { toast.push(errorMessage(e), 'error') } finally { setVerifying(false) }
+  }
   const set = (key: keyof typeof filter, value: string) => setFilter(v => ({ ...v, [key]: value }))
   const active = Boolean(filter.event || filter.user || filter.from || filter.to)
   return <div className="page">
-    <div className="page-header"><div><h1 className="page-title">감사로그</h1><p className="page-description">이전 이벤트 해시를 연결한 위변조 탐지 체인입니다. 애플리케이션에서 수정·삭제 API를 제공하지 않습니다.</p></div><div className="header-actions"><a className="button" href={`/api/v1/admin/audit?${new URLSearchParams({ ...Object.fromEntries(params), format: 'csv' })}`}><Download size={14} /> CSV 내보내기</a><Button onClick={verify}><ShieldCheck size={14} /> 체인 검증</Button></div></div>
+    <div className="page-header"><div><h1 className="page-title">감사로그</h1><p className="page-description">이전 이벤트 해시를 연결한 위변조 탐지 체인입니다. 애플리케이션에서 수정·삭제 API를 제공하지 않습니다.</p></div><div className="header-actions"><a className="button" href={`/api/v1/admin/audit?${new URLSearchParams({ ...Object.fromEntries(params), format: 'csv' })}`}><Download size={14} /> CSV 내보내기</a><Button disabled={verifying} onClick={() => verify(false)}><ShieldCheck size={14} /> 체인 검증</Button><Button disabled={verifying} onClick={() => verify(true)}>전체 재검증</Button></div></div>
     <div className="card"><div className="card-body"><div className="form-grid">
       <Field label="이벤트 유형" help="앞부분만 입력해도 됩니다. 예: LOGIN"><div className="search-box"><Search /><input className="input" placeholder="LOGIN, SUBMIT, UPDATE_SETTING…" value={filter.event} onChange={e => set('event', e.target.value)} /></div></Field>
       <Field label="사용자 / 접속 IP"><input className="input" placeholder="이름 또는 IP 일부" value={filter.user} onChange={e => set('user', e.target.value)} /></Field>

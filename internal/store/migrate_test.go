@@ -130,3 +130,44 @@ func TestHotPathForeignKeysAreIndexed(t *testing.T) {
 		t.Errorf("foreign keys without a leading index: %v", missing)
 	}
 }
+
+// The text filters all use ILIKE '%term%'. Where pg_trgm is available the
+// migration must have created the GIN indexes that make those index scans;
+// where it is not, the installation must still be fully migrated.
+func TestTrigramIndexesExistWhenTheExtensionDoes(t *testing.T) {
+	s := testdb.New(t)
+	ctx := context.Background()
+	var hasExtension bool
+	if err := s.Pool.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM pg_extension WHERE extname='pg_trgm')`).Scan(&hasExtension); err != nil {
+		t.Fatal(err)
+	}
+	if !hasExtension {
+		t.Skip("pg_trgm is not installed on this server; the migration degraded gracefully")
+	}
+	want := []string{
+		"idx_review_requests_service_trgm", "idx_submission_items_title_trgm",
+		"idx_evidences_filename_trgm", "idx_audit_logs_user_name_trgm",
+		"idx_application_logs_message_trgm",
+	}
+	for _, name := range want {
+		var present bool
+		if err := s.Pool.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM pg_indexes WHERE schemaname=current_schema() AND indexname=$1)`, name).Scan(&present); err != nil {
+			t.Fatal(err)
+		}
+		if !present {
+			t.Errorf("%s is missing", name)
+		}
+	}
+}
+
+func TestAuditChainCheckpointColumnsExist(t *testing.T) {
+	s := testdb.New(t)
+	var sequence int64
+	var hash string
+	if err := s.Pool.QueryRow(context.Background(), `SELECT verified_sequence,verified_hash FROM audit_chain_state WHERE id=1`).Scan(&sequence, &hash); err != nil {
+		t.Fatalf("the verification checkpoint is not usable: %v", err)
+	}
+	if sequence != 0 || hash != "" {
+		t.Errorf("a fresh installation starts unverified, got sequence=%d hash=%q", sequence, hash)
+	}
+}

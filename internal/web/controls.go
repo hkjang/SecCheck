@@ -18,7 +18,13 @@ func (s *Server) listControls(w http.ResponseWriter, r *http.Request) {
 		args = append(args, "%"+q+"%")
 		where = `(c.code ILIKE $1 OR c.title ILIKE $1 OR c.description ILIKE $1)`
 	}
-	rows, err := s.Store.Pool.Query(r.Context(), `SELECT c.id,c.code,c.title,c.description,c.owner_id,u.display_name AS owner,c.created_at,c.updated_at,count(DISTINCT i.id) AS mapped_items,count(DISTINCT sub.review_request_id) AS affected_reviews FROM security_controls c LEFT JOIN users u ON u.id=c.owner_id LEFT JOIN checklist_items i ON i.control_id=c.id LEFT JOIN submission_items si ON si.source_item_id=i.id LEFT JOIN submissions sub ON sub.id=si.submission_id WHERE `+where+` GROUP BY c.id,u.display_name ORDER BY c.code LIMIT 500`, args...)
+	// The counts used to come from a GROUP BY over a four-table join, which
+	// aggregated every submission item in the installation on every page load.
+	// Correlated sub-queries let each count use its own index instead.
+	rows, err := s.Store.Pool.Query(r.Context(), `SELECT c.id,c.code,c.title,c.description,c.owner_id,COALESCE(u.display_name,'') AS owner,c.created_at,c.updated_at,
+                (SELECT count(*) FROM checklist_items i WHERE i.control_id=c.id) AS mapped_items,
+                (SELECT count(DISTINCT sub.review_request_id) FROM checklist_items i JOIN submission_items si ON si.source_item_id=i.id JOIN submissions sub ON sub.id=si.submission_id WHERE i.control_id=c.id) AS affected_reviews
+                FROM security_controls c LEFT JOIN users u ON u.id=c.owner_id WHERE `+where+` ORDER BY c.code LIMIT 500`, args...)
 	if err != nil {
 		problem(w, 500, "QUERY_FAILED", "Security Control을 불러오지 못했습니다.", nil)
 		return

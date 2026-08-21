@@ -27,13 +27,24 @@ import (
 var version = "dev"
 
 func main() {
-	if len(os.Args) == 2 && os.Args[1] == "healthcheck" {
-		res, err := (&http.Client{Timeout: 3 * time.Second}).Get("http://127.0.0.1:8080/health")
-		if err != nil || res.StatusCode != http.StatusOK {
-			os.Exit(1)
+	if len(os.Args) > 1 {
+		switch os.Args[1] {
+		case "healthcheck":
+			res, err := (&http.Client{Timeout: 3 * time.Second}).Get("http://127.0.0.1:8080/health")
+			if err != nil || res.StatusCode != http.StatusOK {
+				os.Exit(1)
+			}
+			_ = res.Body.Close()
+			return
+		case "verify-evidence":
+			os.Exit(verifyEvidence(os.Args[2:]))
+		case "version":
+			fmt.Println(version)
+			return
+		default:
+			fmt.Fprintf(os.Stderr, "unknown command %q; expected healthcheck, verify-evidence or version\n", os.Args[1])
+			os.Exit(2)
 		}
-		_ = res.Body.Close()
-		return
 	}
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer cancel()

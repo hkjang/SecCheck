@@ -161,6 +161,9 @@ func (s *Server) routes() {
 	s.mux.Handle("GET /api/v1/admin/audit", s.require([]string{"SYSTEM_ADMIN", "AUDITOR"}, http.HandlerFunc(s.listAudit)))
 	s.mux.Handle("GET /api/v1/admin/audit/verify", s.require([]string{"SYSTEM_ADMIN", "AUDITOR"}, http.HandlerFunc(s.verifyAudit)))
 	s.mux.Handle("GET /api/v1/admin/logs", s.require([]string{"SYSTEM_ADMIN"}, http.HandlerFunc(s.listLogs)))
+	s.mux.Handle("GET /api/v1/admin/jobs", s.require([]string{"SYSTEM_ADMIN"}, http.HandlerFunc(s.listJobs)))
+	s.mux.Handle("POST /api/v1/admin/jobs/{id}/retry", s.require([]string{"SYSTEM_ADMIN"}, http.HandlerFunc(s.retryJob)))
+	s.mux.Handle("POST /api/v1/admin/jobs/retry-failed", s.require([]string{"SYSTEM_ADMIN"}, http.HandlerFunc(s.retryFailedJobs)))
 	s.mux.Handle("GET /api/v1/admin/system", s.require([]string{"SYSTEM_ADMIN"}, http.HandlerFunc(s.systemInfo)))
 
 	// Machine interfaces.
