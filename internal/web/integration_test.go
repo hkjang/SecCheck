@@ -702,9 +702,18 @@ func TestRuleSimulationExplainsAssignmentWithoutCreatingAReview(t *testing.T) {
 		t.Errorf("the simulation created %d review requests", after-before)
 	}
 
+	// A requester previews the checklist their own answers would produce while
+	// filling the form; it only reads published template metadata they see the
+	// moment the review exists.
 	h.user("plainrequester", "REQUESTER")
-	if res := h.login("plainrequester").do(http.MethodPost, "/api/v1/templates/rule-simulation", map[string]any{"service_name": "x", "service_type": "WEB"}); res.status != http.StatusForbidden {
-		t.Errorf("a requester reached the rule simulator: %d", res.status)
+	requester := h.login("plainrequester")
+	if res := requester.do(http.MethodPost, "/api/v1/templates/rule-simulation", map[string]any{"service_name": "x", "description": "d", "service_type": "WEB", "change_type": "NEW", "department": "보안팀", "exposure": "EXTERNAL", "uses_cloud": true}); res.status != http.StatusOK {
+		t.Errorf("a requester could not preview their own assignment: %d %s", res.status, res.body)
+	}
+	// Someone with no review role at all still cannot.
+	h.user("plainauditor", "AUDITOR")
+	if res := h.login("plainauditor").do(http.MethodPost, "/api/v1/templates/rule-simulation", map[string]any{"service_name": "x", "service_type": "WEB"}); res.status != http.StatusForbidden {
+		t.Errorf("an auditor reached the rule simulator: %d", res.status)
 	}
 }
 

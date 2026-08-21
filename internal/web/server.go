@@ -153,7 +153,7 @@ func (s *Server) routes() {
 	s.handle("POST", "/api/v1/templates/{id}/versions/{versionID}/retire", "템플릿", "버전 사용 중지", []string{"TEMPLATE_ADMIN"}, false, s.retireVersion)
 	s.handle("GET", "/api/v1/templates/{id}/versions/{versionID}/diff", "템플릿", "이전 버전과의 항목 차이", nil, false, s.versionDiff)
 	s.handle("GET", "/api/v1/templates/{id}/versions/{versionID}/changes", "템플릿", "버전 변경 이력", nil, false, s.versionChanges)
-	s.handle("POST", "/api/v1/templates/rule-simulation", "템플릿", "서비스 특성별 자동 배정 시뮬레이션. 심의를 만들지 않음", []string{"TEMPLATE_ADMIN", "SECURITY_REVIEWER"}, false, s.simulateRules)
+	s.handle("POST", "/api/v1/templates/rule-simulation", "템플릿", "서비스 특성별 자동 배정 시뮬레이션. 심의를 만들지 않음", []string{"TEMPLATE_ADMIN", "SECURITY_REVIEWER", "REQUESTER"}, false, s.simulateRules)
 	s.handle("POST", "/api/v1/templates/import/preview", "템플릿", "Excel 가져오기 드라이런. 생성될 항목과 경고 반환", []string{"TEMPLATE_ADMIN"}, false, s.previewImport)
 	s.handle("POST", "/api/v1/templates/import", "템플릿", "Excel 워크북을 템플릿으로 가져오기", []string{"TEMPLATE_ADMIN"}, false, s.importTemplate)
 	s.handle("GET", "/api/v1/templates/{id}/export", "템플릿", "템플릿을 Excel로 내보내기", []string{"TEMPLATE_ADMIN"}, false, s.exportTemplate)
