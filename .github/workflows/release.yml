@@ -12,6 +12,23 @@ permissions:
 jobs:
   release:
     runs-on: ubuntu-latest
+    # The release gate has to run the same database-backed tests as CI.
+    # Without PostgreSQL the integration suite skips silently, so a tag could
+    # be cut from a commit whose CI run was red — which is exactly what
+    # happened with v0.20.0.
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_PASSWORD: seccheck_ci
+          POSTGRES_DB: seccheck
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres -d seccheck"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
@@ -27,7 +44,38 @@ jobs:
           version="${GITHUB_REF_NAME#v}"
           test "$(tr -d '\r\n' < VERSION)" = "$version"
           echo "version=$version" >> "$GITHUB_OUTPUT"
+      - name: Require a green security-ci run for this commit
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          # Running the tests again here is not enough on its own: the tag is a
+          # separate event from the push, and the release job does not repeat
+          # the vulnerability, secret, container and DAST gates. Refusing to
+          # publish a commit whose CI is not green covers all of them.
+          for attempt in $(seq 1 60); do
+            status=$(gh run list --workflow=ci.yml --commit "$GITHUB_SHA" \
+              --repo "$GITHUB_REPOSITORY" --limit 1 --json status,conclusion \
+              --jq '.[0] | "\(.status) \(.conclusion)"' || echo "")
+            case "$status" in
+              "completed success")
+                echo "security-ci passed for $GITHUB_SHA"
+                exit 0 ;;
+              "completed "*)
+                echo "::error::security-ci concluded '${status#completed }' for $GITHUB_SHA; refusing to release"
+                exit 1 ;;
+              "")
+                echo "no security-ci run found for $GITHUB_SHA yet (attempt $attempt)" ;;
+              *)
+                echo "security-ci is $status (attempt $attempt)" ;;
+            esac
+            sleep 20
+          done
+          echo "::error::security-ci did not conclude for $GITHUB_SHA within 20 minutes"
+          exit 1
       - name: Build and test image
+        env:
+          TEST_POSTGRES_DSN: postgres://postgres:seccheck_ci@127.0.0.1:5432/seccheck?sslmode=disable
         run: |
           go test ./...
           npm ci --prefix web --no-audit --no-fund
