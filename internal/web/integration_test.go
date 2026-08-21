@@ -1700,3 +1700,84 @@ func TestMetricsExposeHowLongTheQueueHasBeenStuck(t *testing.T) {
 		t.Errorf("seccheck_jobs_oldest_pending_seconds = %v, want roughly 1500", seconds)
 	}
 }
+
+// Turning the approval step on after a review was submitted leaves it waiting
+// for an approver it never had. Every approver saw it in their queue and none
+// of them could decide it, with no way to assign one after the fact.
+func TestAnApprovalWithNoNamedApproverIsNotStuck(t *testing.T) {
+	h := newHarness(t)
+	h.login(adminOf(h))
+	requester := h.user("stranded-requester", "REQUESTER")
+	approver := h.user("late-approver", "APPROVER")
+	ctx := context.Background()
+	id := store.NewID()
+	if _, err := h.db.Pool.Exec(ctx, `INSERT INTO review_requests(id,review_number,service_name,description,service_type,change_type,builder_id,developer_id,department,requester_id,exposure,status)
+                VALUES($1,$2,'결재 대기 서비스','설명','WEB','NEW',$3,$3,'보안팀',$3,'INTERNAL','APPROVAL_PENDING')`, id, "SR-STUCK-1", requester); err != nil {
+		t.Fatal(err)
+	}
+	if res := h.login("late-approver").do(http.MethodPost, "/api/v1/review-requests/"+id+"/approve", map[string]string{"comment": "확인"}); res.status != http.StatusOK {
+		t.Fatalf("an approver could not decide an unassigned approval: %d %s", res.status, res.body)
+	}
+	var status, decided string
+	if err := h.db.Pool.QueryRow(ctx, `SELECT status,COALESCE(approver_id,'') FROM review_requests WHERE id=$1`, id).Scan(&status, &decided); err != nil {
+		t.Fatal(err)
+	}
+	if status != "APPROVED" {
+		t.Errorf("status = %s, want APPROVED", status)
+	}
+	if decided != approver {
+		t.Errorf("the review does not record who approved it: %q", decided)
+	}
+}
+
+// An approver who has left the organisation strands the review just as badly,
+// because nothing may change once it is waiting for approval.
+func TestAnAdministratorCanHandAPendingApprovalToSomeoneElse(t *testing.T) {
+	h := newHarness(t)
+	admin := h.login(adminOf(h))
+	requester := h.user("handover-requester", "REQUESTER")
+	gone := h.user("departed-approver", "APPROVER")
+	successor := h.user("successor-approver", "APPROVER")
+	outsider := h.user("not-an-approver", "REQUESTER")
+	ctx := context.Background()
+	id := store.NewID()
+	if _, err := h.db.Pool.Exec(ctx, `INSERT INTO review_requests(id,review_number,service_name,description,service_type,change_type,builder_id,developer_id,department,requester_id,approver_id,exposure,status)
+                VALUES($1,$2,'승계 서비스','설명','WEB','NEW',$3,$3,'보안팀',$3,$4,'INTERNAL','APPROVAL_PENDING')`, id, "SR-STUCK-2", requester, gone); err != nil {
+		t.Fatal(err)
+	}
+	if res := h.login("successor-approver").do(http.MethodPost, "/api/v1/review-requests/"+id+"/approve", map[string]string{"comment": ""}); res.status != http.StatusConflict {
+		t.Fatalf("an approver who was not named decided someone else's approval: %d %s", res.status, res.body)
+	}
+	if res := admin.do(http.MethodPatch, "/api/v1/review-requests/"+id, map[string]string{"approver_id": outsider}); res.status == http.StatusOK {
+		t.Error("the approval was handed to a user without the approver role")
+	}
+	if res := admin.do(http.MethodPatch, "/api/v1/review-requests/"+id, map[string]string{"approver_id": successor}); res.status != http.StatusOK {
+		t.Fatalf("an administrator could not reassign the approver: %d %s", res.status, res.body)
+	}
+	if res := h.login("successor-approver").do(http.MethodPost, "/api/v1/review-requests/"+id+"/approve", map[string]string{"comment": "승계 승인"}); res.status != http.StatusOK {
+		t.Fatalf("the new approver still could not decide: %d %s", res.status, res.body)
+	}
+	var events int
+	if err := h.db.Pool.QueryRow(ctx, `SELECT count(*) FROM audit_logs WHERE event_type='REASSIGN_APPROVER' AND target_id=$1`, id).Scan(&events); err != nil {
+		t.Fatal(err)
+	}
+	if events != 1 {
+		t.Errorf("the handover left %d audit events, want 1", events)
+	}
+}
+
+// A requester must not be able to reach the administrator's escape hatch.
+func TestOnlyAnAdministratorReassignsAPendingApproval(t *testing.T) {
+	h := newHarness(t)
+	_ = h.login(adminOf(h))
+	requester := h.user("plain-requester", "REQUESTER")
+	successor := h.user("another-approver", "APPROVER")
+	id := store.NewID()
+	if _, err := h.db.Pool.Exec(context.Background(), `INSERT INTO review_requests(id,review_number,service_name,description,service_type,change_type,builder_id,developer_id,department,requester_id,exposure,status)
+                VALUES($1,$2,'권한 확인','설명','WEB','NEW',$3,$3,'보안팀',$3,'INTERNAL','APPROVAL_PENDING')`, id, "SR-STUCK-3", requester); err != nil {
+		t.Fatal(err)
+	}
+	if res := h.login("plain-requester").do(http.MethodPatch, "/api/v1/review-requests/"+id, map[string]string{"approver_id": successor}); res.status != http.StatusForbidden {
+		t.Errorf("a requester reassigned the approver: %d %s", res.status, res.body)
+	}
+}

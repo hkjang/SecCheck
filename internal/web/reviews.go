@@ -412,10 +412,6 @@ func (s *Server) getReviewRequest(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) updateReviewRequest(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
-	if !s.canEditReview(r.Context(), session(r), id) {
-		problem(w, 403, "FORBIDDEN", "이 심의를 수정할 수 없습니다.", nil)
-		return
-	}
 	var in struct {
 		Description         string `json:"description"`
 		ReviewerID          string `json:"reviewer_id"`
@@ -424,6 +420,17 @@ func (s *Server) updateReviewRequest(w http.ResponseWriter, r *http.Request) {
 		BusinessCriticality string `json:"business_criticality"`
 	}
 	if !decodeJSON(w, r, &in) {
+		return
+	}
+	if !s.canEditReview(r.Context(), session(r), id) {
+		// A review waiting for approval is frozen and only its named approver
+		// may decide it, so an approver who has left the organisation strands
+		// it for good. Handing the approval to someone else is the way out,
+		// and it is the only change an administrator may make at this stage.
+		if in.ApproverID != "" && hasAnyRole(session(r).User, "SYSTEM_ADMIN") && s.reassignApprover(w, r, id, in.ApproverID) {
+			return
+		}
+		problem(w, 403, "FORBIDDEN", "이 심의를 수정할 수 없습니다.", nil)
 		return
 	}
 	tag, err := s.Store.Pool.Exec(r.Context(), `UPDATE review_requests SET description=COALESCE(NULLIF($2,''),description),reviewer_id=COALESCE(NULLIF($3,''),reviewer_id),approver_id=COALESCE(NULLIF($4,''),approver_id),planned_open_date=COALESCE(NULLIF($5,'')::date,planned_open_date),business_criticality=COALESCE(NULLIF($6,''),business_criticality),updated_at=now() WHERE id=$1 AND status IN ('DRAFT','CHANGE_REQUESTED')`, id, in.Description, in.ReviewerID, in.ApproverID, in.PlannedOpenDate, in.BusinessCriticality)
@@ -436,6 +443,22 @@ func (s *Server) updateReviewRequest(w http.ResponseWriter, r *http.Request) {
 		s.addTargetedNotification(r.Context(), in.ReviewerID, "REVIEW_ASSIGNED", "심의 담당자 배정", "배정된 심의를 확인하세요.", "REVIEW_REQUEST", id)
 	}
 	jsonResponse(w, 200, map[string]any{"id": id})
+}
+
+// reassignApprover moves a pending approval to another approver. It reports
+// whether it applied, so the caller can fall through to the ordinary refusal
+// when the review is not actually waiting for approval.
+func (s *Server) reassignApprover(w http.ResponseWriter, r *http.Request, id, approverID string) bool {
+	tag, err := s.Store.Pool.Exec(r.Context(), `UPDATE review_requests SET approver_id=$2,updated_at=now()
+                WHERE id=$1 AND status='APPROVAL_PENDING' AND EXISTS(SELECT 1 FROM user_roles ur WHERE ur.user_id=$2 AND ur.role_code='APPROVER')`, id, approverID)
+	if err != nil || tag.RowsAffected() == 0 {
+		problem(w, 409, "STATE_CONFLICT", "최종 승인 대기 중인 심의의 승인자만 변경할 수 있으며, 대상은 승인자 권한을 가져야 합니다.", nil)
+		return true
+	}
+	_ = s.Store.Audit(r.Context(), auditFrom(r, "REASSIGN_APPROVER", "REVIEW_REQUEST", id, nil, map[string]string{"approver_id": approverID}))
+	s.addTargetedNotification(r.Context(), approverID, "APPROVAL_PENDING", "최종 승인 요청", "이전 승인자를 대신하여 최종 승인이 요청되었습니다.", "REVIEW_REQUEST", id)
+	jsonResponse(w, 200, map[string]any{"id": id, "approver_id": approverID})
+	return true
 }
 
 // snapshotTemplateVersions reports which template version each part of the
@@ -1153,7 +1176,13 @@ func (s *Server) decideApproval(w http.ResponseWriter, r *http.Request, decision
 		return
 	}
 	sess := session(r)
-	tag, err := s.Store.Pool.Exec(r.Context(), `UPDATE review_requests SET status=$2,final_result=CASE WHEN $2='REJECTED' THEN 'REJECTED' ELSE final_result END,approved_at=CASE WHEN $2='APPROVED' THEN now() ELSE approved_at END,updated_at=now() WHERE id=$1 AND status='APPROVAL_PENDING' AND approver_id=$3`, id, decision, sess.User.ID)
+	// The queue already shows an unassigned approval to every approver, but
+	// only the named approver could act on it, so a review that reached this
+	// state without one -- enable the approval step after it was submitted and
+	// it does -- sat in every queue and could not be decided by anyone. The
+	// approver who does decide is recorded on the review.
+	anyApprover := hasAnyRole(sess.User, "APPROVER")
+	tag, err := s.Store.Pool.Exec(r.Context(), `UPDATE review_requests SET status=$2,approver_id=COALESCE(approver_id,$3),final_result=CASE WHEN $2='REJECTED' THEN 'REJECTED' ELSE final_result END,approved_at=CASE WHEN $2='APPROVED' THEN now() ELSE approved_at END,updated_at=now() WHERE id=$1 AND status='APPROVAL_PENDING' AND (approver_id=$3 OR (approver_id IS NULL AND $4))`, id, decision, sess.User.ID, anyApprover)
 	if err != nil || tag.RowsAffected() == 0 {
 		problem(w, 409, "STATE_CONFLICT", "승인 처리할 수 없습니다.", nil)
 		return
