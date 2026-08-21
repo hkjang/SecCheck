@@ -194,10 +194,11 @@ docker compose exec seccheck /app/seccheck verify-evidence --json         # 파�
 2. **해당 커밋의 security-ci 성공 여부.** CI가 아직 실행 중이면 최대 20분 기다리고, 실패했거나 CI 기록이 없으면 릴리즈를 중단합니다.
 3. PostgreSQL 통합 테스트를 포함한 전체 테스트
 4. 프런트엔드 빌드와 이미지 빌드
-5. Trivy 컨테이너 취약점 게이트 (CRITICAL/HIGH)
-6. 단일 자산 패키징과 provenance attestation
+5. **빌드된 image 자체 점검.** 컨테이너를 빈 데이터베이스로 띄워 `selftest --full`을 실행합니다. 마이그레이션, 기본 체크리스트 시드, 로그인, Rule Engine 배정, Excel·PDF·ZIP 내보내기가 모두 성공해야 합니다
+6. Trivy 컨테이너 취약점 게이트 (CRITICAL/HIGH)
+7. 단일 자산 패키징과 provenance attestation
 
-2번은 v0.20.0에서 CI가 실패했는데도 릴리즈가 성공한 뒤에 추가했습니다. 릴리즈 작업에는 데이터베이스가 없어 통합 테스트가 조용히 skip되었고, govulncheck·gitleaks·DAST 게이트도 릴리즈 경로에는 없었습니다.
+5번은 테스트 스위트가 전부 통과해도 남을 수 있는 패키징 결함을 위한 것입니다. 한글 폰트가 빠지면 PDF 내보내기만 실패하는데, 그 폰트는 image 안에만 있으므로 코드 테스트로는 확인할 수 없습니다. 2번은 v0.20.0에서 CI가 실패했는데도 릴리즈가 성공한 뒤에 추가했습니다. 릴리즈 작업에는 데이터베이스가 없어 통합 테스트가 조용히 skip되었고, govulncheck·gitleaks·DAST 게이트도 릴리즈 경로에는 없었습니다.
 
 ## 배포 자체 점검 (selftest)
 

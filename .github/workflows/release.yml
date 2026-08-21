@@ -82,6 +82,51 @@ jobs:
           npm --prefix web run build
           docker build --build-arg VERSION=${{ steps.version.outputs.version }} \
             -t seccheck:v${{ steps.version.outputs.version }} .
+      # Every test in the suite can pass while the image itself is broken: the
+      # PDF export needs the Korean font that only the image installs. This
+      # runs the release candidate and drives the real flow through it.
+      - name: Verify the built image answers
+        run: |
+          set -euo pipefail
+          # A database of its own, so the run starts from an empty schema and
+          # does not disturb what the test suite left behind. Created from a
+          # throwaway container rather than assuming the runner has a client.
+          # The container keeps its own network: the runner already has
+          # something on :8080, and host networking would silently point the
+          # checks at whatever that is. PostgreSQL is reached over the bridge
+          # gateway, where the service container publishes its port.
+          gateway="$(docker network inspect bridge --format '{{(index .IPAM.Config 0).Gateway}}')"
+          docker run --rm -e PGPASSWORD=seccheck_ci postgres:16-alpine \
+            psql -h "$gateway" -U postgres -c 'CREATE DATABASE seccheck_selftest'
+          docker run -d --name seccheck-release-check \
+            -e POSTGRES_DSN="postgres://postgres:seccheck_ci@$gateway:5432/seccheck_selftest?sslmode=disable" \
+            -e BOOTSTRAP_ADMIN=selftest \
+            -e BOOTSTRAP_ADMIN_PASSWORD="$SELFTEST_PASSWORD" \
+            -e ENCRYPTION_KEY="$(head -c 32 /dev/urandom | base64)" \
+            seccheck:v${{ steps.version.outputs.version }}
+          for attempt in $(seq 1 40); do
+            # A container that has exited will never become healthy, and
+            # waiting two minutes to say so hides the reason it stopped.
+            if [ "$(docker inspect -f '{{.State.Running}}' seccheck-release-check)" != "true" ]; then
+              echo "::error::the built image exited during start-up"
+              docker logs seccheck-release-check
+              exit 1
+            fi
+            if docker exec seccheck-release-check /app/seccheck healthcheck; then break; fi
+            if [ "$attempt" = "40" ]; then
+              echo "::error::the built image did not become healthy"
+              docker logs seccheck-release-check
+              exit 1
+            fi
+            sleep 3
+          done
+          docker exec -e SECCHECK_SELFTEST_PASSWORD="$SELFTEST_PASSWORD" seccheck-release-check \
+            /app/seccheck selftest --username selftest --full
+        env:
+          SELFTEST_PASSWORD: ${{ github.run_id }}-selftest-only
+      - name: Collect the image log on failure
+        if: failure()
+        run: docker logs seccheck-release-check || true
       - name: Container security gate
         uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
         with:
