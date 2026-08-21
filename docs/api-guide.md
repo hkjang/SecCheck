@@ -22,6 +22,7 @@ Authorization: Bearer sck_a1b2c3d4_xxxxxxxxxxxxxxxxxxxxxxxxxxxx
 - `operationId` — 메서드와 경로에서 파생된 안정적인 식별자 (클라이언트 자동 생성용)
 - `parameters` — 경로 파라미터 선언
 - `requestBody` — 본문을 받는 operation의 JSON 속성과 타입. 서버가 알 수 없는 속성을 거부하므로 스키마도 `additionalProperties: false`입니다. 즉 명세대로 보내면 그대로 통과합니다
+- `x-object-scoped` — `true`이면 역할이 아니라 **대상 심의의 참여 여부**로 접근을 판단합니다. 참여자가 아니면 404를 반환하므로, 역할만 보고 호출 가능 여부를 판단하면 안 됩니다
 - `x-required-roles` — 호출에 필요한 RBAC 역할. 빈 배열이면 로그인한 모든 사용자가 호출 가능
 - `security: []` — 인증 없이 호출 가능한 엔드포인트 (`/api/v1/auth/login`, `/api/v1/public/config` 등)
 
@@ -32,12 +33,12 @@ Authorization: Bearer sck_a1b2c3d4_xxxxxxxxxxxxxxxxxxxxxxxxxxxx
 ### 📋 심의 요청 및 관리 (Review Requests)
 | 메서드 | 경로 | 설명 | 권한 |
 | :--- | :--- | :--- | :--- |
-| `GET` | `/review-requests` | 심의 목록 조회 (필터: `q`, `status`) | `REQUESTER`, `SECURITY_REVIEWER` |
-| `POST` | `/review-requests` | 신규 심의 생성 및 Rule Engine 자동 배정 | `REQUESTER`, `SYSTEM_ADMIN` |
+| `GET` | `/review-requests` | 심의 목록 조회 (필터: `q`, `status`) | 전체 (권한 범위의 심의만 반환) |
+| `POST` | `/review-requests` | 신규 심의 생성 및 Rule Engine 자동 배정 | `REQUESTER` |
 | `GET` | `/review-requests/{id}` | 심의 상세 정보 및 진행 통계 조회 | 담당자, 검토자, 승인자 |
 | `GET` | `/review-requests/{id}/items` | 심의에 배정된 체크리스트 항목 및 답변 목록 | 담당자, 검토자, 승인자 |
-| `PUT` | `/review-requests/{id}/responses/{itemID}` | 체크리스트 항목 작성 및 자동 저장 | `REQUESTER`, `CONTRIBUTOR` |
-| `POST` | `/review-requests/{id}/submit` | 심의 제출 (서버 검증 실행) | `REQUESTER` |
+| `PUT` | `/review-requests/{id}/responses/{itemID}` | 체크리스트 항목 작성 및 자동 저장 | 해당 심의 참여자 |
+| `POST` | `/review-requests/{id}/submit` | 심의 제출 (서버 검증 실행) | 해당 심의 참여자 |
 | `POST` | `/review-requests/{id}/begin-review` | 보안 검토 시작 (`REVIEWING` 전환) | `SECURITY_REVIEWER` |
 | `PUT` | `/review-requests/{id}/review-results/{itemID}` | 항목별 검토 결과 및 의견 저장 | `SECURITY_REVIEWER` |
 | `POST` | `/review-requests/{id}/approve` | 심의 최종 승인 | `APPROVER` |
@@ -46,15 +47,15 @@ Authorization: Bearer sck_a1b2c3d4_xxxxxxxxxxxxxxxxxxxxxxxxxxxx
 ### 📎 증적 파일 (Evidences)
 | 메서드 | 경로 | 설명 | 권한 |
 | :--- | :--- | :--- | :--- |
-| `POST` | `/review-requests/{id}/items/{itemID}/evidences` | 증적 파일 암호화 업로드 (`multipart/form-data`) | `REQUESTER`, `CONTRIBUTOR` |
+| `POST` | `/review-requests/{id}/items/{itemID}/evidences` | 증적 파일 암호화 업로드 (`multipart/form-data`) | 해당 심의 참여자 |
 | `GET` | `/evidences/{id}/download` | 증적 파일 복호화 다운로드 | 권한자 |
-| `POST` | `/evidences/{id}/versions` | 증적 파일 신규 버전 교체 등록 | `REQUESTER`, `CONTRIBUTOR` |
+| `POST` | `/evidences/{id}/versions` | 증적 파일 신규 버전 교체 등록 | 해당 심의 참여자 |
 
 ### 🛡️ 통합 Security Controls & 템플릿
 | 메서드 | 경로 | 설명 | 권한 |
 | :--- | :--- | :--- | :--- |
 | `GET` | `/security-controls` | 통합 Security Control 목록 및 영향 통계 | 전체 |
-| `GET` | `/security-controls/{id}/impact` | 특정 Control 변경 시 영향 받는 템플릿/심의 조회 | `TEMPLATE_ADMIN` |
+| `GET` | `/security-controls/{id}/impact` | 특정 Control 변경 시 영향 받는 템플릿/심의 조회 | 전체 |
 | `GET` | `/templates` | 체크리스트 템플릿 목록 및 게시 버전 조회 | 전체 |
 
 ---

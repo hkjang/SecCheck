@@ -33,7 +33,7 @@ func (s *Server) openAPI(w http.ResponseWriter, r *http.Request) {
 		"info": map[string]any{
 			"title":       "SecCheck API",
 			"version":     s.Version,
-			"description": "보안성 심의 체크리스트, 증적, 검토, 승인 및 감사 API. 브라우저는 세션+CSRF를, 시스템 연계는 범위 제한 개인 API 키 Bearer 인증을 사용합니다. read 키는 조회/MCP만, read:write 키는 기존 RBAC 범위 안의 변경도 허용합니다. 각 operation의 x-required-roles는 해당 엔드포인트에 필요한 역할이며, 비어 있으면 로그인한 모든 사용자가 호출할 수 있습니다.",
+			"description": "보안성 심의 체크리스트, 증적, 검토, 승인 및 감사 API. 브라우저는 세션+CSRF를, 시스템 연계는 범위 제한 개인 API 키 Bearer 인증을 사용합니다. read 키는 조회/MCP만, read:write 키는 기존 RBAC 범위 안의 변경도 허용합니다. 각 operation의 x-required-roles는 해당 엔드포인트에 필요한 역할입니다. 비어 있으면 역할 제한이 없다는 뜻이며, x-object-scoped가 true인 operation은 역할 대신 대상 심의의 참여 여부로 접근을 판단합니다(권한이 없으면 404).",
 		},
 		"servers":    []map[string]string{{"url": "/"}},
 		"tags":       tagList(tags),
@@ -74,8 +74,16 @@ func (s *Server) operation(route APIRoute) map[string]any {
 		roles = []string{}
 	}
 	operation["x-required-roles"] = roles
+	notes := []string{}
 	if len(roles) > 0 {
-		operation["description"] = "필요 역할: " + strings.Join(roles, ", ")
+		notes = append(notes, "필요 역할: "+strings.Join(roles, ", "))
+	}
+	if objectScopedRoutes[route.Method+" "+route.Path] {
+		operation["x-object-scoped"] = true
+		notes = append(notes, "해당 심의의 참여자(요청자, 공동 작성자, 지정된 검토자·승인자)만 호출할 수 있습니다. 권한이 없으면 404를 반환합니다.")
+	}
+	if len(notes) > 0 {
+		operation["description"] = strings.Join(notes, " · ")
 	}
 	return operation
 }

@@ -115,3 +115,55 @@ func TestEveryMetricIsInTheOperationsManual(t *testing.T) {
 		}
 	}
 }
+
+// The API guide names required roles per endpoint. When those drift from the
+// server they are worse than absent: an integrator plans around a permission
+// model the service does not have.
+func TestApiGuideRoleColumnMatchesTheServer(t *testing.T) {
+	guide := repoFile(t, "docs/api-guide.md")
+	server := repoFile(t, "internal/web/server.go")
+	registered := map[string]map[string]bool{}
+	handle := regexp.MustCompile(`s\.handle\("(\w+)",\s*"([^"]+)",\s*"[^"]*",\s*"[^"]*",\s*(nil|\[\]string\{[^}]*\}),`)
+	for _, m := range handle.FindAllStringSubmatch(server, -1) {
+		roles := map[string]bool{}
+		for _, r := range regexp.MustCompile(`"(\w+)"`).FindAllStringSubmatch(m[3], -1) {
+			roles[r[1]] = true
+		}
+		registered[m[1]+" "+m[2]] = roles
+	}
+	row := regexp.MustCompile("(?m)^\\| `(GET|POST|PUT|PATCH|DELETE)` \\| `([^`]+)` \\| ([^|]*) \\| ([^|]*) \\|")
+	rows := row.FindAllStringSubmatch(guide, -1)
+	if len(rows) < 10 {
+		t.Fatalf("parsed only %d endpoint rows; the guide's shape must have changed", len(rows))
+	}
+	for _, m := range rows {
+		path := m[2]
+		if !strings.HasPrefix(path, "/api") {
+			path = "/api/v1" + path
+		}
+		key := m[1] + " " + path
+		roles, known := registered[key]
+		if !known {
+			t.Errorf("the guide documents %s, which the server does not serve", key)
+			continue
+		}
+		claimed := map[string]bool{}
+		for _, r := range regexp.MustCompile("`(\\w+)`").FindAllStringSubmatch(m[4], -1) {
+			claimed[r[1]] = true
+		}
+		// A prose entry such as "해당 심의 참여자" claims no specific role.
+		if len(claimed) == 0 {
+			continue
+		}
+		for role := range claimed {
+			if !roles[role] {
+				t.Errorf("%s: the guide requires %s, the server does not", key, role)
+			}
+		}
+		for role := range roles {
+			if !claimed[role] {
+				t.Errorf("%s: the server requires %s, the guide omits it", key, role)
+			}
+		}
+	}
+}

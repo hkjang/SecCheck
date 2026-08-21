@@ -47,3 +47,35 @@ var requestPayloads = map[string][]payloadField{
 	"PUT /api/v1/review-requests/{id}/responses/{itemID}":              {{"answer", "any"}, {"applicability", "string"}, {"self_assessment", "string"}, {"current_state", "string"}, {"na_reason", "string"}, {"action_plan", "string"}, {"assigned_to", "string"}, {"expected_updated_at", "string"}},
 	"PUT /api/v1/review-requests/{id}/review-results/{itemID}":         {{"final_applicability", "string"}, {"result", "string"}, {"opinion", "string"}, {"evidence_adequacy", "string"}, {"follow_up", "string"}, {"na_approved", "bool"}, {"expected_updated_at", "string"}},
 }
+
+// objectScopedRoutes need no particular role, but they are not open to every
+// signed-in user either: the handler checks that the caller is a participant
+// in that specific review, or may see that specific piece of evidence. An
+// empty x-required-roles alone would tell an integrator the opposite.
+//
+// /mcp is left out deliberately. Its tools are scoped the same way, but the
+// endpoint itself is JSON-RPC, so the flag would describe the transport
+// rather than the call.
+//
+// TestObjectScopedRoutesMatchTheHandlers re-derives this from the handlers.
+var objectScopedRoutes = map[string]bool{
+	"DELETE /api/v1/evidences/{id}":                              true,
+	"GET /api/v1/evidences/{id}/download":                        true,
+	"GET /api/v1/review-requests/{id}":                           true,
+	"GET /api/v1/review-requests/{id}/export/{format}":           true,
+	"GET /api/v1/review-requests/{id}/history":                   true,
+	"GET /api/v1/review-requests/{id}/items":                     true,
+	"PATCH /api/v1/change-requests/{id}":                         true,
+	"PATCH /api/v1/review-requests/{id}":                         true,
+	"POST /api/v1/evidences/{id}/versions":                       true,
+	"POST /api/v1/review-requests/{id}/change-requests":          true,
+	"POST /api/v1/review-requests/{id}/complete-review":          true,
+	"POST /api/v1/review-requests/{id}/copy":                     true,
+	"POST /api/v1/review-requests/{id}/items/{itemID}/comments":  true,
+	"POST /api/v1/review-requests/{id}/items/{itemID}/evidences": true,
+	"POST /api/v1/review-requests/{id}/participants":             true,
+	"POST /api/v1/review-requests/{id}/responses/bulk":           true,
+	"POST /api/v1/review-requests/{id}/submit":                   true,
+	"PUT /api/v1/review-requests/{id}/responses/{itemID}":        true,
+	"PUT /api/v1/review-requests/{id}/review-results/{itemID}":   true,
+}
