@@ -14,6 +14,18 @@ Authorization: Bearer sck_a1b2c3d4_xxxxxxxxxxxxxxxxxxxxxxxxxxxx
 
 ---
 
+## 1-1. OpenAPI 명세
+
+전체 API 명세는 로그인 상태에서 `GET /api/openapi.json`으로 받습니다. 명세는 서버의 라우트 등록 테이블에서 생성되므로 **문서화되지 않은 엔드포인트가 존재할 수 없습니다.** 각 operation에는 다음이 포함됩니다.
+
+- `summary` · `tags` — 한글 설명과 기능 분류
+- `operationId` — 메서드와 경로에서 파생된 안정적인 식별자 (클라이언트 자동 생성용)
+- `parameters` — 경로 파라미터 선언
+- `x-required-roles` — 호출에 필요한 RBAC 역할. 빈 배열이면 로그인한 모든 사용자가 호출 가능
+- `security: []` — 인증 없이 호출 가능한 엔드포인트 (`/api/v1/auth/login`, `/api/v1/public/config` 등)
+
+아래 표는 자주 쓰는 엔드포인트만 추린 것이며, 전체 목록은 명세를 참조하십시오.
+
 ## 2. REST API 주요 엔드포인트 (`/api/v1`)
 
 ### 📋 심의 요청 및 관리 (Review Requests)

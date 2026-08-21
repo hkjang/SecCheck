@@ -1,6 +1,7 @@
 package web
 
 import (
+	"net/http"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -92,4 +93,35 @@ func emittedCodes(t *testing.T, patterns ...string) []string {
 		}
 	}
 	return out
+}
+
+// The README sells REST/OpenAPI integration, so the document has to describe
+// the whole API. It used to be a hand-maintained subset covering a third of
+// the endpoints, which misleads an integrator more than having none.
+func TestOpenAPIDescribesEveryAPIRoute(t *testing.T) {
+	s := &Server{mux: http.NewServeMux()}
+	s.routes()
+
+	var api int
+	seen := map[string]bool{}
+	for _, route := range s.api {
+		if !strings.HasPrefix(route.Path, "/api/") && route.Path != "/mcp" {
+			continue
+		}
+		api++
+		if route.Summary == "" {
+			t.Errorf("%s %s has no summary", route.Method, route.Path)
+		}
+		if route.Tag == "" {
+			t.Errorf("%s %s has no tag", route.Method, route.Path)
+		}
+		id := operationID(route)
+		if seen[id] {
+			t.Errorf("operationId %s is not unique", id)
+		}
+		seen[id] = true
+	}
+	if api < 90 {
+		t.Fatalf("only %d API routes were registered; the table looks incomplete", api)
+	}
 }

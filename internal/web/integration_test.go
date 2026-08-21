@@ -1207,3 +1207,46 @@ func TestAuditListLabelsEventsAndOffersACatalogue(t *testing.T) {
 		t.Error("the CSV does not carry the Korean label")
 	}
 }
+
+func TestOpenAPIDocumentIsCompleteAndUsable(t *testing.T) {
+	h := newHarness(t)
+	admin := h.login(adminOf(h))
+	spec := admin.do(http.MethodGet, "/api/openapi.json", nil).json()
+
+	paths, _ := spec["paths"].(map[string]any)
+	if len(paths) < 60 {
+		t.Fatalf("the document describes %d paths, want the whole API", len(paths))
+	}
+	for _, required := range []string{"/api/v1/auth/login", "/api/v1/review-requests", "/api/v1/admin/jobs", "/api/v1/reports/reviews", "/mcp"} {
+		if paths[required] == nil {
+			t.Errorf("%s is missing from the document", required)
+		}
+	}
+
+	// Path parameters have to be declared or a generated client cannot call it.
+	item, _ := paths["/api/v1/review-requests/{id}/responses/{itemID}"].(map[string]any)
+	if item == nil {
+		t.Fatal("a parameterised path is missing")
+	}
+	params, _ := item["parameters"].([]any)
+	if len(params) != 2 {
+		t.Errorf("declared %d path parameters, want id and itemID", len(params))
+	}
+
+	// The roles an endpoint needs belong in the document.
+	admins, _ := paths["/api/v1/admin/jobs"].(map[string]any)
+	get, _ := admins["get"].(map[string]any)
+	roles, _ := get["x-required-roles"].([]any)
+	if len(roles) != 1 || roles[0] != "SYSTEM_ADMIN" {
+		t.Errorf("admin job listing declares roles %v", roles)
+	}
+	// A public endpoint must say it needs nothing.
+	login, _ := paths["/api/v1/auth/login"].(map[string]any)
+	post, _ := login["post"].(map[string]any)
+	if security, ok := post["security"].([]any); !ok || len(security) != 0 {
+		t.Errorf("the sign-in endpoint does not declare itself public: %v", post["security"])
+	}
+	if _, ok := spec["tags"].([]any); !ok {
+		t.Error("the document has no tag list")
+	}
+}
