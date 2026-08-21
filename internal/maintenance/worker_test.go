@@ -177,3 +177,54 @@ func seedEvidenceRow(t *testing.T, db *store.Store, id, owner, stored string, ke
 	exec(`INSERT INTO evidence_versions(id,evidence_id,version,stored_filename,size_bytes,sha256,mime_type,key_owner_id,key_version,scan_status,uploaded_by) VALUES($1,$2,1,$3,12,'abc','text/plain',$4,$5,'CLEAN',$4)`, store.NewID(), id, stored, owner, keyVersion)
 	return submissionItemID
 }
+
+// The workers that send email are the ones most likely to be dead, so the
+// warning that they are dead cannot itself be an email.
+func TestAdministratorsAreAlertedWhenTheQueueStopsDraining(t *testing.T) {
+	db := testdb.New(t)
+	ctx := context.Background()
+	adminID := testdb.Bootstrap(t, db, "queue-watcher")
+	if _, err := db.Pool.Exec(ctx, `INSERT INTO user_roles(user_id,role_code) VALUES($1,'SYSTEM_ADMIN') ON CONFLICT DO NOTHING`, adminID); err != nil {
+		t.Fatal(err)
+	}
+	worker := maintenance.New(db, nil)
+
+	// Backoff is not a stall: the job is simply not due yet.
+	if _, err := db.Pool.Exec(ctx, `INSERT INTO jobs(id,type,status,available_at) VALUES($1,'SEND_EMAIL','PENDING',now()+interval '1 hour')`, store.NewID()); err != nil {
+		t.Fatal(err)
+	}
+	worker.Sweep(ctx)
+	if n := alerts(t, db, adminID); n != 0 {
+		t.Fatalf("a job waiting for its retry window raised %d stall alerts", n)
+	}
+
+	if _, err := db.Pool.Exec(ctx, `INSERT INTO jobs(id,type,status,available_at) VALUES($1,'SEND_EMAIL','PENDING',now()-interval '40 minutes')`, store.NewID()); err != nil {
+		t.Fatal(err)
+	}
+	worker.Sweep(ctx)
+	if n := alerts(t, db, adminID); n != 1 {
+		t.Fatalf("stall alerts = %d, want 1", n)
+	}
+	var body string
+	if err := db.Pool.QueryRow(ctx, `SELECT body FROM notifications WHERE event_type='JOB_QUEUE_STALLED'`).Scan(&body); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(body, "40분째") {
+		t.Errorf("the alert does not say how long the queue has been stuck: %s", body)
+	}
+
+	// An outage lasting days must not refill the inbox on every sweep.
+	worker.Sweep(ctx)
+	if n := alerts(t, db, adminID); n != 1 {
+		t.Errorf("a second sweep during the same outage raised the count to %d", n)
+	}
+}
+
+func alerts(t *testing.T, db *store.Store, adminID string) int {
+	t.Helper()
+	var n int
+	if err := db.Pool.QueryRow(context.Background(), `SELECT count(*) FROM notifications WHERE recipient_id=$1 AND event_type='JOB_QUEUE_STALLED'`, adminID).Scan(&n); err != nil {
+		t.Fatal(err)
+	}
+	return n
+}

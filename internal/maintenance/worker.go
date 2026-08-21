@@ -23,6 +23,10 @@ const (
 	startupDelay  = time.Minute
 	completedJobs = 7
 	failedJobs    = 90
+	// The queue workers poll every five seconds. A job that has been due for
+	// this long is not queued behind work, it is not being picked up at all.
+	stalledAfter  = 15 * time.Minute
+	stallReminder = 6 * time.Hour
 )
 
 type Worker struct {
@@ -63,6 +67,7 @@ func (w *Worker) Sweep(ctx context.Context) map[string]int64 {
 		removed["expired_lockouts"] = tag.RowsAffected()
 	}
 	removed["due_reminders"] = w.remindDueChangeRequests(ctx)
+	removed["stall_alerts"] = w.alertStalledQueue(ctx)
 	removed["purged_evidence_files"] = w.purgeDeletedEvidence(ctx)
 	total := int64(0)
 	for _, n := range removed {
@@ -72,6 +77,51 @@ func (w *Worker) Sweep(ctx context.Context) map[string]int64 {
 		w.Store.Log(ctx, "INFO", "", "maintenance", "retention sweep completed", map[string]any{"retention_days": retention, "removed": removed})
 	}
 	return removed
+}
+
+// alertStalledQueue puts a stopped queue in front of an administrator. The
+// failure it reports is the one that also stops email from being sent, so the
+// in-app bell is the only channel that can still carry the warning. The queue
+// page shows the same backlog, but nobody watches a page that is usually
+// empty.
+func (w *Worker) alertStalledQueue(ctx context.Context) int64 {
+	var waited float64
+	if err := w.Store.Pool.QueryRow(ctx, `SELECT coalesce(extract(epoch FROM now()-min(available_at)),0) FROM jobs WHERE status='PENDING' AND available_at<=now()`).Scan(&waited); err != nil {
+		w.Store.Log(ctx, "ERROR", "", "maintenance", "queue backlog check failed", map[string]any{"error": err.Error()})
+		return 0
+	}
+	if waited < stalledAfter.Seconds() {
+		return 0
+	}
+	// Administrators who were already told within the reminder window are
+	// skipped, so an outage that lasts a week does not bury the inbox.
+	rows, err := w.Store.Pool.Query(ctx, `SELECT ur.user_id FROM user_roles ur WHERE ur.role_code='SYSTEM_ADMIN'
+                AND NOT EXISTS(SELECT 1 FROM notifications n WHERE n.recipient_id=ur.user_id AND n.event_type='JOB_QUEUE_STALLED' AND n.created_at>now()-make_interval(hours=>$1))`, int(stallReminder.Hours()))
+	if err != nil {
+		w.Store.Log(ctx, "ERROR", "", "maintenance", "stalled queue alert query failed", map[string]any{"error": err.Error()})
+		return 0
+	}
+	var admins []string
+	for rows.Next() {
+		var id string
+		if rows.Scan(&id) == nil {
+			admins = append(admins, id)
+		}
+	}
+	rows.Close()
+	if len(admins) == 0 {
+		return 0
+	}
+	w.Store.Log(ctx, "ERROR", "", "maintenance", "job queue is not draining", map[string]any{"waiting_seconds": int64(waited)})
+	body := fmt.Sprintf("실행 시각이 지난 작업이 %d분째 대기 중입니다. 이메일 알림과 증적 악성코드 검사가 멈춘 상태일 수 있으니 서버 로그에서 notify·scanner 구성요소의 오류를 확인하세요.", int64(waited)/60)
+	var sent int64
+	for _, admin := range admins {
+		if _, err := w.Store.Pool.Exec(ctx, `INSERT INTO notifications(id,recipient_id,event_type,title,body) VALUES($1,$2,'JOB_QUEUE_STALLED',$3,$4)`,
+			store.NewID(), admin, "작업 큐가 처리되지 않고 있습니다", body); err == nil {
+			sent++
+		}
+	}
+	return sent
 }
 
 // purgeDeletedEvidence reclaims the encrypted blobs behind evidence that was
