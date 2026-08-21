@@ -38,3 +38,22 @@ func TestWriteCSVIsExcelReadable(t *testing.T) {
 		t.Errorf("nil values should render as empty cells, got %q", lines[2])
 	}
 }
+
+func TestCapExportMarksOnlyTheOverflow(t *testing.T) {
+	full := make([]map[string]any, exportRowCap+1)
+	rec := httptest.NewRecorder()
+	kept, truncated := capExport(rec, full)
+	if !truncated || len(kept) != exportRowCap {
+		t.Fatalf("kept %d rows, truncated=%v", len(kept), truncated)
+	}
+	if got := rec.Header().Get("X-Export-Truncated"); got != "50000" {
+		t.Errorf("X-Export-Truncated = %q", got)
+	}
+	exact := httptest.NewRecorder()
+	if kept, truncated = capExport(exact, full[:exportRowCap]); truncated || len(kept) != exportRowCap {
+		t.Errorf("an export of exactly the cap was reported as truncated")
+	}
+	if got := exact.Header().Get("X-Export-Truncated"); got != "" {
+		t.Errorf("a complete export set X-Export-Truncated to %q", got)
+	}
+}

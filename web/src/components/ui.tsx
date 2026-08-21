@@ -29,7 +29,10 @@ export function Loading() { return <div className="loading"><div className="spin
 export function useDownload() {
   const toast = useToast()
   return async (path: string) => {
-    try { await download(path) } catch (error) { toast.push(errorMessage(error), 'error') }
+    try {
+      const { cappedAt } = await download(path)
+      if (cappedAt) toast.push(`가장 최근 ${cappedAt.toLocaleString()}건까지만 내보냈습니다. 기간이나 조건을 좁혀 다시 내보내세요.`, 'error')
+    } catch (error) { toast.push(errorMessage(error), 'error') }
   }
 }
 

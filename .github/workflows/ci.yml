@@ -54,11 +54,11 @@ jobs:
       - name: Secret scan
         uses: gitleaks/gitleaks-action@e0c47f4f8be36e29cdc102c57e68cb5cbf0e8d1e # v3.0.0
       - name: Build release-shaped image
-        run: docker build --build-arg VERSION=0.27.0 -t seccheck:v0.27.0 .
+        run: docker build --build-arg VERSION=0.28.0 -t seccheck:v0.28.0 .
       - name: Container vulnerability gate
         uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
         with:
-          image-ref: seccheck:v0.27.0
+          image-ref: seccheck:v0.28.0
           format: sarif
           output: trivy.sarif
           severity: CRITICAL,HIGH
@@ -69,9 +69,9 @@ jobs:
         with:
           sarif_file: trivy.sarif
       - name: Generate CycloneDX SBOM
-        uses: anchore/sbom-action@e22c389904149dbc22b58101806040fa8d37a610 # v0.27.0
+        uses: anchore/sbom-action@e22c389904149dbc22b58101806040fa8d37a610 # v0.28.0
         with:
-          image: seccheck:v0.27.0
+          image: seccheck:v0.28.0
           format: cyclonedx-json
           output-file: sbom.cdx.json
           upload-artifact: false
@@ -90,7 +90,7 @@ jobs:
             -e BOOTSTRAP_ADMIN=admin \
             -e BOOTSTRAP_ADMIN_PASSWORD='CiPassword123!' \
             -e ENCRYPTION_KEY="$(openssl rand -base64 32)" \
-            seccheck:v0.27.0
+            seccheck:v0.28.0
           for i in $(seq 1 30); do curl -fsS http://127.0.0.1:8080/ready && break; sleep 2; done
           curl -fsS http://127.0.0.1:8080/health | grep '"status":"ok"'
           curl -fsS -H 'Content-Type: application/json' \
@@ -107,7 +107,7 @@ jobs:
             -d '{"username":"admin","password":"CiPassword123!"}' \
             http://127.0.0.1:8080/api/v1/auth/login | grep 'ACCOUNT_LOCKED'
       - name: DAST baseline
-        uses: zaproxy/action-baseline@de8ad967d3548d44ef623df22cf95c3b0baf8b25 # v0.27.0
+        uses: zaproxy/action-baseline@de8ad967d3548d44ef623df22cf95c3b0baf8b25 # v0.28.0
         with:
           target: http://127.0.0.1:8080
           rules_file_name: .zap/rules.tsv

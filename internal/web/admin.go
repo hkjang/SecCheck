@@ -391,8 +391,10 @@ func (s *Server) listAudit(w http.ResponseWriter, r *http.Request) {
 		args = append(args, to)
 		where += ` AND timestamp < $` + intString(len(args)) + `::date + 1`
 	}
+	// One row past the cap tells us the export was cut short without a second
+	// count query over a table that is only ever appended to.
 	if query.Get("format") == "csv" {
-		limit = 50000
+		limit = exportRowCap + 1
 	}
 	args = append(args, limit)
 	rows, err := s.Store.Pool.Query(r.Context(), `SELECT event_id,timestamp,user_id,user_name,source_ip,session_id,event_type,target_type,target_id,before_value,after_value,request_id,result,previous_hash,event_hash FROM audit_logs WHERE `+where+` ORDER BY timestamp DESC LIMIT $`+intString(len(args)), args...)
@@ -407,11 +409,26 @@ func (s *Server) listAudit(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	if query.Get("format") == "csv" {
-		_ = s.Store.Audit(r.Context(), auditFrom(r, "EXPORT_AUDIT", "AUDIT_LOG", "", nil, map[string]any{"rows": len(records)}))
+		records, truncated := capExport(w, records)
+		_ = s.Store.Audit(r.Context(), auditFrom(r, "EXPORT_AUDIT", "AUDIT_LOG", "", nil, map[string]any{"rows": len(records), "truncated": truncated}))
 		writeCSV(w, "seccheck-audit", auditCSVColumns, records)
 		return
 	}
 	jsonResponse(w, 200, map[string]any{"items": records, "events": auditEventCatalogue()})
+}
+
+// exportRowCap bounds a single export so that one download cannot pull an
+// installation's entire history into memory. Hitting it is reported rather
+// than hidden: a compliance export that quietly stops at fifty thousand rows
+// looks complete and is not.
+const exportRowCap = 50000
+
+func capExport(w http.ResponseWriter, records []map[string]any) ([]map[string]any, bool) {
+	if len(records) <= exportRowCap {
+		return records, false
+	}
+	w.Header().Set("X-Export-Truncated", intString(exportRowCap))
+	return records[:exportRowCap], true
 }
 
 // writeCSV emits a UTF-8 BOM so that Excel on a Korean Windows desktop opens

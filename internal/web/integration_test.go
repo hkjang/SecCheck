@@ -1660,3 +1660,20 @@ func readXLSXStrings(body []byte) (string, error) {
 	}
 	return out.String(), nil
 }
+
+// A compliance export that quietly stops at the row cap looks complete and is
+// not, which is the worst possible failure for an audit log.
+func TestAnExportSaysWhenItHitTheRowCap(t *testing.T) {
+	h := newHarness(t)
+	admin := h.login(adminOf(h))
+	small := admin.do(http.MethodGet, "/api/v1/admin/audit?format=csv", nil)
+	if small.status != http.StatusOK {
+		t.Fatalf("audit export returned %d", small.status)
+	}
+	if got := small.raw.Header.Get("X-Export-Truncated"); got != "" {
+		t.Errorf("a complete export claimed truncation at %q", got)
+	}
+	if !strings.HasPrefix(small.body, "\ufeff") {
+		t.Error("the CSV lost its BOM, so Excel on a Korean desktop will mangle it")
+	}
+}

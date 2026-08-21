@@ -76,6 +76,7 @@ export async function download(path: string) {
     if (response.status === 401) { setCSRF(''); announce('expired') }
     throw new ApiError(response.status, problem.code || 'REQUEST_FAILED', problem.message || '파일을 내려받지 못했습니다.', problem.details)
   }
+  const cappedAt = response.headers.get('X-Export-Truncated')
   const url = URL.createObjectURL(await response.blob())
   const link = document.createElement('a')
   link.href = url
@@ -85,6 +86,7 @@ export async function download(path: string) {
   link.remove()
   // Revoking immediately can cancel the download in some browsers.
   window.setTimeout(() => URL.revokeObjectURL(url), 60_000)
+  return { cappedAt: cappedAt ? Number(cappedAt) : 0 }
 }
 
 // Content-Disposition carries the server's name for the file, either plain or

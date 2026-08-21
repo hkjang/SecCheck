@@ -119,13 +119,13 @@ func (s *Server) listReviewRequests(w http.ResponseWriter, r *http.Request) {
 		order = v
 	}
 	if r.URL.Query().Get("format") == "csv" {
-		rows, err := s.Store.Pool.Query(r.Context(), reviewSelect+where+` ORDER BY `+order+` LIMIT 50000`, args...)
+		rows, err := s.Store.Pool.Query(r.Context(), reviewSelect+where+` ORDER BY `+order+` LIMIT `+intString(exportRowCap+1), args...)
 		if err != nil {
 			problem(w, 500, "QUERY_FAILED", "심의 목록을 불러오지 못했습니다.", nil)
 			return
 		}
-		records := scanDynamic(rows, reviewColumns)
-		_ = s.Store.Audit(r.Context(), auditFrom(r, "EXPORT_REVIEW_LIST", "REVIEW_REQUEST", "", nil, map[string]any{"rows": len(records)}))
+		records, truncated := capExport(w, scanDynamic(rows, reviewColumns))
+		_ = s.Store.Audit(r.Context(), auditFrom(r, "EXPORT_REVIEW_LIST", "REVIEW_REQUEST", "", nil, map[string]any{"rows": len(records), "truncated": truncated}))
 		writeCSV(w, "seccheck-reviews", reviewColumns, records)
 		return
 	}
