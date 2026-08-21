@@ -38,11 +38,13 @@ func main() {
 			return
 		case "verify-evidence":
 			os.Exit(verifyEvidence(os.Args[2:]))
+		case "selftest":
+			os.Exit(runSelftest(os.Args[2:]))
 		case "version":
 			fmt.Println(version)
 			return
 		default:
-			fmt.Fprintf(os.Stderr, "unknown command %q; expected healthcheck, verify-evidence or version\n", os.Args[1])
+			fmt.Fprintf(os.Stderr, "unknown command %q; expected healthcheck, selftest, verify-evidence or version\n", os.Args[1])
 			os.Exit(2)
 		}
 	}

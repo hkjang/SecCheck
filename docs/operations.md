@@ -199,10 +199,29 @@ docker compose exec seccheck /app/seccheck verify-evidence --json         # 파�
 
 2번은 v0.20.0에서 CI가 실패했는데도 릴리즈가 성공한 뒤에 추가했습니다. 릴리즈 작업에는 데이터베이스가 없어 통합 테스트가 조용히 skip되었고, govulncheck·gitleaks·DAST 게이트도 릴리즈 경로에는 없었습니다.
 
+## 배포 자체 점검 (selftest)
+
+빌드된 image가 실제로 동작하는지 한 번에 확인합니다. 업그레이드 절차 2~3번을 사람이 눈으로 훑는 대신 종료 코드로 답하게 만드는 것이 목적입니다.
+
+```bash
+# 읽기 전용: 준비 상태, 로그인, OpenAPI, 게시 템플릿, 감사 체인 검증
+docker compose exec seccheck /app/seccheck selftest --username admin --password '****'
+
+# 검증 환경 전용: 위 항목에 더해 심의를 하나 만들고 Excel·PDF·ZIP 내보내기까지 수행
+docker compose exec seccheck /app/seccheck selftest --username admin --password '****' --full
+
+docker compose exec seccheck /app/seccheck selftest --username admin --password '****' --json   # 파이프라인용
+```
+
+- 비밀번호는 `SECCHECK_SELFTEST_PASSWORD` 환경변수로도 전달할 수 있습니다. 다른 호스트에서 점검할 때는 `--base-url https://seccheck.example`을 지정하십시오.
+- 하나라도 실패하면 종료 코드 1, 인자가 잘못되면 2를 반환합니다.
+- **`--full`은 심의를 하나 생성합니다.** 운영 환경이 아니라 업그레이드 검증 환경에서 사용하십시오. 생성된 심의 번호가 출력됩니다.
+- PDF 내보내기는 한글 폰트가 설치된 image 안에서만 성공합니다. 테스트 스위트로는 증명할 수 없는 **패키징 결함**이 바로 이 지점에서 드러납니다.
+
 ## 업그레이드와 롤백
 
 1. DB와 증적 볼륨을 함께 백업합니다.
 2. 새 `seccheck:v<version>` image를 별도 검증 환경에서 시작합니다.
-3. `/ready`, 로그인, 템플릿 Snapshot 불변성, 증적 다운로드를 확인합니다.
+3. `selftest`로 확인합니다(아래). 수동으로 볼 때는 `/ready`, 로그인, 템플릿 Snapshot 불변성, 증적 다운로드를 확인합니다.
 4. 운영 이미지만 교체합니다. migration은 시작 시 멱등 적용됩니다.
 5. 애플리케이션 롤백 전에는 해당 버전이 이미 적용된 DB schema를 읽을 수 있는지 release note를 확인합니다.
