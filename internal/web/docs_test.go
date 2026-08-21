@@ -96,3 +96,22 @@ func TestNoScreenLinksStraightToAnApiDownload(t *testing.T) {
 		}
 	}
 }
+
+// An installation with no internet access cannot look a metric up anywhere
+// but its own manual, so every gauge the server emits has to be in it.
+func TestEveryMetricIsInTheOperationsManual(t *testing.T) {
+	handler := repoFile(t, "internal/web/core_handlers.go")
+	manual := repoFile(t, "docs/operations.md")
+	names := map[string]bool{}
+	for _, m := range regexp.MustCompile(`seccheck_[a-z0-9_]+`).FindAllString(handler, -1) {
+		names[m] = true
+	}
+	if len(names) < 10 {
+		t.Fatalf("only %d metric names found; the handler must have changed shape", len(names))
+	}
+	for name := range names {
+		if !strings.Contains(manual, "`"+name+"`") {
+			t.Errorf("docs/operations.md never mentions %s, so nobody can write an alert on it", name)
+		}
+	}
+}

@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -1675,5 +1676,27 @@ func TestAnExportSaysWhenItHitTheRowCap(t *testing.T) {
 	}
 	if !strings.HasPrefix(small.body, "\ufeff") {
 		t.Error("the CSV lost its BOM, so Excel on a Korean desktop will mangle it")
+	}
+}
+
+// The gauge that tells a monitoring system the queue is stuck has to be
+// correct for the same reason the in-app warning does: nobody watches it
+// until it fires, and by then there is no chance to double-check.
+func TestMetricsExposeHowLongTheQueueHasBeenStuck(t *testing.T) {
+	h := newHarness(t)
+	admin := h.login(adminOf(h))
+	ctx := context.Background()
+	if _, err := h.db.Pool.Exec(ctx, `INSERT INTO jobs(id,type,status,available_at) VALUES($1,'SEND_EMAIL','PENDING',now()-interval '25 minutes')`, store.NewID()); err != nil {
+		t.Fatal(err)
+	}
+	body := admin.do(http.MethodGet, "/metrics", nil).body
+	var seconds float64
+	for _, line := range strings.Split(body, "\n") {
+		if strings.HasPrefix(line, "seccheck_jobs_oldest_pending_seconds ") {
+			seconds, _ = strconv.ParseFloat(strings.Fields(line)[1], 64)
+		}
+	}
+	if seconds < 1400 || seconds > 1600 {
+		t.Errorf("seccheck_jobs_oldest_pending_seconds = %v, want roughly 1500", seconds)
 	}
 }

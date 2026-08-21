@@ -37,9 +37,34 @@ Redis나 외부 CDN은 필요하지 않습니다. UI, 한글 PDF 글꼴, 기본 
 
 - `/health`: 프로세스 생존
 - `/ready`: DB 연결 포함 준비 상태
-- `/metrics`: API 요청·지연·오류, DB 연결, 로그인, 활성 세션, 잠긴 계정, 증적 저장량·검사, 제출 실패, 알림 Job Prometheus 지표
+- `/metrics`: Prometheus 지표 (아래 표가 전체 목록)
 - 관리자 > 서버 로그: 요청 ID 기반 구조화 로그
 - 관리자 > 감사로그: 주요 행위와 체인 검증
+
+### `/metrics` 지표
+
+인터넷이 닿지 않는 환경에서 경보 규칙을 직접 작성해야 하므로 전체 목록을 싣습니다. 모두 gauge이며 요청 시점에 계산됩니다.
+
+| 지표 | 의미 | 경보 기준 예시 |
+| --- | --- | --- |
+| `seccheck_info` | 버전 정보 (`version` label, 값은 항상 1) | 배포 후 버전 확인용 |
+| `seccheck_users_total` | 등록 사용자 수 | — |
+| `seccheck_reviews_total` | 누적 심의 건수 | — |
+| `seccheck_jobs_pending` | 대기 중인 작업 수 (재시도 대기 포함) | 단독 경보 부적합 — 아래 지표를 사용 |
+| `seccheck_jobs_failed` | 5회 재시도 후 실패한 작업 수 | `> 0` 지속 시 조사 |
+| `seccheck_jobs_oldest_pending_seconds` | 실행 시각이 지난 가장 오래된 작업의 대기 시간 | `> 900` 이면 워커 정지 의심 |
+| `seccheck_http_requests_5m` | 최근 5분 API 요청 수 | — |
+| `seccheck_http_errors_5m` | 최근 5분 5xx 응답 수 | 요청 대비 비율로 경보 |
+| `seccheck_http_duration_ms_5m` | 최근 5분 평균 응답 시간(ms) | 평상시 대비 상승 |
+| `seccheck_login_success_24h` | 24시간 로그인 성공 수 | — |
+| `seccheck_login_failure_24h` | 24시간 로그인 실패 수 | 급증 시 자격 증명 공격 의심 |
+| `seccheck_sessions_active` | 만료되지 않은 세션 수 | — |
+| `seccheck_accounts_locked` | 잠긴 계정 수 | 급증 시 조사 |
+| `seccheck_evidence_version_bytes` | 증적 암호문 총 용량(byte) | 볼륨 여유와 대조 |
+| `seccheck_evidence_scan_pending` | 검사 대기 증적 수 | 감소하지 않으면 clamd 확인 |
+| `seccheck_scan_failures` | `CLEAN`·`SKIPPED`이 아닌 증적 수 | `> 0` 지속 시 조사 |
+| `seccheck_submission_failures_24h` | 24시간 제출 실패(4xx 이상) 수 | 급증 시 규칙·증적 정책 확인 |
+| `seccheck_db_connections` | 커넥션 풀 상태 (`state` label: total/acquired/idle) | `acquired`가 `total`에 근접하면 포화 |
 
 OIDC 장애 시 기존 세션은 만료까지 동작합니다. 비활성화된 bootstrap 계정을 사용할 필요가 있으면 이중 승인으로 일시 활성화하고, 사용 후 세션 종료·재비활성화 및 감사 이벤트를 확인합니다.
 
