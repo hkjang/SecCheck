@@ -478,6 +478,43 @@ func TestFailedJobsAreVisibleAndRetryable(t *testing.T) {
 	}
 }
 
+// A dead worker leaves PENDING rows that look perfectly normal on the queue
+// page. The age of the oldest due job is what actually gives it away.
+func TestTheQueueReportsHowLongWorkHasBeenWaiting(t *testing.T) {
+	h := newHarness(t)
+	admin := h.login(adminOf(h))
+	ctx := context.Background()
+	fresh := admin.do(http.MethodGet, "/api/v1/admin/jobs", nil).json()
+	if waited := pendingAge(t, fresh); waited != 0 {
+		t.Fatalf("an empty queue reported a %ds backlog", waited)
+	}
+	if _, err := h.db.Pool.Exec(ctx, `INSERT INTO jobs(id,type,status,available_at) VALUES($1,'SEND_EMAIL','PENDING',now()-interval '20 minutes')`, store.NewID()); err != nil {
+		t.Fatal(err)
+	}
+	// A job scheduled for the future is a backoff, not a stall.
+	if _, err := h.db.Pool.Exec(ctx, `INSERT INTO jobs(id,type,status,available_at) VALUES($1,'SEND_EMAIL','PENDING',now()+interval '1 hour')`, store.NewID()); err != nil {
+		t.Fatal(err)
+	}
+	stalled := admin.do(http.MethodGet, "/api/v1/admin/jobs", nil).json()
+	waited := pendingAge(t, stalled)
+	if waited < 1100 || waited > 1300 {
+		t.Errorf("oldest_pending_seconds = %d, want roughly 1200", waited)
+	}
+}
+
+func pendingAge(t *testing.T, body map[string]any) int {
+	t.Helper()
+	summary, ok := body["summary"].(map[string]any)
+	if !ok {
+		t.Fatalf("job listing carried no summary: %v", body)
+	}
+	waited, ok := summary["oldest_pending_seconds"].(float64)
+	if !ok {
+		t.Fatalf("summary has no oldest_pending_seconds: %v", summary)
+	}
+	return int(waited)
+}
+
 func TestOnlyAdministratorsReachTheJobQueue(t *testing.T) {
 	h := newHarness(t)
 	h.user("plainuser", "REQUESTER")

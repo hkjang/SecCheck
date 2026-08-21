@@ -8,7 +8,7 @@
   <img src="https://img.shields.io/badge/PostgreSQL-17-4169E1?style=flat-square&logo=postgresql&logoColor=white" alt="PostgreSQL" />
   <img src="https://img.shields.io/badge/Docker-Ready-2496ED?style=flat-square&logo=docker&logoColor=white" alt="Docker" />
   <img src="https://img.shields.io/badge/MCP-2026--07--28-8A2BE2?style=flat-square" alt="MCP" />
-  <img src="https://img.shields.io/badge/Release-v0.23.0-success?style=flat-square" alt="v0.23.0" />
+  <img src="https://img.shields.io/badge/Release-v0.24.0-success?style=flat-square" alt="v0.24.0" />
 </p>
 
 <h3>Excel 보안 심의를 넘어 추적 가능한 Security Control로.</h3>
@@ -100,7 +100,7 @@
 | :--- | :--- | :--- |
 | **🎬 3분 서비스 시연 영상** | 플랫폼 핵심 업무 흐름 및 실시간 CRU 시연 (1080p FHD, 3분 06초) | [**docs/seccheck_overview.mp4**](docs/seccheck_overview.mp4) |
 | **📕 종합 기술 매뉴얼 완본** | 모든 아키텍처·기능·실무·운영·API 통합 기술 완본 (A4 인쇄용) | [**docs/seccheck_complete_manual.pdf**](docs/seccheck_complete_manual.pdf) |
-| **📸 기능 및 화면 가이드** | 25개 전체 메뉴별 캡처 스크린샷과 CRU 동작 가이드 | [**PDF 바로보기**](docs/seccheck_features_guide.pdf) · [MD](docs/features.md) |
+| **📸 기능 및 화면 가이드** | 전체 메뉴별 화면 가이드와 캡처 스크린샷, CRU 동작 설명 | [**PDF 바로보기**](docs/seccheck_features_guide.pdf) · [MD](docs/features.md) |
 | **👤 사용자 실무 가이드** | 심의 생성, Rule Engine, 체크리스트 작성, N/A, 증적 첨부, 승인 | [**PDF 바로보기**](docs/seccheck_user_guide.pdf) · [MD](docs/user-guide.md) |
 | **🛠️ 관리자 운영 가이드** | 4대 환경변수, Keycloak SSO, ClamAV, RBAC 역할, 체인 검증 | [**PDF 바로보기**](docs/seccheck_admin_guide.pdf) · [MD](docs/admin-guide.md) |
 | **🔌 API & MCP 가이드** | REST API 명세, Model Context Protocol(MCP) `2026-07-28` 스펙 | [**PDF 바로보기**](docs/seccheck_api_guide.pdf) · [MD](docs/api-guide.md) |
@@ -121,7 +121,7 @@ docker run -d --name seccheck --restart unless-stopped \
   -e BOOTSTRAP_ADMIN='admin' \
   -e BOOTSTRAP_ADMIN_PASSWORD='your-strong-password' \
   -e ENCRYPTION_KEY='your-32-char-random-encryption-key' \
-  seccheck:v0.23.0
+  seccheck:v0.24.0
 ```
 
 - **접속 주소**: `http://localhost:8080` (초기 관리자 계정: `admin`)

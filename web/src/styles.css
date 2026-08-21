@@ -129,6 +129,11 @@ td { padding: 13px 14px; border-bottom: 1px solid #ebeff3; vertical-align: middl
 tbody tr:hover { background: #f9fbfd; }
 .table-link { color: #165fcf; font-weight: 700; }
 .subtle { color: var(--muted); font-size: 12px; }
+.banner { display: flex; gap: 10px; align-items: flex-start; padding: 13px 15px; border-radius: 11px; border: 1px solid var(--border); background: var(--surface); font-size: 13.5px; line-height: 1.55; }
+.banner svg { flex: none; margin-top: 2px; }
+.banner.red { border-color: #f4c2c7; background: #fff5f6; color: #8d1f2a; }
+.banner.red svg { color: var(--red); }
+.banner code { background: #ffffffb0; padding: 1px 5px; border-radius: 5px; }
 .empty { text-align: center; padding: 56px 20px; color: var(--muted); }
 .empty svg { width: 34px; height: 34px; color: #aeb8c5; margin-bottom: 8px; }
 

@@ -628,6 +628,12 @@ func (s *Server) listJobs(w http.ResponseWriter, r *http.Request) {
 	var pendingScans int64
 	_ = s.Store.Pool.QueryRow(r.Context(), `SELECT count(*) FROM evidences WHERE scan_status IN ('PENDING','ERROR') AND deleted_at IS NULL`).Scan(&pendingScans)
 	summary["evidence_awaiting_scan"] = pendingScans
+	// Workers poll every five seconds, so a job that has been due for minutes
+	// means nothing is draining the queue -- the surest sign a worker died.
+	// Without this an admin only sees PENDING rows that look perfectly normal.
+	var oldestDue float64
+	_ = s.Store.Pool.QueryRow(r.Context(), `SELECT coalesce(extract(epoch FROM now()-min(available_at)),0) FROM jobs WHERE status='PENDING' AND available_at<=now()`).Scan(&oldestDue)
+	summary["oldest_pending_seconds"] = int64(oldestDue)
 	jsonResponse(w, 200, map[string]any{"items": items, "summary": summary})
 }
 

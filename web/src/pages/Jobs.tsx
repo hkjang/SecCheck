@@ -4,7 +4,9 @@ import { errorMessage, get, post } from '../lib/api'
 import { Badge, Button, Empty, Loading, formatDate, useToast } from '../components/ui'
 
 type Job = { id: string; type: string; status: string; attempts: number; available_at: string; locked_at?: string; last_error: string; created_at: string; updated_at: string }
-type Summary = { counts?: { type: string; status: string; count: number }[]; evidence_awaiting_scan: number }
+type Summary = { counts?: { type: string; status: string; count: number }[]; evidence_awaiting_scan: number; oldest_pending_seconds?: number }
+const STALLED_AFTER = 300 // workers poll every 5s, so minutes of backlog means nothing is draining
+const waited = (seconds: number) => seconds >= 3600 ? `${Math.floor(seconds / 3600)}시간 ${Math.floor(seconds % 3600 / 60)}분` : `${Math.max(1, Math.floor(seconds / 60))}분`
 const typeLabel: Record<string, string> = { SEND_EMAIL: '이메일 알림', SCAN_EVIDENCE: '증적 악성코드 검사' }
 const tone = (status: string) => status === 'FAILED' ? 'red' : status === 'RUNNING' ? 'blue' : status === 'PENDING' ? 'amber' : 'green'
 
@@ -28,9 +30,12 @@ export default function JobsPage() {
   if (!data) return <Loading />
   const failed = (data.summary.counts || []).filter(c => c.status === 'FAILED').reduce((n, c) => n + Number(c.count), 0)
   const pending = (data.summary.counts || []).filter(c => c.status === 'PENDING').reduce((n, c) => n + Number(c.count), 0)
+  const stalledFor = Number(data.summary.oldest_pending_seconds || 0)
   return <div className="page">
     <div className="page-header"><div><h1 className="page-title">작업 큐</h1><p className="page-description">이메일 알림과 증적 악성코드 검사는 백그라운드 큐에서 재시도됩니다. 실패한 작업을 여기서 확인하고 다시 실행합니다.</p></div>
       <div className="header-actions"><Button onClick={() => load()}><RefreshCw size={14} /> 새로고침</Button>{failed > 0 && <Button variant="primary" onClick={retryAll}><RotateCcw size={14} /> 실패 {failed}건 모두 재시도</Button>}</div></div>
+
+    {stalledFor >= STALLED_AFTER && <div className="banner red" role="alert"><AlertTriangle size={16} /><div><strong>큐가 {waited(stalledFor)}째 처리되지 않고 있습니다.</strong> 실행 시각이 지난 작업이 남아 있어 알림 발송과 증적 검사가 멈춘 상태일 수 있습니다. 서버 로그에서 <code>notify</code>·<code>scanner</code> 구성요소의 오류를 확인하세요.</div></div>}
 
     <div className="grid stats">
       <div className="card stat-card"><div className="stat-icon amber"><RefreshCw /></div><div><span className="stat-value">{pending}</span><div className="stat-label">대기 중</div></div></div>
