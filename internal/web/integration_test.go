@@ -2224,3 +2224,87 @@ func TestEvidenceAndItsScanJobAreWrittenTogether(t *testing.T) {
 		t.Errorf("%d evidence rows survived without a scan job", stranded)
 	}
 }
+
+// Submitting writes two rows: the review's status and the submission that
+// records who submitted and when, which the cycle-time report measures from.
+// They used to be separate statements, the second one fire-and-forget.
+func TestSubmittingWritesBothRowsOrNeither(t *testing.T) {
+	h := newHarness(t)
+	author := h.login(adminOf(h))
+	reviewID := author.createReview("제출 원자성")
+	ctx := context.Background()
+	// Answer every assigned item so the submission passes validation.
+	items := []map[string]any{}
+	if err := json.Unmarshal([]byte(author.do(http.MethodGet, "/api/v1/review-requests/"+reviewID+"/items", nil).body), &items); err != nil {
+		t.Fatal(err)
+	}
+	ids := []string{}
+	for _, item := range items {
+		if id, _ := item["id"].(string); id != "" {
+			ids = append(ids, id)
+		}
+	}
+	if res := author.do(http.MethodPost, "/api/v1/review-requests/"+reviewID+"/responses/bulk",
+		map[string]any{"item_ids": ids, "applicability": "N/A", "na_reason": "해당 없음", "self_assessment": "N/A"}); res.status != http.StatusOK {
+		t.Fatalf("bulk answer returned %d %s", res.status, res.body)
+	}
+
+	if res := author.do(http.MethodPost, "/api/v1/review-requests/"+reviewID+"/submit", map[string]any{}); res.status != http.StatusOK {
+		t.Fatalf("submit returned %d %s", res.status, res.body)
+	}
+	var reviewStatus, submissionStatus, submittedBy string
+	if err := h.db.Pool.QueryRow(ctx, `SELECT r.status,s.status,COALESCE(s.submitted_by,'') FROM review_requests r
+                JOIN submissions s ON s.review_request_id=r.id WHERE r.id=$1 ORDER BY s.revision DESC LIMIT 1`, reviewID).Scan(&reviewStatus, &submissionStatus, &submittedBy); err != nil {
+		t.Fatal(err)
+	}
+	if reviewStatus != submissionStatus {
+		t.Errorf("the review is %s while its submission is %s", reviewStatus, submissionStatus)
+	}
+	if submittedBy == "" {
+		t.Error("the submission does not record who submitted it")
+	}
+}
+
+// The approvals row is the decision itself. A review must never read APPROVED
+// with nothing recording that anyone approved it.
+func TestApprovingWritesTheDecisionOrNothing(t *testing.T) {
+	h := newHarness(t)
+	h.login(adminOf(h))
+	requester := h.user("atomic-requester", "REQUESTER")
+	approver := h.user("atomic-approver", "APPROVER")
+	ctx := context.Background()
+	id := store.NewID()
+	if _, err := h.db.Pool.Exec(ctx, `INSERT INTO review_requests(id,review_number,service_name,description,service_type,change_type,builder_id,developer_id,department,requester_id,approver_id,exposure,status)
+                VALUES($1,$2,'결재 원자성','설명','WEB','NEW',$3,$3,'보안팀',$3,$4,'INTERNAL','APPROVAL_PENDING')`, id, "SR-ATOMIC-1", requester, approver); err != nil {
+		t.Fatal(err)
+	}
+	// With the approvals table gone the decision must not be applied at all.
+	if _, err := h.db.Pool.Exec(ctx, `ALTER TABLE approvals RENAME TO approvals_gone`); err != nil {
+		t.Fatal(err)
+	}
+	blocked := h.login("atomic-approver").do(http.MethodPost, "/api/v1/review-requests/"+id+"/approve", map[string]string{"comment": "승인"})
+	if _, err := h.db.Pool.Exec(ctx, `ALTER TABLE approvals_gone RENAME TO approvals`); err != nil {
+		t.Fatal(err)
+	}
+	if blocked.status == http.StatusOK {
+		t.Error("the approval was applied while its record could not be written")
+	}
+	var status string
+	if err := h.db.Pool.QueryRow(ctx, `SELECT status FROM review_requests WHERE id=$1`, id).Scan(&status); err != nil {
+		t.Fatal(err)
+	}
+	if status != "APPROVAL_PENDING" {
+		t.Errorf("the review moved to %s without a decision record", status)
+	}
+
+	if res := h.login("atomic-approver").do(http.MethodPost, "/api/v1/review-requests/"+id+"/approve", map[string]string{"comment": "승인"}); res.status != http.StatusOK {
+		t.Fatalf("the retried approval returned %d %s", res.status, res.body)
+	}
+	var decisions int
+	if err := h.db.Pool.QueryRow(ctx, `SELECT count(*) FROM approvals WHERE review_request_id=$1 AND decision='APPROVED'`, id).Scan(&decisions); err != nil {
+		t.Fatal(err)
+	}
+	if decisions != 1 {
+		t.Errorf("the approvals table holds %d decisions, want 1", decisions)
+	}
+}

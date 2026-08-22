@@ -729,12 +729,29 @@ func (s *Server) submitReview(w http.ResponseWriter, r *http.Request) {
 		next = "RESUBMITTED"
 		event = "RESUBMIT"
 	}
-	tag, err := s.Store.Pool.Exec(r.Context(), `UPDATE review_requests SET status=$2,first_submitted_at=COALESCE(first_submitted_at,now()),final_submitted_at=now(),updated_at=now() WHERE id=$1 AND status IN ('DRAFT','CHANGE_REQUESTED')`, id, next)
+	// The submission carries who submitted and when, which the cycle-time
+	// report measures from. It used to be written after the status had already
+	// committed, with its error discarded, so a failure left a review marked
+	// submitted whose submission still read DRAFT with no submitter.
+	tx, err := s.Store.Pool.Begin(r.Context())
+	if err != nil {
+		s.fault(w, r, "SUBMIT_FAILED", "심의를 제출하지 못했습니다.", err)
+		return
+	}
+	defer tx.Rollback(r.Context())
+	tag, err := tx.Exec(r.Context(), `UPDATE review_requests SET status=$2,first_submitted_at=COALESCE(first_submitted_at,now()),final_submitted_at=now(),updated_at=now() WHERE id=$1 AND status IN ('DRAFT','CHANGE_REQUESTED')`, id, next)
 	if err != nil || tag.RowsAffected() == 0 {
 		problem(w, 409, "STATE_CONFLICT", "현재 상태에서는 제출할 수 없습니다.", nil)
 		return
 	}
-	_, _ = s.Store.Pool.Exec(r.Context(), `UPDATE submissions SET status=$2,submitted_by=$3,submitted_at=now() WHERE review_request_id=$1 AND revision=(SELECT max(revision) FROM submissions WHERE review_request_id=$1)`, id, next, session(r).User.ID)
+	if _, err = tx.Exec(r.Context(), `UPDATE submissions SET status=$2,submitted_by=$3,submitted_at=now() WHERE review_request_id=$1 AND revision=(SELECT max(revision) FROM submissions WHERE review_request_id=$1)`, id, next, session(r).User.ID); err != nil {
+		s.fault(w, r, "SUBMIT_FAILED", "심의를 제출하지 못했습니다.", err)
+		return
+	}
+	if err = tx.Commit(r.Context()); err != nil {
+		s.fault(w, r, "SUBMIT_FAILED", "심의를 제출하지 못했습니다.", err)
+		return
+	}
 	s.notifyReviewer(r.Context(), id, "REVIEW_SUBMITTED", "")
 	_ = s.Store.Audit(r.Context(), auditFrom(r, event, "REVIEW_REQUEST", id, map[string]any{"status": current}, map[string]any{"status": next}))
 	jsonResponse(w, 200, map[string]any{"status": next})
@@ -1258,12 +1275,28 @@ func (s *Server) decideApproval(w http.ResponseWriter, r *http.Request, decision
 	// it does -- sat in every queue and could not be decided by anyone. The
 	// approver who does decide is recorded on the review.
 	anyApprover := hasAnyRole(sess.User, "APPROVER")
-	tag, err := s.Store.Pool.Exec(r.Context(), `UPDATE review_requests SET status=$2,approver_id=COALESCE(approver_id,$3),final_result=CASE WHEN $2='REJECTED' THEN 'REJECTED' ELSE final_result END,approved_at=CASE WHEN $2='APPROVED' THEN now() ELSE approved_at END,updated_at=now() WHERE id=$1 AND status='APPROVAL_PENDING' AND (approver_id=$3 OR (approver_id IS NULL AND $4))`, id, decision, sess.User.ID, anyApprover)
+	// The approvals row is the decision itself -- who, what and why. Writing
+	// it after the status had committed, with the error discarded, allowed a
+	// review to read APPROVED with no record of anyone approving it.
+	tx, err := s.Store.Pool.Begin(r.Context())
+	if err != nil {
+		s.fault(w, r, "UPDATE_FAILED", "승인 처리에 실패했습니다.", err)
+		return
+	}
+	defer tx.Rollback(r.Context())
+	tag, err := tx.Exec(r.Context(), `UPDATE review_requests SET status=$2,approver_id=COALESCE(approver_id,$3),final_result=CASE WHEN $2='REJECTED' THEN 'REJECTED' ELSE final_result END,approved_at=CASE WHEN $2='APPROVED' THEN now() ELSE approved_at END,updated_at=now() WHERE id=$1 AND status='APPROVAL_PENDING' AND (approver_id=$3 OR (approver_id IS NULL AND $4))`, id, decision, sess.User.ID, anyApprover)
 	if err != nil || tag.RowsAffected() == 0 {
 		problem(w, 409, "STATE_CONFLICT", "승인 처리할 수 없습니다.", nil)
 		return
 	}
-	_, _ = s.Store.Pool.Exec(r.Context(), `INSERT INTO approvals(id,review_request_id,approver_id,decision,comment) VALUES($1,$2,$3,$4,$5)`, store.NewID(), id, sess.User.ID, decision, in.Comment)
+	if _, err = tx.Exec(r.Context(), `INSERT INTO approvals(id,review_request_id,approver_id,decision,comment) VALUES($1,$2,$3,$4,$5)`, store.NewID(), id, sess.User.ID, decision, in.Comment); err != nil {
+		s.fault(w, r, "UPDATE_FAILED", "승인 처리에 실패했습니다.", err)
+		return
+	}
+	if err = tx.Commit(r.Context()); err != nil {
+		s.fault(w, r, "UPDATE_FAILED", "승인 처리에 실패했습니다.", err)
+		return
+	}
 	var requester string
 	_ = s.Store.Pool.QueryRow(r.Context(), `SELECT requester_id FROM review_requests WHERE id=$1`, id).Scan(&requester)
 	decisionTitle := map[string]string{"APPROVED": "심의 최종 승인", "REJECTED": "심의 반려"}[decision]
