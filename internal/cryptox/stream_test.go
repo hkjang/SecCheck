@@ -126,3 +126,48 @@ func flip(in []byte, at int) []byte {
 	out[at] ^= 0x01
 	return out
 }
+
+// The format claims a chunk cannot be moved between files. Two pieces of
+// evidence belonging to the same person share a key, so only the additional
+// data -- which names the evidence and its version -- stands between them.
+func TestStreamRejectsAChunkSplicedFromAnotherFile(t *testing.T) {
+	key, _ := RandomBytes(32)
+	first := sealSample(t, key, []byte("evidence:aaa:1"), 3*StreamChunkSize)
+	second := sealSample(t, key, []byte("evidence:bbb:1"), 3*StreamChunkSize)
+	chunk := 12 + StreamChunkSize + 16
+
+	spliced := append([]byte{}, first[:headerSize+chunk]...)
+	spliced = append(spliced, second[headerSize+chunk:headerSize+2*chunk]...)
+	spliced = append(spliced, first[headerSize+2*chunk:]...)
+	if _, _, err := OpenStream(&bytes.Buffer{}, bytes.NewReader(spliced), key, []byte("evidence:aaa:1")); err == nil {
+		t.Error("a chunk taken from another file under the same key was accepted")
+	}
+}
+
+// A chunk repeated in place lands at an index its additional data does not
+// name, so it has to fail even though it is a chunk of this very file.
+func TestStreamRejectsADuplicatedChunk(t *testing.T) {
+	key, _ := RandomBytes(32)
+	aad := []byte("evidence:abc:1")
+	sealed := sealSample(t, key, aad, 3*StreamChunkSize)
+	chunk := 12 + StreamChunkSize + 16
+
+	duplicated := append([]byte{}, sealed[:headerSize+chunk]...)
+	duplicated = append(duplicated, sealed[headerSize:headerSize+chunk]...)
+	duplicated = append(duplicated, sealed[headerSize+chunk:]...)
+	if _, _, err := OpenStream(&bytes.Buffer{}, bytes.NewReader(duplicated), key, aad); err == nil {
+		t.Error("a duplicated chunk was accepted")
+	}
+}
+
+// A file whose final chunk is followed by more bytes is not the file that was
+// written, and the reader used to stop at the final marker and ignore them.
+func TestStreamRejectsDataAfterTheFinalChunk(t *testing.T) {
+	key, _ := RandomBytes(32)
+	aad := []byte("evidence:abc:1")
+	sealed := sealSample(t, key, aad, StreamChunkSize+1024)
+	padded := append(append([]byte{}, sealed...), []byte("추가로 붙인 바이트")...)
+	if _, _, err := OpenStream(&bytes.Buffer{}, bytes.NewReader(padded), key, aad); err == nil {
+		t.Error("bytes after the final chunk were ignored")
+	}
+}
