@@ -2308,3 +2308,57 @@ func TestApprovingWritesTheDecisionOrNothing(t *testing.T) {
 		t.Errorf("the approvals table holds %d decisions, want 1", decisions)
 	}
 }
+
+// A conditional pass usually comes with something the team promised to do
+// later. That was written on the item and then visible only inside the review
+// that produced it, so nobody could see what was outstanding across the board.
+func TestTheReportCollectsOutstandingFollowUps(t *testing.T) {
+	h := newHarness(t)
+	admin := h.login(adminOf(h))
+	ctx := context.Background()
+	reviewID := admin.createReview("미조치 서비스")
+	items := []map[string]any{}
+	if err := json.Unmarshal([]byte(admin.do(http.MethodGet, "/api/v1/review-requests/"+reviewID+"/items", nil).body), &items); err != nil {
+		t.Fatal(err)
+	}
+	var uid string
+	if err := h.db.Pool.QueryRow(ctx, `SELECT id FROM users WHERE username='integration-admin'`).Scan(&uid); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := h.db.Pool.Exec(ctx, `UPDATE review_requests SET reviewer_id=$2,status='REVIEWING' WHERE id=$1`, reviewID, uid); err != nil {
+		t.Fatal(err)
+	}
+	withAction := items[0]["id"].(string)
+	if res := admin.do(http.MethodPut, "/api/v1/review-requests/"+reviewID+"/review-results/"+withAction,
+		map[string]any{"result": "CONDITIONAL", "opinion": "조건부", "follow_up": "3개월 내 WAF 규칙 보완", "expected_updated_at": ""}); res.status != http.StatusOK {
+		t.Fatalf("saving a verdict with a follow-up: %d %s", res.status, res.body)
+	}
+	// An item judged without a commitment must not appear in the register.
+	if res := admin.do(http.MethodPut, "/api/v1/review-requests/"+reviewID+"/review-results/"+items[1]["id"].(string),
+		map[string]any{"result": "COMPLIANT", "opinion": "적합", "follow_up": "", "expected_updated_at": ""}); res.status != http.StatusOK {
+		t.Fatalf("saving a verdict without a follow-up: %d %s", res.status, res.body)
+	}
+
+	report := admin.do(http.MethodGet, "/api/v1/reports/reviews", nil).json()
+	rows, _ := report["follow_ups"].([]any)
+	if len(rows) != 1 {
+		t.Fatalf("the register holds %d entries, want 1: %v", len(rows), report["follow_ups"])
+	}
+	entry, _ := rows[0].(map[string]any)
+	for key, want := range map[string]string{"follow_up": "3개월 내 WAF 규칙 보완", "result": "CONDITIONAL", "service_name": "미조치 서비스"} {
+		if got, _ := entry[key].(string); got != want {
+			t.Errorf("the register entry has %s=%q, want %q", key, got, want)
+		}
+	}
+	if number, _ := entry["review_number"].(string); number == "" {
+		t.Error("the register entry does not name its review")
+	}
+
+	book := admin.do(http.MethodGet, "/api/v1/reports/reviews?format=xlsx", nil)
+	if book.status != http.StatusOK {
+		t.Fatalf("the report workbook returned %d", book.status)
+	}
+	if text := workbookText(t, book.body); !strings.Contains(text, "미조치 항목") || !strings.Contains(text, "3개월 내 WAF 규칙 보완") {
+		t.Error("the workbook does not carry the follow-up register")
+	}
+}

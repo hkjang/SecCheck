@@ -51,6 +51,7 @@ type reportData struct {
 	ByDepartment []map[string]any `json:"by_department"`
 	ByResult     []map[string]any `json:"by_result"`
 	Recurring    []map[string]any `json:"recurring_findings"`
+	FollowUps    []map[string]any `json:"follow_ups"`
 	Aging        []map[string]any `json:"aging"`
 }
 
@@ -127,6 +128,21 @@ func (s *Server) buildReport(r *http.Request, scope reportScope) (reportData, er
 		scope.args, "item_code", "title", "category", "count"); err != nil {
 		return data, err
 	}
+	// A conditional pass usually comes with something the team promised to do
+	// later, written on the item and then visible only inside the one review
+	// that produced it. Collected here, they are the commitments outstanding
+	// across everything -- which is the work that follows a review.
+	if data.FollowUps, err = s.reportRows(ctx, `SELECT r.review_number,r.service_name,r.department,si.item_code,si.title,rr.result,rr.follow_up,
+                to_char(COALESCE(r.approved_at,r.updated_at),'YYYY-MM-DD') AS decided_on
+                FROM review_results rr
+                JOIN submission_items si ON si.id=rr.submission_item_id
+                JOIN submissions sub ON sub.id=si.submission_id
+                JOIN review_requests r ON r.id=sub.review_request_id
+                WHERE `+scope.where+` AND btrim(rr.follow_up)<>''
+                ORDER BY COALESCE(r.approved_at,r.updated_at) DESC,r.review_number,si.item_code LIMIT 500`,
+		scope.args, "review_number", "service_name", "department", "item_code", "title", "result", "follow_up", "decided_on"); err != nil {
+		return data, err
+	}
 	// Aging looks at what is still open right now, which is the queue the team
 	// has to work down rather than a property of the period.
 	if data.Aging, err = s.reportRows(ctx, `SELECT bucket,count(*) FROM (
@@ -197,6 +213,8 @@ func (s *Server) writeReportWorkbook(w http.ResponseWriter, r *http.Request, dat
 		{"검토 결과", []any{"판정", "항목 수"}, []string{"result", "count"}, data.ByResult},
 		{"반복 미흡 항목", []any{"항목코드", "보안요건", "분류", "발생 건수"}, []string{"item_code", "title", "category", "count"}, data.Recurring},
 		{"경과 기간", []any{"경과", "진행 중 건수"}, []string{"bucket", "count"}, data.Aging},
+		{"미조치 항목", []any{"심의번호", "서비스", "부서", "항목코드", "보안요건", "판정", "조치 사항", "판정일"},
+			[]string{"review_number", "service_name", "department", "item_code", "title", "result", "follow_up", "decided_on"}, data.FollowUps},
 	}
 	for _, sheet := range sheets {
 		if _, err := f.NewSheet(sheet.name); err != nil {
