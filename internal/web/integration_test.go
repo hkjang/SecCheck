@@ -2518,3 +2518,59 @@ func TestAReviewCarriesItsDecisionToTheRequester(t *testing.T) {
 		t.Error("the decision does not say when it was made")
 	}
 }
+
+// When a review was submitted and decided, and who attached each piece of
+// evidence, are part of its record. The exported file has always carried
+// them; the screen showed neither, so a reader on screen could not say when
+// a review happened or who supplied what.
+func TestAReviewCarriesItsDatesAndEvidenceOwners(t *testing.T) {
+	h := newHarness(t)
+	h.login(adminOf(h))
+	h.user("dates-requester", "REQUESTER")
+	requester := h.login("dates-requester")
+	reviewID := requester.createReview("이력 서비스")
+	items := []map[string]any{}
+	if err := json.Unmarshal([]byte(requester.do(http.MethodGet, "/api/v1/review-requests/"+reviewID+"/items", nil).body), &items); err != nil {
+		t.Fatal(err)
+	}
+	itemID := items[0]["id"].(string)
+	if res := requester.upload(fmt.Sprintf("/api/v1/review-requests/%s/items/%s/evidences", reviewID, itemID), "근거.txt", "본문"); res.status != http.StatusCreated {
+		t.Fatalf("upload: %d %s", res.status, res.body)
+	}
+	ids := make([]string, 0, len(items))
+	for _, item := range items {
+		ids = append(ids, item["id"].(string))
+	}
+	if res := requester.do(http.MethodPost, "/api/v1/review-requests/"+reviewID+"/responses/bulk",
+		map[string]any{"item_ids": ids, "applicability": "N/A", "na_reason": "해당 없음", "self_assessment": "N/A"}); res.status != http.StatusOK {
+		t.Fatalf("bulk answer: %d %s", res.status, res.body)
+	}
+	if res := requester.do(http.MethodPost, "/api/v1/review-requests/"+reviewID+"/submit", map[string]any{}); res.status != http.StatusOK {
+		t.Fatalf("submit: %d %s", res.status, res.body)
+	}
+
+	detail := requester.do(http.MethodGet, "/api/v1/review-requests/"+reviewID, nil).json()
+	for _, key := range []string{"first_submitted_at", "final_submitted_at"} {
+		if at, _ := detail[key].(string); at == "" {
+			t.Errorf("the review does not report %s", key)
+		}
+	}
+
+	after := []map[string]any{}
+	if err := json.Unmarshal([]byte(requester.do(http.MethodGet, "/api/v1/review-requests/"+reviewID+"/items", nil).body), &after); err != nil {
+		t.Fatal(err)
+	}
+	var named bool
+	for _, item := range after {
+		list, _ := item["evidences"].([]any)
+		for _, raw := range list {
+			evidence, _ := raw.(map[string]any)
+			if name, _ := evidence["uploaded_by_name"].(string); name == "dates-requester" {
+				named = true
+			}
+		}
+	}
+	if !named {
+		t.Error("the evidence does not say who attached it")
+	}
+}
