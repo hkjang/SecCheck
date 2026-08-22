@@ -208,7 +208,7 @@ docker compose exec seccheck /app/seccheck verify-evidence --json         # 파�
 # 읽기 전용: 준비 상태, 로그인, OpenAPI, 게시 템플릿, 감사 체인 검증
 docker compose exec seccheck /app/seccheck selftest --username admin --password '****'
 
-# 검증 환경 전용: 위 항목에 더해 심의를 하나 만들고 Excel·PDF·ZIP 내보내기까지 수행
+# 검증 환경 전용: 위 항목에 더해 심의를 하나 만들어 Excel·PDF·ZIP 내보내기까지 수행한 뒤 취소
 docker compose exec seccheck /app/seccheck selftest --username admin --password '****' --full
 
 docker compose exec seccheck /app/seccheck selftest --username admin --password '****' --json   # 파이프라인용
@@ -216,7 +216,7 @@ docker compose exec seccheck /app/seccheck selftest --username admin --password 
 
 - 비밀번호는 `SECCHECK_SELFTEST_PASSWORD` 환경변수로도 전달할 수 있습니다. 다른 호스트에서 점검할 때는 `--base-url https://seccheck.example`을 지정하십시오.
 - 하나라도 실패하면 종료 코드 1, 인자가 잘못되면 2를 반환합니다.
-- **`--full`은 심의를 하나 생성합니다.** 운영 환경이 아니라 업그레이드 검증 환경에서 사용하십시오. 생성된 심의 번호가 출력됩니다.
+- **`--full`은 심의를 하나 생성한 뒤 취소합니다.** 반복 실행해도 초안이 쌓이지 않지만 취소된 기록은 남으므로, 운영 환경이 아니라 업그레이드 검증 환경에서 사용하십시오. 생성된 심의 번호가 출력됩니다.
 - PDF 내보내기는 한글 폰트가 설치된 image 안에서만 성공합니다. 테스트 스위트로는 증명할 수 없는 **패키징 결함**이 바로 이 지점에서 드러납니다.
 
 ## 업그레이드와 롤백

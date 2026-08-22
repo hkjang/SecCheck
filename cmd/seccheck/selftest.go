@@ -201,6 +201,10 @@ func (c *selftestClient) run(username, password string, full bool) []selftestSte
 		size, err := c.download("/api/v1/review-requests/" + created.ID + "/export/" + format)
 		record("export-"+format, fmt.Sprintf("%d bytes", size), err)
 	}
+	// Cancelled rather than left open: run repeatedly against a staging
+	// environment it would otherwise pile up drafts, and the record stays
+	// visible as an inert one. Nothing is ever deleted here.
+	record("review-cancel", detail.ReviewNumber+" 취소", c.expect("POST", "/api/v1/review-requests/"+created.ID+"/cancel", map[string]any{}, nil))
 	return steps
 }
 

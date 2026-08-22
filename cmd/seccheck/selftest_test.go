@@ -31,6 +31,7 @@ func stubService(t *testing.T, broken map[string]bool) *httptest.Server {
 	answer("/api/v1/admin/audit/verify", map[string]any{"valid": true, "checked": 3})
 	answer("/api/v1/review-requests", map[string]any{"id": "r1"})
 	answer("/api/v1/review-requests/r1", map[string]any{"review_number": "SC-2026-000001", "progress": map[string]any{"total": 12}})
+	answer("/api/v1/review-requests/r1/cancel", map[string]any{"status": "CANCELLED"})
 	for _, format := range []string{"xlsx", "pdf", "zip"} {
 		path := "/api/v1/review-requests/r1/export/" + format
 		mux.HandleFunc(path, func(w http.ResponseWriter, r *http.Request) {
@@ -79,5 +80,23 @@ func TestSelftestRequiresCredentials(t *testing.T) {
 	}
 	if code := runSelftest([]string{"--nonsense"}); code != 2 {
 		t.Errorf("an unknown flag returned %d, want 2", code)
+	}
+}
+
+// The review the full run creates is cancelled again, so repeating the check
+// against a staging environment does not pile up drafts.
+func TestSelftestCancelsTheReviewItCreated(t *testing.T) {
+	cancelled := false
+	server := stubService(t, nil)
+	// stubService already answers the cancel; this records that it is called.
+	client := &selftestClient{base: server.URL, http: server.Client()}
+	steps := client.run("admin", "secret", true)
+	for _, step := range steps {
+		if step.name == "review-cancel" {
+			cancelled = step.err == nil
+		}
+	}
+	if !cancelled {
+		t.Error("the full run did not cancel the review it created")
 	}
 }
