@@ -3098,3 +3098,89 @@ func TestTheAuditLogCanBeFilteredByItsTarget(t *testing.T) {
 		t.Errorf("the target type filter is case sensitive: %d events", len(got))
 	}
 }
+
+// Replacing evidence during a review is ordinary; losing what it was is not.
+// Every version was kept, encrypted, with its own hash and uploader, and none
+// of it could be read back -- the reviewer could see the file was on its third
+// version without being able to ask what the first two were.
+func TestEvidenceKeepsAReadableVersionHistory(t *testing.T) {
+	h := newHarness(t)
+	h.login(adminOf(h))
+	h.user("history-owner", "REQUESTER")
+	owner := h.login("history-owner")
+	reviewID := owner.createReview("증적 이력 서비스")
+	items := []map[string]any{}
+	if err := json.Unmarshal([]byte(owner.do(http.MethodGet, "/api/v1/review-requests/"+reviewID+"/items", nil).body), &items); err != nil {
+		t.Fatal(err)
+	}
+	itemID := items[0]["id"].(string)
+
+	first := strings.Repeat("최초 증적 본문\n", 20)
+	res := owner.upload(fmt.Sprintf("/api/v1/review-requests/%s/items/%s/evidences", reviewID, itemID), "정책서_v1.txt", first)
+	if res.status != http.StatusCreated {
+		t.Fatalf("uploading evidence: %d %s", res.status, res.body)
+	}
+	evidenceID, _ := res.json()["id"].(string)
+	second := strings.Repeat("교체한 증적 본문\n", 40)
+	if res := owner.upload("/api/v1/evidences/"+evidenceID+"/versions", "정책서_v2.txt", second); res.status != http.StatusCreated {
+		t.Fatalf("replacing the evidence: %d %s", res.status, res.body)
+	}
+
+	history := owner.do(http.MethodGet, "/api/v1/evidences/"+evidenceID+"/versions", nil)
+	if history.status != http.StatusOK {
+		t.Fatalf("reading the history: %d %s", history.status, history.body)
+	}
+	rows, _ := history.json()["items"].([]any)
+	if len(rows) != 2 {
+		t.Fatalf("the history has %d versions, want 2: %s", len(rows), history.body)
+	}
+	newest, _ := rows[0].(map[string]any)
+	oldest, _ := rows[1].(map[string]any)
+	if newest["original_filename"] != "정책서_v2.txt" || oldest["original_filename"] != "정책서_v1.txt" {
+		t.Errorf("the history lost the names the files were uploaded under: %s", history.body)
+	}
+	if current, _ := newest["current"].(bool); !current {
+		t.Error("the newest version is not marked as the current one")
+	}
+	if uploader, _ := oldest["uploaded_by"].(string); uploader == "" {
+		t.Error("the history does not say who uploaded the first version")
+	}
+
+	// The earlier file is still readable, and is the earlier file.
+	old := owner.do(http.MethodGet, "/api/v1/evidences/"+evidenceID+"/download?version=1", nil)
+	if old.status != http.StatusOK {
+		t.Fatalf("downloading version 1: %d %s", old.status, old.body)
+	}
+	if old.body != first {
+		t.Errorf("version 1 returned %d bytes, want the original %d", len(old.body), len(first))
+	}
+	if current := owner.do(http.MethodGet, "/api/v1/evidences/"+evidenceID+"/download", nil); current.body != second {
+		t.Error("the plain download no longer returns the current version")
+	}
+	if missing := owner.do(http.MethodGet, "/api/v1/evidences/"+evidenceID+"/download?version=9", nil); missing.status != http.StatusNotFound {
+		t.Errorf("a version that does not exist returned %d", missing.status)
+	}
+	if bad := owner.do(http.MethodGet, "/api/v1/evidences/"+evidenceID+"/download?version=abc", nil); bad.status != http.StatusUnprocessableEntity {
+		t.Errorf("a nonsense version returned %d", bad.status)
+	}
+
+	// Somebody outside the review cannot read its history.
+	h.user("history-outsider", "REQUESTER")
+	if res := h.login("history-outsider").do(http.MethodGet, "/api/v1/evidences/"+evidenceID+"/versions", nil); res.status != http.StatusNotFound {
+		t.Errorf("an outsider read the evidence history: %d %s", res.status, res.body)
+	}
+
+	// A purged file is still part of the record, but the bytes are gone.
+	if _, err := h.db.Pool.Exec(context.Background(), `UPDATE evidence_versions SET purged_at=now() WHERE evidence_id=$1 AND version=1`, evidenceID); err != nil {
+		t.Fatal(err)
+	}
+	purged := owner.do(http.MethodGet, "/api/v1/evidences/"+evidenceID+"/download?version=1", nil)
+	if purged.status != http.StatusGone {
+		t.Errorf("a purged version returned %d, want 410: %s", purged.status, purged.body)
+	}
+	listed := owner.do(http.MethodGet, "/api/v1/evidences/"+evidenceID+"/versions", nil).json()
+	again, _ := listed["items"].([]any)
+	if len(again) != 2 {
+		t.Errorf("a purged version disappeared from the history: %v", listed)
+	}
+}

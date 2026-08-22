@@ -14,6 +14,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 
 	"github.com/hkjang/SecCheck/internal/store"
@@ -59,7 +60,7 @@ func (s *Server) uploadEvidence(w http.ResponseWriter, r *http.Request) {
 	if err == nil {
 		_, err = tx.Exec(r.Context(), `INSERT INTO evidences(id,submission_item_id,original_filename,stored_filename,mime_type,size_bytes,sha256,uploaded_by,key_owner_id,key_version,description,scan_status) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$8,$9,$10,$11)`, id, itemID, upload.Name, stored, upload.MIME, size, digest, uid, version, upload.Description, upload.Scan)
 		if err == nil {
-			_, err = tx.Exec(r.Context(), `INSERT INTO evidence_versions(id,evidence_id,version,stored_filename,size_bytes,sha256,mime_type,key_owner_id,key_version,scan_status,uploaded_by) VALUES($1,$2,1,$3,$4,$5,$6,$7,$8,$9,$7)`, store.NewID(), id, stored, size, digest, upload.MIME, uid, version, upload.Scan)
+			_, err = tx.Exec(r.Context(), `INSERT INTO evidence_versions(id,evidence_id,version,stored_filename,size_bytes,sha256,mime_type,key_owner_id,key_version,scan_status,uploaded_by,original_filename) VALUES($1,$2,1,$3,$4,$5,$6,$7,$8,$9,$7,$10)`, store.NewID(), id, stored, size, digest, upload.MIME, uid, version, upload.Scan, upload.Name)
 		}
 		if err == nil {
 			err = enqueueScan(r.Context(), tx, id, upload.Scan)
@@ -130,7 +131,7 @@ func (s *Server) newEvidenceVersion(w http.ResponseWriter, r *http.Request) {
 	}
 	tx, err := s.Store.Pool.Begin(r.Context())
 	if err == nil {
-		_, err = tx.Exec(r.Context(), `INSERT INTO evidence_versions(id,evidence_id,version,stored_filename,size_bytes,sha256,mime_type,key_owner_id,key_version,scan_status,uploaded_by) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$8)`, store.NewID(), id, version, stored, size, digest, upload.MIME, uid, keyVersion, upload.Scan)
+		_, err = tx.Exec(r.Context(), `INSERT INTO evidence_versions(id,evidence_id,version,stored_filename,size_bytes,sha256,mime_type,key_owner_id,key_version,scan_status,uploaded_by,original_filename) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$8,$11)`, store.NewID(), id, version, stored, size, digest, upload.MIME, uid, keyVersion, upload.Scan, upload.Name)
 		if err == nil {
 			_, err = tx.Exec(r.Context(), `UPDATE evidences SET original_filename=$2,stored_filename=$3,mime_type=$4,size_bytes=$5,sha256=$6,uploaded_by=$7,key_owner_id=$7,key_version=$8,scan_status=$9,current_version=$10 WHERE id=$1`, id, upload.Name, stored, upload.MIME, size, digest, uid, keyVersion, upload.Scan, version)
 		}
@@ -152,6 +153,32 @@ func (s *Server) newEvidenceVersion(w http.ResponseWriter, r *http.Request) {
 	jsonResponse(w, 201, map[string]any{"id": id, "version": version, "scan_status": upload.Scan})
 }
 
+// listEvidenceVersions answers what a file used to be. Replacing evidence
+// during a review is ordinary -- a screenshot is retaken, a policy is
+// re-exported -- but the reviewer whose verdict rests on it has to be able to
+// see that it was replaced, by whom and when. A version whose file has been
+// purged by retention is still listed, marked as gone, because the fact that
+// it existed is part of the record even when the bytes are not.
+func (s *Server) listEvidenceVersions(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	var reviewID, currentName string
+	var current int
+	err := s.Store.Pool.QueryRow(r.Context(), `SELECT sub.review_request_id,e.current_version,e.original_filename FROM evidences e JOIN submission_items si ON si.id=e.submission_item_id JOIN submissions sub ON sub.id=si.submission_id WHERE e.id=$1 AND e.deleted_at IS NULL`, id).Scan(&reviewID, &current, &currentName)
+	if err != nil || !s.canAccessReview(r.Context(), session(r), reviewID) {
+		problem(w, 404, "NOT_FOUND", "증적을 찾을 수 없습니다.", nil)
+		return
+	}
+	rows, err := s.Store.Pool.Query(r.Context(), `SELECT v.version,COALESCE(NULLIF(v.original_filename,''),$2) AS original_filename,v.size_bytes,v.sha256,v.mime_type,v.scan_status,
+                COALESCE(u.display_name,'') AS uploaded_by,v.created_at,v.purged_at IS NOT NULL AS purged,(v.version=$3) AS current
+                FROM evidence_versions v LEFT JOIN users u ON u.id=v.uploaded_by WHERE v.evidence_id=$1 ORDER BY v.version DESC`, id, currentName, current)
+	if err != nil {
+		s.fault(w, r, "QUERY_FAILED", "증적 이력을 불러오지 못했습니다.", err)
+		return
+	}
+	items := scanDynamic(rows, []string{"version", "original_filename", "size_bytes", "sha256", "mime_type", "scan_status", "uploaded_by", "created_at", "purged", "current"})
+	jsonResponse(w, 200, map[string]any{"items": items, "current_version": current})
+}
+
 func (s *Server) downloadEvidence(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 	var reviewID, name, stored, mime, owner, expectedHash string
@@ -162,6 +189,34 @@ func (s *Server) downloadEvidence(w http.ResponseWriter, r *http.Request) {
 	if err != nil || !s.canAccessReview(r.Context(), session(r), reviewID) {
 		problem(w, 404, "NOT_FOUND", "증적을 찾을 수 없습니다.", nil)
 		return
+	}
+	// An older version is served from its own row: its file, its hash, its key
+	// and the name it was uploaded under. Everything after this point is the
+	// same for both, including the scan gate and the integrity check.
+	if requested := strings.TrimSpace(r.URL.Query().Get("version")); requested != "" {
+		wanted, convErr := strconv.Atoi(requested)
+		if convErr != nil || wanted < 1 {
+			problem(w, 422, "VALIDATION_FAILED", "버전은 1 이상의 정수여야 합니다.", nil)
+			return
+		}
+		if wanted != version {
+			var purged bool
+			var versionName string
+			err = s.Store.Pool.QueryRow(r.Context(), `SELECT COALESCE(NULLIF(original_filename,''),''),stored_filename,mime_type,key_owner_id,key_version,sha256,scan_status,size_bytes,purged_at IS NOT NULL
+                                FROM evidence_versions WHERE evidence_id=$1 AND version=$2`, id, wanted).Scan(&versionName, &stored, &mime, &owner, &keyVersion, &expectedHash, &scanStatus, &size, &purged)
+			if err != nil {
+				problem(w, 404, "NOT_FOUND", "요청한 증적 버전을 찾을 수 없습니다.", nil)
+				return
+			}
+			if purged {
+				problem(w, 410, "EVIDENCE_PURGED", "보존 기간이 지나 파기된 버전입니다. 이력에는 남아 있지만 파일은 없습니다.", map[string]any{"version": wanted})
+				return
+			}
+			if versionName != "" {
+				name = versionName
+			}
+			version = wanted
+		}
 	}
 	// Scanning is asynchronous, so a file that has not been cleared yet must
 	// not leave the server.
