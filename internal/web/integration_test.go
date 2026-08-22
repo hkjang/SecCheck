@@ -2420,3 +2420,60 @@ func TestTheReportCollectsOutstandingFollowUps(t *testing.T) {
 		t.Errorf("a verdict without an action was closed: %d %s", res.status, res.body)
 	}
 }
+
+// The reviewer's verdict, opinion and the action they asked for are written
+// for the person whose service it is. The console showed them only inside the
+// panel a reviewer edits, so the requester never read them -- and a reminder
+// about an action linked to a page that did not show it. The data was always
+// served; this pins that, so the read-only view has something to render.
+func TestARequesterIsServedTheReviewersVerdict(t *testing.T) {
+	h := newHarness(t)
+	admin := h.login(adminOf(h))
+	ctx := context.Background()
+	requester := h.user("verdict-reader", "REQUESTER")
+	author := h.login("verdict-reader")
+	reviewID := author.createReview("판정 열람 서비스")
+	items := []map[string]any{}
+	if err := json.Unmarshal([]byte(author.do(http.MethodGet, "/api/v1/review-requests/"+reviewID+"/items", nil).body), &items); err != nil {
+		t.Fatal(err)
+	}
+	itemID := items[0]["id"].(string)
+	var adminID string
+	if err := h.db.Pool.QueryRow(ctx, `SELECT id FROM users WHERE username='integration-admin'`).Scan(&adminID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := h.db.Pool.Exec(ctx, `UPDATE review_requests SET reviewer_id=$2,status='REVIEWING' WHERE id=$1`, reviewID, adminID); err != nil {
+		t.Fatal(err)
+	}
+	if res := admin.do(http.MethodPut, "/api/v1/review-requests/"+reviewID+"/review-results/"+itemID,
+		map[string]any{"result": "CONDITIONAL", "opinion": "권한 분리가 필요합니다", "follow_up": "관리자 계정 분리", "follow_up_due_date": "2030-06-30", "expected_updated_at": ""}); res.status != http.StatusOK {
+		t.Fatalf("recording the verdict: %d %s", res.status, res.body)
+	}
+	if _, err := h.db.Pool.Exec(ctx, `UPDATE review_requests SET status='APPROVED' WHERE id=$1`, reviewID); err != nil {
+		t.Fatal(err)
+	}
+
+	// The requester reads their own approved review.
+	after := []map[string]any{}
+	if err := json.Unmarshal([]byte(author.do(http.MethodGet, "/api/v1/review-requests/"+reviewID+"/items", nil).body), &after); err != nil {
+		t.Fatal(err)
+	}
+	var verdict map[string]any
+	for _, item := range after {
+		if item["id"] == itemID {
+			verdict, _ = item["review_result"].(map[string]any)
+		}
+	}
+	if verdict == nil {
+		t.Fatal("the item carries no review result for the requester")
+	}
+	for key, want := range map[string]string{"result": "CONDITIONAL", "opinion": "권한 분리가 필요합니다", "follow_up": "관리자 계정 분리"} {
+		if got, _ := verdict[key].(string); got != want {
+			t.Errorf("the requester sees %s=%q, want %q", key, got, want)
+		}
+	}
+	if due, _ := verdict["follow_up_due_date"].(string); !strings.HasPrefix(due, "2030-06-30") {
+		t.Errorf("the requester does not see the action's date: %q", due)
+	}
+	_ = requester
+}
