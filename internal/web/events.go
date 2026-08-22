@@ -28,6 +28,8 @@ var auditEventLabels = map[string]string{
 	"UPDATE_NOTIFICATION_PREFERENCE": "알림 수신 설정 변경",
 	"UPDATE_SETTING":                 "서비스 설정 변경",
 	"TEST_SMTP":                      "SMTP 테스트 발송",
+	"TEST_OIDC":                      "OIDC Discovery 연결 테스트",
+	"CREATE_API_KEY":                 "API 키 발급",
 	"ROTATE_API_KEY":                 "API 키 회전",
 	"REVOKE_API_KEY":                 "API 키 폐기",
 	"ROTATE_ENCRYPTION_KEY":          "암호화 키 회전",

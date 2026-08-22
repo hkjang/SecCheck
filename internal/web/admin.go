@@ -378,6 +378,10 @@ func (s *Server) testOIDC(w http.ResponseWriter, r *http.Request) {
 		problem(w, 422, "OIDC_DISCOVERY_FAILED", err.Error(), nil)
 		return
 	}
+	// The SMTP test has always been recorded; this one causes the service to
+	// reach an operator-supplied address just the same, which on an isolated
+	// network is worth having in the record.
+	_ = s.Store.Audit(r.Context(), auditFrom(r, "TEST_OIDC", "SETTING", "oidc", nil, map[string]any{"issuer": p.Issuer}))
 	jsonResponse(w, 200, map[string]any{"ok": true, "issuer": p.Issuer, "authorization_endpoint": p.AuthorizationEndpoint, "token_endpoint": p.TokenEndpoint, "userinfo_endpoint": p.UserinfoEndpoint})
 }
 

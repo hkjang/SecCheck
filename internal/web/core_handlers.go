@@ -527,7 +527,14 @@ func (s *Server) issueAPIKey(w http.ResponseWriter, r *http.Request, name string
 		s.fault(w, r, "CREATE_FAILED", "API 키를 만들지 못했습니다.", err)
 		return
 	}
-	_ = s.Store.Audit(r.Context(), auditFrom(r, "ROTATE_API_KEY", "API_KEY", id, map[string]any{"rotated_from": rotatedFrom}, map[string]any{"name": name, "scopes": scopes}))
+	// Issuing a credential and replacing one are different events. Both went
+	// into the record as a rotation, so an auditor could not tell a new key
+	// from a replaced one without noticing that rotated_from was empty.
+	event, before := "CREATE_API_KEY", map[string]any(nil)
+	if rotatedFrom != "" {
+		event, before = "ROTATE_API_KEY", map[string]any{"rotated_from": rotatedFrom}
+	}
+	_ = s.Store.Audit(r.Context(), auditFrom(r, event, "API_KEY", id, before, map[string]any{"name": name, "scopes": scopes}))
 	jsonResponse(w, 201, map[string]any{"id": id, "name": name, "token": token, "prefix": token[:12], "scopes": scopes, "expires_at": expires, "warning": "이 키는 다시 표시되지 않습니다."})
 }
 func (s *Server) revokeAPIKey(w http.ResponseWriter, r *http.Request) {

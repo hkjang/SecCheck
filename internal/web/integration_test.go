@@ -2666,3 +2666,50 @@ func TestTheDashboardShowsARequesterTheirOwnActions(t *testing.T) {
 		t.Errorf("an unrelated person sees %d of somebody else's actions", len(list))
 	}
 }
+
+// Minting a credential and replacing one are different events. Both were
+// recorded as a rotation, so the log could not tell an auditor whether a key
+// was new -- which is the question that matters when access is reviewed.
+func TestIssuingAndRotatingAnAPIKeyAreRecordedApart(t *testing.T) {
+	h := newHarness(t)
+	admin := h.login(adminOf(h))
+	ctx := context.Background()
+
+	created := admin.do(http.MethodPost, "/api/v1/me/api-keys", map[string]any{"name": "연계용", "scopes": []string{"read"}})
+	if created.status != http.StatusCreated {
+		t.Fatalf("issuing a key returned %d %s", created.status, created.body)
+	}
+	keyID, _ := created.json()["id"].(string)
+
+	count := func(event string) int {
+		t.Helper()
+		var n int
+		if err := h.db.Pool.QueryRow(ctx, `SELECT count(*) FROM audit_logs WHERE event_type=$1 AND target_type='API_KEY'`, event).Scan(&n); err != nil {
+			t.Fatal(err)
+		}
+		return n
+	}
+	if got := count("CREATE_API_KEY"); got != 1 {
+		t.Errorf("issuing a key wrote %d CREATE_API_KEY events", got)
+	}
+	if got := count("ROTATE_API_KEY"); got != 0 {
+		t.Errorf("issuing a key was recorded as a rotation %d times", got)
+	}
+
+	if res := admin.do(http.MethodPost, "/api/v1/me/api-keys/"+keyID+"/rotate", map[string]any{}); res.status != http.StatusCreated {
+		t.Fatalf("rotating returned %d %s", res.status, res.body)
+	}
+	if got := count("ROTATE_API_KEY"); got != 1 {
+		t.Errorf("rotating wrote %d ROTATE_API_KEY events", got)
+	}
+	if got := count("CREATE_API_KEY"); got != 1 {
+		t.Errorf("rotating was also recorded as an issue: %d", got)
+	}
+	var before string
+	if err := h.db.Pool.QueryRow(ctx, `SELECT COALESCE(before_value::text,'') FROM audit_logs WHERE event_type='ROTATE_API_KEY'`).Scan(&before); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(before, keyID) {
+		t.Errorf("the rotation does not name the key it replaced: %s", before)
+	}
+}
