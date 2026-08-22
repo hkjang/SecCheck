@@ -20,6 +20,17 @@ import (
 type Worker struct {
 	Store *store.Store
 	Box   *cryptox.Box
+
+	// Sender delivers one message. Only the tests replace it; leaving it nil
+	// uses SMTP, which is the only thing production ever wants.
+	Sender func(ctx context.Context, cfg emailSettings, recipient, subject, body string) error
+}
+
+func (w *Worker) sendMail(ctx context.Context, cfg emailSettings, recipient, subject, body string) error {
+	if w.Sender != nil {
+		return w.Sender(ctx, cfg, recipient, subject, body)
+	}
+	return send(ctx, cfg, recipient, subject, body)
 }
 
 type emailSettings struct {
@@ -116,17 +127,23 @@ func (w *Worker) sendDigests(ctx context.Context) {
 	rows.Close()
 
 	for _, rec := range recipients {
-		items, err := w.Store.Pool.Query(ctx, `SELECT title,body,created_at FROM notifications WHERE recipient_id=$1 AND emailed_at IS NULL ORDER BY created_at LIMIT 200`, rec.id)
+		// The identifiers are carried through so that exactly what was sent is
+		// marked as sent. Marking every unsent notification instead swallowed
+		// anything that arrived while the digest was being delivered: it was
+		// stamped as emailed without ever appearing in one.
+		items, err := w.Store.Pool.Query(ctx, `SELECT id,title,body,created_at FROM notifications WHERE recipient_id=$1 AND emailed_at IS NULL ORDER BY created_at LIMIT 200`, rec.id)
 		if err != nil {
 			continue
 		}
 		var lines []string
+		var included []string
 		for items.Next() {
-			var title, body string
+			var id, title, body string
 			var at time.Time
-			if items.Scan(&title, &body, &at) != nil {
+			if items.Scan(&id, &title, &body, &at) != nil {
 				continue
 			}
+			included = append(included, id)
 			lines = append(lines, fmt.Sprintf("[%s] %s\n%s", at.In(w.Store.Location(ctx)).Format("01-02 15:04"), title, truncate(body, 300)))
 		}
 		items.Close()
@@ -135,12 +152,18 @@ func (w *Worker) sendDigests(ctx context.Context) {
 		}
 		subject := fmt.Sprintf("[SecCheck] 알림 요약 %d건", len(lines))
 		body := strings.Join(lines, "\n\n") + "\n\n" + serviceLink(ctx, w.Store, "")
-		if err = send(ctx, cfg, rec.email, subject, body); err != nil {
+		if err = w.sendMail(ctx, cfg, rec.email, subject, body); err != nil {
 			w.Store.Log(ctx, "ERROR", "", "notification", "digest delivery failed", map[string]any{"user_id": rec.id, "error": truncate(err.Error(), 300)})
 			continue
 		}
-		_, _ = w.Store.Pool.Exec(ctx, `UPDATE notifications SET emailed_at=now() WHERE recipient_id=$1 AND emailed_at IS NULL`, rec.id)
-		_, _ = w.Store.Pool.Exec(ctx, `UPDATE notification_preferences SET digest_sent_at=now() WHERE user_id=$1`, rec.id)
+		// Failing to mark them means the next digest sends the same items
+		// again, so it is worth saying out loud rather than discarding.
+		if _, err = w.Store.Pool.Exec(ctx, `UPDATE notifications SET emailed_at=now() WHERE id=ANY($1)`, included); err != nil {
+			w.Store.Log(ctx, "ERROR", "", "notification", "digest was delivered but could not be marked as sent", map[string]any{"user_id": rec.id, "items": len(included), "error": truncate(err.Error(), 300)})
+		}
+		if _, err = w.Store.Pool.Exec(ctx, `UPDATE notification_preferences SET digest_sent_at=now() WHERE user_id=$1`, rec.id); err != nil {
+			w.Store.Log(ctx, "ERROR", "", "notification", "digest timestamp could not be recorded", map[string]any{"user_id": rec.id, "error": truncate(err.Error(), 300)})
+		}
 		w.Store.Log(ctx, "INFO", "", "notification", "digest delivered", map[string]any{"user_id": rec.id, "items": len(lines)})
 	}
 }
@@ -208,10 +231,15 @@ func (w *Worker) deliver(ctx context.Context, j job) error {
 		}
 		cfg.Password = string(plain)
 	}
-	if err = send(ctx, cfg, to, "[SecCheck] "+title, body); err != nil {
+	if err = w.sendMail(ctx, cfg, to, "[SecCheck] "+title, body); err != nil {
 		return err
 	}
-	_, _ = w.Store.Pool.Exec(ctx, `UPDATE notifications SET emailed_at=COALESCE(emailed_at,now()) WHERE id=$1`, payload.NotificationID)
+	// Retrying would send a second copy of a mail that already went out, so
+	// this is not an error the job can be failed on -- but leaving the mark
+	// off means the daily digest picks the same notification up again.
+	if _, err = w.Store.Pool.Exec(ctx, `UPDATE notifications SET emailed_at=COALESCE(emailed_at,now()) WHERE id=$1`, payload.NotificationID); err != nil {
+		w.Store.Log(ctx, "ERROR", "", "notification", "email was sent but could not be marked as sent; the digest may repeat it", map[string]any{"notification_id": payload.NotificationID, "error": truncate(err.Error(), 300)})
+	}
 	w.Store.Log(ctx, "INFO", "", "notification", "email notification delivered", map[string]any{"notification_id": payload.NotificationID})
 	return nil
 }
