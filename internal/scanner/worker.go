@@ -129,11 +129,19 @@ func (w *Worker) scan(ctx context.Context, payload []byte) error {
 
 func (w *Worker) finish(ctx context.Context, evidenceID, filename, status, detail string) error {
 	// The clamd verdict is kept on the row, not only in the log, so the reason
-	// a file was blocked is answerable months later.
-	if _, err := w.Store.Pool.Exec(ctx, `UPDATE evidences SET scan_status=$2,scan_detail=$3 WHERE id=$1`, evidenceID, status, truncate(detail, 500)); err != nil {
+	// a file was blocked is answerable months later. Both rows move together,
+	// as they already do when a file is quarantined: nothing reads the version
+	// level verdict today, but a history that disagrees with itself is a trap
+	// for whoever reads it next.
+	if err := pgx.BeginFunc(ctx, w.Store.Pool, func(tx pgx.Tx) error {
+		if _, err := tx.Exec(ctx, `UPDATE evidences SET scan_status=$2,scan_detail=$3 WHERE id=$1`, evidenceID, status, truncate(detail, 500)); err != nil {
+			return err
+		}
+		_, err := tx.Exec(ctx, `UPDATE evidence_versions SET scan_status=$2 WHERE evidence_id=$1 AND version=(SELECT current_version FROM evidences WHERE id=$1)`, evidenceID, status)
+		return err
+	}); err != nil {
 		return err
 	}
-	_, _ = w.Store.Pool.Exec(ctx, `UPDATE evidence_versions SET scan_status=$2 WHERE evidence_id=$1 AND version=(SELECT current_version FROM evidences WHERE id=$1)`, evidenceID, status)
 	w.Store.Log(ctx, "INFO", "", "scanner", "evidence scan completed", map[string]any{"evidence_id": evidenceID, "filename": filename, "status": status, "detail": detail})
 	return nil
 }
@@ -151,9 +159,14 @@ func (w *Worker) quarantine(ctx context.Context, evidenceID, filename, detail st
 	}); err != nil {
 		return err
 	}
-	_, _ = w.Store.Pool.Exec(ctx, `INSERT INTO notifications(id,recipient_id,event_type,title,body) VALUES($1,$2,'EVIDENCE_INFECTED',$3,$4)`,
+	// The file is already gone from the checklist, so this cannot be retried
+	// without quarantining twice; but somebody whose upload was found to carry
+	// malware has to be told, and losing that quietly is not acceptable.
+	if _, err := w.Store.Pool.Exec(ctx, `INSERT INTO notifications(id,recipient_id,event_type,title,body) VALUES($1,$2,'EVIDENCE_INFECTED',$3,$4)`,
 		store.NewID(), uploader, "증적 악성코드 탐지",
-		fmt.Sprintf("첨부하신 증적 %s에서 악성코드가 탐지되어 삭제되었습니다. 파일을 확인한 뒤 다시 업로드하세요.", filename))
+		fmt.Sprintf("첨부하신 증적 %s에서 악성코드가 탐지되어 삭제되었습니다. 파일을 확인한 뒤 다시 업로드하세요.", filename)); err != nil {
+		w.Store.Log(ctx, "ERROR", "", "scanner", "증적 격리는 완료했으나 업로더에게 알리지 못했습니다.", map[string]any{"evidence_id": evidenceID, "uploader": uploader, "error": truncate(err.Error(), 300)})
+	}
 	w.Store.Log(ctx, "ERROR", "", "scanner", "evidence quarantined", map[string]any{"evidence_id": evidenceID, "filename": filename, "detail": detail})
 	return nil
 }
