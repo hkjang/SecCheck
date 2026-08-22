@@ -70,6 +70,7 @@ func (w *Worker) Sweep(ctx context.Context) map[string]int64 {
 	removed["due_reminders"] = w.remindDueChangeRequests(ctx)
 	removed["follow_up_reminders"] = w.remindDueFollowUps(ctx)
 	removed["stall_alerts"] = w.alertStalledQueue(ctx)
+	removed["failure_alerts"] = w.alertFailedJobs(ctx)
 	removed["purged_evidence_files"] = w.purgeDeletedEvidence(ctx)
 	total := int64(0)
 	for _, n := range removed {
@@ -79,6 +80,61 @@ func (w *Worker) Sweep(ctx context.Context) map[string]int64 {
 		w.Store.Log(ctx, "INFO", "", "maintenance", "retention sweep completed", map[string]any{"retention_days": retention, "removed": removed})
 	}
 	return removed
+}
+
+// alertFailedJobs reports work the queue has given up on. A stalled queue is
+// visible as a backlog; a job that has spent all five attempts leaves no
+// backlog at all -- the queue reads as empty precisely because the work was
+// abandoned. That is what a wrong SMTP password looks like from the outside:
+// notifications simply stop, and the page an administrator would check is
+// clean. The alert goes to the in-app bell for the same reason the stall
+// alert does: the failure it reports is often the one that stops e-mail.
+func (w *Worker) alertFailedJobs(ctx context.Context) int64 {
+	var failed int64
+	var lastError, jobType string
+	if err := w.Store.Pool.QueryRow(ctx, `SELECT count(*),COALESCE(max(type),''),COALESCE(max(last_error),'') FROM jobs
+                WHERE status='FAILED' AND updated_at>now()-make_interval(hours=>$1)`, int(stallReminder.Hours())).Scan(&failed, &jobType, &lastError); err != nil {
+		w.Store.Log(ctx, "ERROR", "", "maintenance", "failed job check failed", map[string]any{"error": err.Error()})
+		return 0
+	}
+	if failed == 0 {
+		return 0
+	}
+	admins, err := w.uninformedAdmins(ctx, "JOB_FAILED")
+	if err != nil || len(admins) == 0 {
+		return 0
+	}
+	w.Store.Log(ctx, "ERROR", "", "maintenance", "jobs exhausted their retries", map[string]any{"failed": failed, "type": jobType, "last_error": shorten(lastError, 300)})
+	body := fmt.Sprintf("재시도를 모두 소진한 작업이 %d건 있습니다(예: %s). 마지막 오류: %s. 알림 메일이나 증적 검사가 조용히 멈춰 있을 수 있으니 관리자 > 작업 큐에서 확인하세요.", failed, jobType, shorten(lastError, 200))
+	var sent int64
+	for _, admin := range admins {
+		if _, err := w.Store.Pool.Exec(ctx, `INSERT INTO notifications(id,recipient_id,event_type,title,body) VALUES($1,$2,'JOB_FAILED',$3,$4)`,
+			store.NewID(), admin, "작업이 재시도를 모두 소진했습니다", body); err == nil {
+			sent++
+		}
+	}
+	return sent
+}
+
+// uninformedAdmins lists the administrators who have not already been told
+// about this kind of trouble inside the reminder window, so an outage that
+// lasts a week does not bury the inbox.
+func (w *Worker) uninformedAdmins(ctx context.Context, event string) ([]string, error) {
+	rows, err := w.Store.Pool.Query(ctx, `SELECT ur.user_id FROM user_roles ur WHERE ur.role_code='SYSTEM_ADMIN'
+                AND NOT EXISTS(SELECT 1 FROM notifications n WHERE n.recipient_id=ur.user_id AND n.event_type=$1 AND n.created_at>now()-make_interval(hours=>$2))`, event, int(stallReminder.Hours()))
+	if err != nil {
+		w.Store.Log(ctx, "ERROR", "", "maintenance", "administrator lookup failed", map[string]any{"event": event, "error": err.Error()})
+		return nil, err
+	}
+	defer rows.Close()
+	var admins []string
+	for rows.Next() {
+		var id string
+		if rows.Scan(&id) == nil {
+			admins = append(admins, id)
+		}
+	}
+	return admins, rows.Err()
 }
 
 // alertStalledQueue puts a stopped queue in front of an administrator. The

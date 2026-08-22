@@ -54,11 +54,11 @@ jobs:
       - name: Secret scan
         uses: gitleaks/gitleaks-action@e0c47f4f8be36e29cdc102c57e68cb5cbf0e8d1e # v3.0.0
       - name: Build release-shaped image
-        run: docker build --build-arg VERSION=0.79.0 -t seccheck:v0.79.0 .
+        run: docker build --build-arg VERSION=0.80.0 -t seccheck:v0.80.0 .
       - name: Container vulnerability gate
         uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
         with:
-          image-ref: seccheck:v0.79.0
+          image-ref: seccheck:v0.80.0
           format: sarif
           output: trivy.sarif
           severity: CRITICAL,HIGH
@@ -71,7 +71,7 @@ jobs:
       - name: Generate CycloneDX SBOM
         uses: anchore/sbom-action@e22c389904149dbc22b58101806040fa8d37a610 # v0.24.0
         with:
-          image: seccheck:v0.79.0
+          image: seccheck:v0.80.0
           format: cyclonedx-json
           output-file: sbom.cdx.json
           upload-artifact: false
@@ -90,7 +90,7 @@ jobs:
             -e BOOTSTRAP_ADMIN=admin \
             -e BOOTSTRAP_ADMIN_PASSWORD='CiPassword123!' \
             -e ENCRYPTION_KEY="$(openssl rand -base64 32)" \
-            seccheck:v0.79.0
+            seccheck:v0.80.0
           for i in $(seq 1 30); do curl -fsS http://127.0.0.1:8080/ready && break; sleep 2; done
           curl -fsS http://127.0.0.1:8080/health | grep '"status":"ok"'
           curl -fsS -H 'Content-Type: application/json' \

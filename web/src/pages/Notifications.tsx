@@ -9,6 +9,7 @@ type Page = { items: Notice[]; total: number; has_more: boolean }
 // Administrator alerts carry no review to open, so they route by what they are about.
 const adminDestination: Record<string, { to: string; label: string }> = {
   JOB_QUEUE_STALLED: { to: '/admin/jobs', label: '작업 큐 열기' },
+  JOB_FAILED: { to: '/admin/jobs', label: '작업 큐 열기' },
   AUDIT_CHAIN_BROKEN: { to: '/admin/audit', label: '감사로그 열기' },
 }
 type EventInfo = { code: string; label: string; description: string }

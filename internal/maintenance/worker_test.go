@@ -404,3 +404,67 @@ func TestRemindersFindSomebodyWhoCanStillAct(t *testing.T) {
 		t.Errorf("the reminder does not say why it was redirected: %s", body)
 	}
 }
+
+// A stalled queue is visible as a backlog. A job that has spent all of its
+// retries leaves nothing behind at all -- the queue reads as empty because the
+// work was given up on, which is exactly what a wrong SMTP password looks like
+// from the administrator's side.
+func TestAdministratorsAreAlertedWhenJobsRunOutOfRetries(t *testing.T) {
+	db := testdb.New(t)
+	ctx := context.Background()
+	adminID := testdb.Bootstrap(t, db, "failure-watcher")
+	if _, err := db.Pool.Exec(ctx, `INSERT INTO user_roles(user_id,role_code) VALUES($1,'SYSTEM_ADMIN') ON CONFLICT DO NOTHING`, adminID); err != nil {
+		t.Fatal(err)
+	}
+	worker := maintenance.New(db, nil)
+	failed := func() int64 {
+		t.Helper()
+		var n int64
+		if err := db.Pool.QueryRow(ctx, `SELECT count(*) FROM notifications WHERE recipient_id=$1 AND event_type='JOB_FAILED'`, adminID).Scan(&n); err != nil {
+			t.Fatal(err)
+		}
+		return n
+	}
+
+	// A job still working through its retries is not a failure yet.
+	if _, err := db.Pool.Exec(ctx, `INSERT INTO jobs(id,type,status,attempts,available_at) VALUES($1,'SEND_EMAIL','PENDING',3,now()+interval '4 minutes')`, store.NewID()); err != nil {
+		t.Fatal(err)
+	}
+	worker.Sweep(ctx)
+	if n := failed(); n != 0 {
+		t.Fatalf("a job that is still retrying raised %d failure alerts", n)
+	}
+
+	if _, err := db.Pool.Exec(ctx, `INSERT INTO jobs(id,type,status,attempts,last_error,available_at) VALUES($1,'SEND_EMAIL','FAILED',5,'535 5.7.8 authentication failed',now())`, store.NewID()); err != nil {
+		t.Fatal(err)
+	}
+	worker.Sweep(ctx)
+	if n := failed(); n != 1 {
+		t.Fatalf("failure alerts = %d, want 1", n)
+	}
+	var body string
+	if err := db.Pool.QueryRow(ctx, `SELECT body FROM notifications WHERE event_type='JOB_FAILED'`).Scan(&body); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(body, "authentication failed") {
+		t.Errorf("the alert does not carry the error an administrator would act on: %s", body)
+	}
+
+	// A queue that stays broken must not refill the inbox on every sweep.
+	worker.Sweep(ctx)
+	if n := failed(); n != 1 {
+		t.Errorf("a second sweep during the same outage raised the count to %d", n)
+	}
+
+	// Nothing new having failed since is not worth another alert either.
+	if _, err := db.Pool.Exec(ctx, `UPDATE jobs SET updated_at=now()-interval '30 days' WHERE status='FAILED'`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Pool.Exec(ctx, `DELETE FROM notifications WHERE event_type='JOB_FAILED'`); err != nil {
+		t.Fatal(err)
+	}
+	worker.Sweep(ctx)
+	if n := failed(); n != 0 {
+		t.Errorf("an old failure nobody can act on raised %d alerts", n)
+	}
+}
