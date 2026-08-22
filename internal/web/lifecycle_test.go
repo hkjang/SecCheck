@@ -139,3 +139,122 @@ func TestAReviewGoesFromDraftToApproved(t *testing.T) {
 		t.Errorf("the audit chain does not verify after a full lifecycle: %v", chain)
 	}
 }
+
+// The other half of a review's purpose. Rejection has more branches than
+// approval: a reviewer can reject outright when there is no sign-off step,
+// and an approver can reject what a reviewer passed. Closing is what takes a
+// finished review off the reviewer's desk, and only the assigned reviewer may
+// do it.
+func TestAReviewCanBeRejectedAndClosed(t *testing.T) {
+	h := newHarness(t)
+	admin := h.login(adminOf(h))
+	ctx := context.Background()
+
+	requesterID := h.user("reject-requester", "REQUESTER")
+	reviewerID := h.user("reject-reviewer", "SECURITY_REVIEWER")
+	approverID := h.user("reject-approver", "APPROVER")
+	requester := h.login("reject-requester")
+	reviewer := h.login("reject-reviewer")
+	approver := h.login("reject-approver")
+	_ = requesterID
+
+	status := func(id string) string {
+		t.Helper()
+		var s string
+		if err := h.db.Pool.QueryRow(ctx, `SELECT status FROM review_requests WHERE id=$1`, id).Scan(&s); err != nil {
+			t.Fatal(err)
+		}
+		return s
+	}
+	submitted := func(name string) string {
+		t.Helper()
+		id := requester.createReview(name)
+		items := []map[string]any{}
+		if err := json.Unmarshal([]byte(requester.do(http.MethodGet, "/api/v1/review-requests/"+id+"/items", nil).body), &items); err != nil {
+			t.Fatal(err)
+		}
+		ids := make([]string, 0, len(items))
+		for _, item := range items {
+			ids = append(ids, item["id"].(string))
+		}
+		if _, err := h.db.Pool.Exec(ctx, `UPDATE review_requests SET reviewer_id=$2,approver_id=$3 WHERE id=$1`, id, reviewerID, approverID); err != nil {
+			t.Fatal(err)
+		}
+		if res := requester.do(http.MethodPost, "/api/v1/review-requests/"+id+"/responses/bulk",
+			map[string]any{"item_ids": ids, "applicability": "N/A", "na_reason": "해당 없음", "self_assessment": "N/A"}); res.status != http.StatusOK {
+			t.Fatalf("bulk answer: %d %s", res.status, res.body)
+		}
+		if res := requester.do(http.MethodPost, "/api/v1/review-requests/"+id+"/submit", map[string]any{}); res.status != http.StatusOK {
+			t.Fatalf("submit: %d %s", res.status, res.body)
+		}
+		if res := reviewer.do(http.MethodPost, "/api/v1/review-requests/"+id+"/begin-review", map[string]any{}); res.status != http.StatusOK {
+			t.Fatalf("begin review: %d %s", res.status, res.body)
+		}
+		// Completing a review -- approving or rejecting -- requires a verdict
+		// on every item, so that a rejection is still a record of what was
+		// examined rather than an opinion about the whole thing.
+		if res := reviewer.do(http.MethodPost, "/api/v1/review-requests/"+id+"/review-results/bulk",
+			map[string]any{"item_ids": ids, "result": "NON_COMPLIANT", "opinion": "요건 미충족"}); res.status != http.StatusOK {
+			t.Fatalf("bulk judgement: %d %s", res.status, res.body)
+		}
+		return id
+	}
+
+	// Without a sign-off step the reviewer's verdict is final.
+	direct := submitted("반려 서비스 (승인 절차 없음)")
+	if res := reviewer.do(http.MethodPost, "/api/v1/review-requests/"+direct+"/complete-review",
+		map[string]any{"final_opinion": "요건 미충족", "final_result": "REJECTED"}); res.status != http.StatusOK {
+		t.Fatalf("rejecting: %d %s", res.status, res.body)
+	}
+	if got := status(direct); got != "REJECTED" {
+		t.Fatalf("a rejected review is %s, want REJECTED", got)
+	}
+
+	// Only the reviewer it was assigned to may close it.
+	if res := requester.do(http.MethodPost, "/api/v1/review-requests/"+direct+"/close", map[string]any{}); res.status == http.StatusOK {
+		t.Error("the requester closed a review that was not theirs to close")
+	}
+	if res := reviewer.do(http.MethodPost, "/api/v1/review-requests/"+direct+"/close", map[string]any{}); res.status != http.StatusOK {
+		t.Fatalf("closing: %d %s", res.status, res.body)
+	}
+	if got := status(direct); got != "CLOSED" {
+		t.Errorf("the closed review is %s", got)
+	}
+
+	// With the sign-off step the approver can reject what the reviewer passed.
+	if _, err := h.db.Pool.Exec(ctx, `UPDATE settings SET value_json = value_json || '{"approval_enabled":true}'::jsonb WHERE key='workflow'`); err != nil {
+		t.Fatal(err)
+	}
+	escalated := submitted("반려 서비스 (승인 절차 있음)")
+	if res := reviewer.do(http.MethodPost, "/api/v1/review-requests/"+escalated+"/complete-review",
+		map[string]any{"final_opinion": "적합", "final_result": "APPROVED"}); res.status != http.StatusOK {
+		t.Fatalf("completing: %d %s", res.status, res.body)
+	}
+	if got := status(escalated); got != "APPROVAL_PENDING" {
+		t.Fatalf("with sign-off enabled the review is %s", got)
+	}
+	if res := approver.do(http.MethodPost, "/api/v1/review-requests/"+escalated+"/reject", map[string]string{"comment": "추가 통제 필요"}); res.status != http.StatusOK {
+		t.Fatalf("approver rejection: %d %s", res.status, res.body)
+	}
+	if got := status(escalated); got != "REJECTED" {
+		t.Errorf("after the approver rejected it the review is %s", got)
+	}
+	var finalResult string
+	if err := h.db.Pool.QueryRow(ctx, `SELECT COALESCE(final_result,'') FROM review_requests WHERE id=$1`, escalated).Scan(&finalResult); err != nil {
+		t.Fatal(err)
+	}
+	if finalResult != "REJECTED" {
+		t.Errorf("the reviewer's APPROVED verdict survived the rejection: final_result=%s", finalResult)
+	}
+	var decisions int
+	if err := h.db.Pool.QueryRow(ctx, `SELECT count(*) FROM approvals WHERE review_request_id=$1 AND decision='REJECTED'`, escalated).Scan(&decisions); err != nil {
+		t.Fatal(err)
+	}
+	if decisions != 1 {
+		t.Errorf("the rejection left %d decision records", decisions)
+	}
+	chain := admin.do(http.MethodGet, "/api/v1/admin/audit/verify?full=1", nil).json()
+	if valid, _ := chain["valid"].(bool); !valid {
+		t.Errorf("the audit chain does not verify after rejections: %v", chain)
+	}
+}
