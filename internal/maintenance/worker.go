@@ -241,8 +241,11 @@ func (w *Worker) purgeDeletedEvidence(ctx context.Context) int64 {
 	if cfg.Days < 1 || cfg.Days > 36500 {
 		cfg.Days = 90
 	}
-	rows, err := w.Store.Pool.Query(ctx, `SELECT ev.id,ev.evidence_id,ev.stored_filename FROM evidence_versions ev
+	rows, err := w.Store.Pool.Query(ctx, `SELECT ev.id,ev.evidence_id,ev.stored_filename,ev.version,e.original_filename,e.sha256,COALESCE(sub.review_request_id,'')
+                FROM evidence_versions ev
                 JOIN evidences e ON e.id=ev.evidence_id
+                LEFT JOIN submission_items si ON si.id=e.submission_item_id
+                LEFT JOIN submissions sub ON sub.id=si.submission_id
                 WHERE e.deleted_at IS NOT NULL AND e.deleted_at < now()-make_interval(days=>$1)
                   AND ev.purged_at IS NULL
                 ORDER BY e.deleted_at LIMIT 2000`, cfg.Days)
@@ -250,11 +253,14 @@ func (w *Worker) purgeDeletedEvidence(ctx context.Context) int64 {
 		w.Store.Log(ctx, "ERROR", "", "maintenance", "evidence purge query failed", map[string]any{"error": err.Error()})
 		return 0
 	}
-	type blob struct{ versionID, evidenceID, stored string }
+	type blob struct {
+		versionID, evidenceID, stored, filename, digest, reviewID string
+		version                                                   int
+	}
 	var blobs []blob
 	for rows.Next() {
 		var b blob
-		if rows.Scan(&b.versionID, &b.evidenceID, &b.stored) == nil {
+		if rows.Scan(&b.versionID, &b.evidenceID, &b.stored, &b.version, &b.filename, &b.digest, &b.reviewID) == nil {
 			blobs = append(blobs, b)
 		}
 	}
@@ -272,6 +278,12 @@ func (w *Worker) purgeDeletedEvidence(ctx context.Context) int64 {
 		if _, err := w.Store.Pool.Exec(ctx, `UPDATE evidence_versions SET purged_at=now() WHERE id=$1`, b.versionID); err != nil {
 			continue
 		}
+		// Destroying the only copy of a piece of evidence belongs in the
+		// tamper-evident record, not only in the application log -- which the
+		// same retention sweep deletes, so the account of the destruction
+		// would expire along with it.
+		_ = w.Store.Audit(ctx, store.AuditEvent{UserName: "system", EventType: "PURGE_EVIDENCE", TargetType: "EVIDENCE", TargetID: b.evidenceID,
+			After: map[string]any{"filename": b.filename, "version": b.version, "sha256": b.digest, "review_request_id": b.reviewID, "retention_days": cfg.Days}})
 		purged++
 		touched[b.evidenceID] = true
 	}

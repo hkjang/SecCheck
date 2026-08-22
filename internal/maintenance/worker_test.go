@@ -149,9 +149,32 @@ func TestDeletedEvidenceBlobsArePurgedButMetadataSurvives(t *testing.T) {
 	if purged == nil {
 		t.Error("the evidence row was not marked as purged")
 	}
+	// Destroying the only copy of a piece of evidence has to reach the
+	// tamper-evident record. The application log is deleted by this same
+	// retention sweep, so an account kept only there expires with it.
+	var events int
+	var after string
+	if err = db.Pool.QueryRow(ctx, `SELECT count(*),COALESCE(max(after_value::text),'') FROM audit_logs WHERE event_type='PURGE_EVIDENCE' AND target_id=$1`, old.id).Scan(&events, &after); err != nil {
+		t.Fatal(err)
+	}
+	if events != 1 {
+		t.Fatalf("the purge left %d audit events", events)
+	}
+	for _, want := range []string{filename, sha, "retention_days"} {
+		if !strings.Contains(after, want) {
+			t.Errorf("the audit event does not record %q: %s", want, after)
+		}
+	}
+
 	// Running again must be a no-op rather than re-counting the same rows.
 	if again := maintenance.New(db, blobs).Sweep(ctx); again["purged_evidence_files"] != 0 {
 		t.Errorf("a second sweep purged %v files again", again["purged_evidence_files"])
+	}
+	if err = db.Pool.QueryRow(ctx, `SELECT count(*) FROM audit_logs WHERE event_type='PURGE_EVIDENCE'`).Scan(&events); err != nil {
+		t.Fatal(err)
+	}
+	if events != 1 {
+		t.Errorf("a second sweep recorded the same purge again: %d events", events)
 	}
 }
 
