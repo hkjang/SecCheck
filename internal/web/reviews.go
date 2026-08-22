@@ -1247,6 +1247,13 @@ func (s *Server) saveReviewResult(w http.ResponseWriter, r *http.Request) {
 		problem(w, 422, "VALIDATION_FAILED", "검토 결과를 선택하세요.", nil)
 		return
 	}
+	// An action with no date is chased by nothing: the reminder worker only
+	// looks at dated ones, and the register can never call it overdue. A
+	// commitment made in a verdict has to say when it is due.
+	if strings.TrimSpace(in.FollowUp) != "" && strings.TrimSpace(in.FollowUpDueDate) == "" {
+		problem(w, 422, "FOLLOW_UP_DUE_REQUIRED", "후속조치에는 조치 기한이 필요합니다. 기한이 없으면 알림도 지연 판정도 동작하지 않습니다.", map[string]string{"follow_up_due_date": "필수 입력 항목입니다."})
+		return
+	}
 	// Two reviewers can hold the same review open, so the same protection the
 	// author side has applies here.
 	if conflict, ok := s.reviewResultConflict(r, itemID, in.ExpectedUpdatedAt); ok {

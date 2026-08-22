@@ -106,7 +106,7 @@ function FollowUpTable({ rows, includeDone, onToggleScope, onChanged }: { rows: 
           ? <><Badge tone="green">이행 확인</Badge><div className="subtle">{String(row.done_on)} · {String(row.done_by)}</div>{row.follow_up_note ? <div className="subtle">{String(row.follow_up_note)}</div> : null}</>
           : row.reported_on
             ? <><Badge tone="blue">조치 보고됨</Badge><div className="subtle">{String(row.reported_on)} · {String(row.reported_by)}</div>{row.follow_up_note ? <div className="subtle">{String(row.follow_up_note)}</div> : null}</>
-            : row.overdue ? <><Badge tone="red">기한 초과</Badge><div className="subtle">{String(row.due_on)}까지</div></> : <Badge tone="amber">미조치</Badge>}</td>
+            : row.overdue ? <><Badge tone="red">기한 초과</Badge><div className="subtle">{String(row.due_on)}까지</div></> : <><Badge tone="amber">미조치</Badge>{!row.due_on && <div className="subtle">기한 없음 · 알림이 가지 않습니다</div>}</>}</td>
         <td>{row.done_on
           ? <Button small disabled={busy === String(row.id)} onClick={() => mark(row, false)}>해제</Button>
           : <Button small variant="primary" disabled={busy === String(row.id)} onClick={() => { setClosing(row); setNote('') }}><Check size={13} /> {row.reported_on ? '이행 확인' : '이행 확인'}</Button>}</td>

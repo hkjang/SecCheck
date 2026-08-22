@@ -3316,3 +3316,47 @@ func TestTheSimulatorNamesRulesThatCanNeverMatch(t *testing.T) {
 		t.Errorf("the sound item was not assigned to a matching profile: %v", sane)
 	}
 }
+
+// A follow-up with no date is chased by nothing: the reminder worker only
+// looks at dated ones and the register can never call it overdue, so the
+// commitment sits in the record with nobody pushing it.
+func TestAFollowUpHasToSayWhenItIsDue(t *testing.T) {
+	h := newHarness(t)
+	admin := h.login(adminOf(h))
+	ctx := context.Background()
+	h.user("due-requester", "REQUESTER")
+	author := h.login("due-requester")
+	reviewID := author.createReview("기한 필수 서비스")
+	items := []map[string]any{}
+	if err := json.Unmarshal([]byte(author.do(http.MethodGet, "/api/v1/review-requests/"+reviewID+"/items", nil).body), &items); err != nil {
+		t.Fatal(err)
+	}
+	itemID := items[0]["id"].(string)
+	var adminID string
+	if err := h.db.Pool.QueryRow(ctx, `SELECT id FROM users WHERE username='integration-admin'`).Scan(&adminID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := h.db.Pool.Exec(ctx, `UPDATE review_requests SET reviewer_id=$2,status='REVIEWING' WHERE id=$1`, reviewID, adminID); err != nil {
+		t.Fatal(err)
+	}
+	path := "/api/v1/review-requests/" + reviewID + "/review-results/" + itemID
+
+	undated := admin.do(http.MethodPut, path, map[string]any{"result": "CONDITIONAL", "opinion": "조건부", "follow_up": "3개월 내 보완", "follow_up_due_date": "", "expected_updated_at": ""})
+	if undated.status != http.StatusUnprocessableEntity || undated.errorCode() != "FOLLOW_UP_DUE_REQUIRED" {
+		t.Errorf("a follow-up with no deadline was accepted: %d %s", undated.status, undated.body)
+	}
+	// A verdict without any action does not need a date.
+	if res := admin.do(http.MethodPut, path, map[string]any{"result": "COMPLIANT", "opinion": "적합", "follow_up": "", "follow_up_due_date": "", "expected_updated_at": ""}); res.status != http.StatusOK {
+		t.Fatalf("a verdict with no action was refused: %d %s", res.status, res.body)
+	}
+	if res := admin.do(http.MethodPut, path, map[string]any{"result": "CONDITIONAL", "opinion": "조건부", "follow_up": "3개월 내 보완", "follow_up_due_date": "2030-01-31", "expected_updated_at": ""}); res.status != http.StatusOK {
+		t.Fatalf("a dated follow-up was refused: %d %s", res.status, res.body)
+	}
+	var due *string
+	if err := h.db.Pool.QueryRow(ctx, `SELECT follow_up_due_date::text FROM review_results rr JOIN submission_items si ON si.id=rr.submission_item_id WHERE si.id=$1`, itemID).Scan(&due); err != nil {
+		t.Fatal(err)
+	}
+	if due == nil || *due != "2030-01-31" {
+		t.Errorf("the deadline was not stored: %v", due)
+	}
+}
