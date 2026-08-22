@@ -263,7 +263,7 @@ func (s *Server) dashboard(w http.ResponseWriter, r *http.Request) {
 		analytics["unassigned"] = unassigned
 		analytics["long_pending"] = longPending
 	}
-	jsonResponse(w, 200, map[string]any{"status_counts": counts, "opening_soon": overdue, "open_change_requests": openChanges, "security_analytics": analytics, "my_queue": s.myQueue(r), "due_soon": s.dueChangeRequests(r)})
+	jsonResponse(w, 200, map[string]any{"status_counts": counts, "opening_soon": overdue, "open_change_requests": openChanges, "security_analytics": analytics, "my_queue": s.myQueue(r), "due_soon": s.dueChangeRequests(r), "my_follow_ups": s.myFollowUps(r)})
 }
 
 // myQueue lists the reviews that are actually waiting on the signed-in person,
@@ -287,6 +287,33 @@ func (s *Server) myQueue(r *http.Request) []map[string]any {
 
 // dueChangeRequests surfaces the change requests whose due date has passed or
 // is about to. The due date was previously captured and then never used.
+// myFollowUps is the requester's side of the register. The report that
+// collects outstanding actions is for the security team; the people who
+// actually carry them out cannot open it, so their own commitments were
+// visible only one review at a time.
+func (s *Server) myFollowUps(r *http.Request) []map[string]any {
+	sess := session(r)
+	where, args := accessFilter(sess, 1)
+	if hasAnyRole(sess.User, "SECURITY_REVIEWER", "SYSTEM_ADMIN", "AUDITOR") {
+		where = "TRUE"
+		args = nil
+	}
+	rows, err := s.Store.Pool.Query(r.Context(), `SELECT rr.id,review_requests.id AS review_id,review_requests.review_number,review_requests.service_name,si.item_code,si.title,
+                rr.follow_up,to_char(rr.follow_up_due_date,'YYYY-MM-DD') AS due_date,
+                (rr.follow_up_due_date IS NOT NULL AND rr.follow_up_due_date < current_date) AS overdue,
+                (rr.follow_up_reported_at IS NOT NULL) AS reported
+                FROM review_results rr
+                JOIN submission_items si ON si.id=rr.submission_item_id
+                JOIN submissions sub ON sub.id=si.submission_id
+                JOIN review_requests ON review_requests.id=sub.review_request_id
+                WHERE btrim(rr.follow_up)<>'' AND rr.follow_up_done_at IS NULL AND `+where+`
+                ORDER BY rr.follow_up_due_date NULLS LAST,review_requests.review_number LIMIT 12`, args...)
+	if err != nil {
+		return []map[string]any{}
+	}
+	return scanDynamic(rows, []string{"id", "review_id", "review_number", "service_name", "item_code", "title", "follow_up", "due_date", "overdue", "reported"})
+}
+
 func (s *Server) dueChangeRequests(r *http.Request) []map[string]any {
 	sess := session(r)
 	where, args := accessFilter(sess, 1)

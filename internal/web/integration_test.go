@@ -2612,3 +2612,57 @@ func TestAReviewCarriesItsDatesAndEvidenceOwners(t *testing.T) {
 		t.Error("the evidence does not say who attached it")
 	}
 }
+
+// The register that collects outstanding actions is for the security team;
+// a requester cannot open the report at all, so their own commitments were
+// visible one review at a time and nowhere together.
+func TestTheDashboardShowsARequesterTheirOwnActions(t *testing.T) {
+	h := newHarness(t)
+	admin := h.login(adminOf(h))
+	ctx := context.Background()
+	h.user("action-owner", "REQUESTER")
+	owner := h.login("action-owner")
+	reviewID := owner.createReview("내 조치 서비스")
+	items := []map[string]any{}
+	if err := json.Unmarshal([]byte(owner.do(http.MethodGet, "/api/v1/review-requests/"+reviewID+"/items", nil).body), &items); err != nil {
+		t.Fatal(err)
+	}
+	var adminID string
+	if err := h.db.Pool.QueryRow(ctx, `SELECT id FROM users WHERE username='integration-admin'`).Scan(&adminID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := h.db.Pool.Exec(ctx, `UPDATE review_requests SET reviewer_id=$2,status='REVIEWING' WHERE id=$1`, reviewID, adminID); err != nil {
+		t.Fatal(err)
+	}
+	if res := admin.do(http.MethodPut, "/api/v1/review-requests/"+reviewID+"/review-results/"+items[0]["id"].(string),
+		map[string]any{"result": "CONDITIONAL", "opinion": "조건부", "follow_up": "로그 보존 기간 연장", "follow_up_due_date": "2020-03-01", "expected_updated_at": ""}); res.status != http.StatusOK {
+		t.Fatalf("recording the action: %d %s", res.status, res.body)
+	}
+
+	// The report is closed to a requester, so the dashboard has to carry it.
+	if res := owner.do(http.MethodGet, "/api/v1/reports/reviews", nil); res.status != http.StatusForbidden {
+		t.Fatalf("a requester reached the report: %d", res.status)
+	}
+	board := owner.do(http.MethodGet, "/api/v1/dashboard", nil).json()
+	actions, _ := board["my_follow_ups"].([]any)
+	if len(actions) != 1 {
+		t.Fatalf("the dashboard lists %d actions for their owner: %v", len(actions), board["my_follow_ups"])
+	}
+	entry, _ := actions[0].(map[string]any)
+	if got, _ := entry["follow_up"].(string); got != "로그 보존 기간 연장" {
+		t.Errorf("the action reads %q", got)
+	}
+	if overdue, _ := entry["overdue"].(bool); !overdue {
+		t.Error("an action past its date is not marked late on the dashboard")
+	}
+	if number, _ := entry["review_number"].(string); number == "" {
+		t.Error("the dashboard entry does not name its review")
+	}
+
+	// Somebody with no part in the review sees none of it.
+	h.user("unrelated-requester", "REQUESTER")
+	other := h.login("unrelated-requester").do(http.MethodGet, "/api/v1/dashboard", nil).json()
+	if list, _ := other["my_follow_ups"].([]any); len(list) != 0 {
+		t.Errorf("an unrelated person sees %d of somebody else's actions", len(list))
+	}
+}
