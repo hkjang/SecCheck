@@ -88,6 +88,31 @@ func (w *Worker) Run(ctx context.Context) {
 // sendDigests delivers one summary per recipient who asked for a daily digest
 // instead of a message per event. It runs at most once per person per day,
 // after the configured hour in the server's local time.
+type digestRecipient struct{ id, email string }
+
+// "Once a day" means once a calendar day where the reader lives. Measuring the
+// day in the container's UTC clock sent a second digest as soon as UTC rolled
+// over, which for a zone ahead of UTC falls in the middle of the reader's
+// working day -- two identical summaries, hours apart.
+func (w *Worker) digestRecipients(ctx context.Context, zone string, at time.Time) ([]digestRecipient, error) {
+	rows, err := w.Store.Pool.Query(ctx, `SELECT p.user_id,u.email FROM notification_preferences p JOIN users u ON u.id=p.user_id
+                WHERE p.digest='DAILY' AND p.email_enabled AND u.active AND u.email<>''
+                  AND (p.digest_sent_at IS NULL OR p.digest_sent_at < date_trunc('day', $2::timestamptz AT TIME ZONE $1) AT TIME ZONE $1)
+                  AND EXISTS(SELECT 1 FROM notifications n WHERE n.recipient_id=p.user_id AND n.emailed_at IS NULL)`, zone, at)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var recipients []digestRecipient
+	for rows.Next() {
+		var rec digestRecipient
+		if rows.Scan(&rec.id, &rec.email) == nil {
+			recipients = append(recipients, rec)
+		}
+	}
+	return recipients, rows.Err()
+}
+
 func (w *Worker) sendDigests(ctx context.Context) {
 	var cfg emailSettings
 	encrypted, err := w.Store.Setting(ctx, "notification", &cfg)
@@ -99,7 +124,9 @@ func (w *Worker) sendDigests(ctx context.Context) {
 	}
 	// The container almost always runs UTC, so an administrator asking for
 	// 08:00 means 08:00 in the configured display zone, not in the container's.
-	if time.Now().In(w.Store.Location(ctx)).Hour() < cfg.DigestHour {
+	zone := w.Store.Location(ctx)
+	now := time.Now()
+	if now.In(zone).Hour() < cfg.DigestHour {
 		return
 	}
 	if encrypted != "" {
@@ -109,22 +136,10 @@ func (w *Worker) sendDigests(ctx context.Context) {
 		}
 		cfg.Password = string(plain)
 	}
-	rows, err := w.Store.Pool.Query(ctx, `SELECT p.user_id,u.email FROM notification_preferences p JOIN users u ON u.id=p.user_id
-                WHERE p.digest='DAILY' AND p.email_enabled AND u.active AND u.email<>''
-                  AND (p.digest_sent_at IS NULL OR p.digest_sent_at < date_trunc('day', now()))
-                  AND EXISTS(SELECT 1 FROM notifications n WHERE n.recipient_id=p.user_id AND n.emailed_at IS NULL)`)
+	recipients, err := w.digestRecipients(ctx, zone.String(), now)
 	if err != nil {
 		return
 	}
-	type recipient struct{ id, email string }
-	var recipients []recipient
-	for rows.Next() {
-		var rec recipient
-		if rows.Scan(&rec.id, &rec.email) == nil {
-			recipients = append(recipients, rec)
-		}
-	}
-	rows.Close()
 
 	for _, rec := range recipients {
 		// The identifiers are carried through so that exactly what was sent is

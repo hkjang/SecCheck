@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/hkjang/SecCheck/internal/store"
 	"github.com/hkjang/SecCheck/internal/testdb"
@@ -22,7 +23,7 @@ func digestWorker(t *testing.T) (*Worker, *store.Store, string) {
                 ON CONFLICT(user_id) DO UPDATE SET email_enabled=true,digest='DAILY',digest_sent_at=NULL`, userID); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := db.Pool.Exec(ctx, `UPDATE settings SET value_json = value_json || '{"email_enabled":true,"smtp_host":"smtp.internal","smtp_port":25,"smtp_from":"seccheck@example.internal"}'::jsonb WHERE key='notification'`); err != nil {
+	if _, err := db.Pool.Exec(ctx, `UPDATE settings SET value_json = value_json || '{"email_enabled":true,"smtp_host":"smtp.internal","smtp_port":25,"smtp_from":"seccheck@example.internal","digest_hour":0}'::jsonb WHERE key='notification'`); err != nil {
 		t.Fatal(err)
 	}
 	return &Worker{Store: db}, db, userID
@@ -92,5 +93,45 @@ func TestAFailedDigestMarksNothing(t *testing.T) {
 	}
 	if at != nil {
 		t.Error("an undelivered digest marked its notifications as sent")
+	}
+}
+
+// The daily digest is due once per calendar day where the reader lives. The
+// eligibility check measured the day in the container's UTC clock, so a reader
+// in a zone ahead of UTC who had already been sent the 08:00 digest became
+// eligible again the moment UTC rolled over -- 09:00 for them, same day, same
+// summary.
+func TestADigestIsDueOncePerLocalDay(t *testing.T) {
+	worker, db, userID := digestWorker(t)
+	ctx := context.Background()
+	addNotification(t, db, userID, "알림")
+	if _, err := db.Pool.Exec(ctx, `UPDATE settings SET value_json = value_json || '{"timezone":"Asia/Seoul"}'::jsonb WHERE key='general'`); err != nil {
+		t.Fatal(err)
+	}
+
+	seoul, err := time.LoadLocation("Asia/Seoul")
+	if err != nil {
+		t.Skipf("no timezone database on this host: %v", err)
+	}
+	// 08:10 and 09:30 on the same Seoul day, with UTC midnight in between.
+	sent := time.Date(2026, 8, 22, 8, 10, 0, 0, seoul)
+	later := time.Date(2026, 8, 22, 9, 30, 0, 0, seoul)
+	if _, err := db.Pool.Exec(ctx, `UPDATE notification_preferences SET digest_sent_at=$2 WHERE user_id=$1`, userID, sent); err != nil {
+		t.Fatal(err)
+	}
+	due, err := worker.digestRecipients(ctx, "Asia/Seoul", later)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(due) != 0 {
+		t.Errorf("a second digest was due %v after the first, on the same local day", later.Sub(sent))
+	}
+
+	nextMorning := time.Date(2026, 8, 23, 8, 0, 0, 0, seoul)
+	if due, err = worker.digestRecipients(ctx, "Asia/Seoul", nextMorning); err != nil {
+		t.Fatal(err)
+	}
+	if len(due) != 1 {
+		t.Errorf("the next day's digest was not due: %d recipients", len(due))
 	}
 }

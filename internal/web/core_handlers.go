@@ -155,15 +155,20 @@ func (s *Server) me(w http.ResponseWriter, r *http.Request) {
 }
 func (s *Server) updateMe(w http.ResponseWriter, r *http.Request) {
 	var in struct {
-		DisplayName string `json:"display_name"`
-		Email       string `json:"email"`
-		Department  string `json:"department"`
+		DisplayName *string `json:"display_name"`
+		Email       *string `json:"email"`
+		Department  *string `json:"department"`
 	}
 	if !decodeJSON(w, r, &in) {
 		return
 	}
+	name, email, department := trimmedPatch(in.DisplayName), trimmedPatch(in.Email), trimmedPatch(in.Department)
+	if blankedOut(name) {
+		problem(w, 422, "VALIDATION_FAILED", "표시 이름은 비울 수 없습니다.", nil)
+		return
+	}
 	sess := session(r)
-	_, err := s.Store.Pool.Exec(r.Context(), `UPDATE users SET display_name=$2,email=$3,department=$4,updated_at=now() WHERE id=$1`, sess.User.ID, strings.TrimSpace(in.DisplayName), strings.TrimSpace(in.Email), strings.TrimSpace(in.Department))
+	_, err := s.Store.Pool.Exec(r.Context(), `UPDATE users SET display_name=COALESCE($2::text,display_name),email=COALESCE($3::text,email),department=COALESCE($4::text,department),updated_at=now() WHERE id=$1`, sess.User.ID, name, email, department)
 	if err != nil {
 		s.fault(w, r, "UPDATE_FAILED", "프로필을 저장하지 못했습니다.", err)
 		return

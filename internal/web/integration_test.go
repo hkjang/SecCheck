@@ -2832,3 +2832,78 @@ func TestChecklistItemEditsAreRecordedByWhatTheyDid(t *testing.T) {
 		t.Errorf("the removal does not name the item: %s", removed)
 	}
 }
+
+// PATCH keeps what the caller left out. The profile and Security Control
+// endpoints used to overwrite every column from the body, so changing one
+// field through the API cleared the others.
+func TestPartialUpdatesKeepTheFieldsTheCallerLeftOut(t *testing.T) {
+	h := newHarness(t)
+	admin := h.login(adminOf(h))
+	ctx := context.Background()
+
+	if res := admin.do(http.MethodPatch, "/api/v1/me", map[string]any{"display_name": "김보안", "email": "sec@example.com", "department": "정보보호팀"}); res.status >= 300 {
+		t.Fatalf("filling in the profile: %d %s", res.status, res.body)
+	}
+	if res := admin.do(http.MethodPatch, "/api/v1/me", map[string]any{"department": "플랫폼팀"}); res.status >= 300 {
+		t.Fatalf("changing only the department: %d %s", res.status, res.body)
+	}
+	profile := admin.do(http.MethodGet, "/api/v1/me", nil).json()
+	user, _ := profile["user"].(map[string]any)
+	if user == nil {
+		user = profile
+	}
+	if user["display_name"] != "김보안" || user["email"] != "sec@example.com" {
+		t.Errorf("changing the department erased the rest of the profile: %v", user)
+	}
+	if user["department"] != "플랫폼팀" {
+		t.Errorf("the department was not saved: %v", user)
+	}
+	if res := admin.do(http.MethodPatch, "/api/v1/me", map[string]any{"display_name": "  "}); res.status != http.StatusUnprocessableEntity {
+		t.Errorf("an empty display name was accepted: %d %s", res.status, res.body)
+	}
+
+	tmpl := admin.do(http.MethodPost, "/api/v1/templates", map[string]any{"name": "폐기 예정 템플릿", "category": "DEVELOPMENT", "description": "설명", "version": "V1"})
+	if tmpl.status != http.StatusCreated {
+		t.Fatalf("creating a template: %d %s", tmpl.status, tmpl.body)
+	}
+	tmplID, _ := tmpl.json()["id"].(string)
+	if res := admin.do(http.MethodPatch, "/api/v1/templates/"+tmplID, map[string]any{"active": false}); res.status >= 300 {
+		t.Fatalf("retiring the template: %d %s", res.status, res.body)
+	}
+	if res := admin.do(http.MethodPatch, "/api/v1/templates/"+tmplID, map[string]any{"name": "폐기 템플릿"}); res.status >= 300 {
+		t.Fatalf("renaming the template: %d %s", res.status, res.body)
+	}
+	var active bool
+	var templateName, templateDescription string
+	if err := h.db.Pool.QueryRow(ctx, `SELECT active,name,description FROM checklist_templates WHERE id=$1`, tmplID).Scan(&active, &templateName, &templateDescription); err != nil {
+		t.Fatal(err)
+	}
+	if active {
+		t.Error("renaming a retired template put it back in use")
+	}
+	if templateName != "폐기 템플릿" || templateDescription != "설명" {
+		t.Errorf("the rename lost the description: name=%q description=%q", templateName, templateDescription)
+	}
+
+	created := admin.do(http.MethodPost, "/api/v1/security-controls", map[string]any{"code": "AC-1", "title": "접근 통제", "description": "계정과 권한을 관리한다."})
+	if created.status != http.StatusCreated {
+		t.Fatalf("creating a Control: %d %s", created.status, created.body)
+	}
+	controlID, _ := created.json()["id"].(string)
+	if res := admin.do(http.MethodPatch, "/api/v1/security-controls/"+controlID, map[string]any{"title": "접근 통제 (개정)"}); res.status != http.StatusNoContent {
+		t.Fatalf("renaming the Control: %d %s", res.status, res.body)
+	}
+	var code, title, description string
+	if err := h.db.Pool.QueryRow(ctx, `SELECT code,title,description FROM security_controls WHERE id=$1`, controlID).Scan(&code, &title, &description); err != nil {
+		t.Fatal(err)
+	}
+	if title != "접근 통제 (개정)" {
+		t.Errorf("the rename did not take: %q", title)
+	}
+	if code != "AC-1" || description != "계정과 권한을 관리한다." {
+		t.Errorf("renaming the Control erased the rest of it: code=%q description=%q", code, description)
+	}
+	if res := admin.do(http.MethodPatch, "/api/v1/security-controls/"+controlID, map[string]any{"code": "bad code"}); res.status != http.StatusUnprocessableEntity {
+		t.Errorf("an invalid code was accepted: %d %s", res.status, res.body)
+	}
+}

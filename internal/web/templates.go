@@ -104,17 +104,21 @@ func (s *Server) getTemplate(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) updateTemplate(w http.ResponseWriter, r *http.Request) {
 	var in struct {
-		Name, Description string
-		Active            *bool
+		Name        *string `json:"name"`
+		Description *string `json:"description"`
+		Active      *bool   `json:"active"`
 	}
 	if !decodeJSON(w, r, &in) {
 		return
 	}
-	active := true
-	if in.Active != nil {
-		active = *in.Active
+	name := trimmedPatch(in.Name)
+	if blankedOut(name) {
+		problem(w, 422, "VALIDATION_FAILED", "템플릿 이름은 비울 수 없습니다.", nil)
+		return
 	}
-	tag, err := s.Store.Pool.Exec(r.Context(), `UPDATE checklist_templates SET name=COALESCE(NULLIF($2,''),name),description=$3,active=$4,updated_at=now() WHERE id=$1`, r.PathValue("id"), in.Name, in.Description, active)
+	// `active` used to default to true when the body left it out, so renaming a
+	// retired template quietly put it back in front of every requester.
+	tag, err := s.Store.Pool.Exec(r.Context(), `UPDATE checklist_templates SET name=COALESCE($2::text,name),description=COALESCE($3::text,description),active=COALESCE($4::bool,active),updated_at=now() WHERE id=$1`, r.PathValue("id"), name, in.Description, in.Active)
 	if err != nil || tag.RowsAffected() == 0 {
 		problem(w, 404, "NOT_FOUND", "템플릿을 찾을 수 없습니다.", nil)
 		return
@@ -353,6 +357,16 @@ func patchedValue(v *string, fallback string) *string {
 }
 
 func blankedOut(v *string) bool { return v != nil && strings.TrimSpace(*v) == "" }
+
+// A field the caller did not send stays nil, so the update leaves the stored
+// value alone; one that was sent is trimmed before it is stored.
+func trimmedPatch(v *string) *string {
+	if v == nil {
+		return nil
+	}
+	trimmed := strings.TrimSpace(*v)
+	return &trimmed
+}
 
 func (s *Server) createTemplateItem(w http.ResponseWriter, r *http.Request) {
 	var in itemInput

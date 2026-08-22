@@ -74,16 +74,41 @@ func (s *Server) createControl(w http.ResponseWriter, r *http.Request) {
 	jsonResponse(w, 201, map[string]string{"id": id})
 }
 
+// The same body shape as a create, except that a field left out keeps the
+// value the Control already has -- the route is a PATCH, and an admin who
+// renames a Control should not lose its description with it.
+type controlPatch struct {
+	Code        *string `json:"code"`
+	Title       *string `json:"title"`
+	Description *string `json:"description"`
+	OwnerID     *string `json:"owner_id"`
+}
+
+func normalizeControlPatch(in *controlPatch) bool {
+	in.Code, in.Title, in.Description, in.OwnerID = trimmedPatch(in.Code), trimmedPatch(in.Title), trimmedPatch(in.Description), trimmedPatch(in.OwnerID)
+	if in.Code != nil {
+		upper := strings.ToUpper(*in.Code)
+		in.Code = &upper
+		if !controlCodePattern.MatchString(upper) {
+			return false
+		}
+	}
+	if in.Title != nil && (*in.Title == "" || len([]rune(*in.Title)) > 300) {
+		return false
+	}
+	return in.Description == nil || len([]rune(*in.Description)) <= 4000
+}
+
 func (s *Server) updateControl(w http.ResponseWriter, r *http.Request) {
-	var in controlInput
+	var in controlPatch
 	if !decodeJSON(w, r, &in) {
 		return
 	}
-	if !normalizeControlInput(&in) {
+	if !normalizeControlPatch(&in) {
 		problem(w, 422, "VALIDATION_FAILED", "Control 코드, 제목 및 길이를 확인하세요.", nil)
 		return
 	}
-	tag, err := s.Store.Pool.Exec(r.Context(), `UPDATE security_controls SET code=$2,title=$3,description=$4,owner_id=NULLIF($5,''),updated_at=now() WHERE id=$1`, r.PathValue("id"), in.Code, in.Title, in.Description, in.OwnerID)
+	tag, err := s.Store.Pool.Exec(r.Context(), `UPDATE security_controls SET code=COALESCE($2::text,code),title=COALESCE($3::text,title),description=COALESCE($4::text,description),owner_id=CASE WHEN $5::bool THEN NULLIF($6::text,'') ELSE owner_id END,updated_at=now() WHERE id=$1`, r.PathValue("id"), in.Code, in.Title, in.Description, in.OwnerID != nil, in.OwnerID)
 	if err != nil || tag.RowsAffected() == 0 {
 		problem(w, 409, "UPDATE_FAILED", "Control을 저장하지 못했습니다.", nil)
 		return
