@@ -29,6 +29,15 @@ func digestWorker(t *testing.T) (*Worker, *store.Store, string) {
 	return &Worker{Store: db}, db, userID
 }
 
+func addEvent(t *testing.T, db *store.Store, userID, event, title string) string {
+	t.Helper()
+	id := store.NewID()
+	if _, err := db.Pool.Exec(context.Background(), `INSERT INTO notifications(id,recipient_id,event_type,title,body) VALUES($1,$2,$3,$4,'본문')`, id, userID, event, title); err != nil {
+		t.Fatal(err)
+	}
+	return id
+}
+
 func addNotification(t *testing.T, db *store.Store, userID, title string) string {
 	t.Helper()
 	id := store.NewID()
@@ -133,5 +142,65 @@ func TestADigestIsDueOncePerLocalDay(t *testing.T) {
 	}
 	if len(due) != 1 {
 		t.Errorf("the next day's digest was not due: %d recipients", len(due))
+	}
+}
+
+// Muting an event stopped the immediate mail but not the daily summary, so a
+// reader who had asked not to hear about comments was sent every one of them
+// once a day instead.
+func TestADigestLeavesOutMutedEvents(t *testing.T) {
+	worker, db, userID := digestWorker(t)
+	ctx := context.Background()
+	if _, err := db.Pool.Exec(ctx, `UPDATE notification_preferences SET muted_events=ARRAY['COMMENT_ADDED'] WHERE user_id=$1`, userID); err != nil {
+		t.Fatal(err)
+	}
+	muted := addEvent(t, db, userID, "COMMENT_ADDED", "코멘트 알림")
+	wanted := addEvent(t, db, userID, "CHANGE_REQUEST", "보완 요청 알림")
+
+	var delivered string
+	worker.Sender = func(_ context.Context, _ emailSettings, _, subject, body string) error {
+		delivered = subject + "\n" + body
+		return nil
+	}
+	worker.sendDigests(ctx)
+
+	if !strings.Contains(delivered, "보완 요청 알림") {
+		t.Fatalf("the digest did not carry the event the reader still wants: %s", delivered)
+	}
+	if strings.Contains(delivered, "코멘트 알림") {
+		t.Error("the digest carried an event the reader muted")
+	}
+	emailed := func(id string) bool {
+		t.Helper()
+		var at *string
+		if err := db.Pool.QueryRow(ctx, `SELECT emailed_at::text FROM notifications WHERE id=$1`, id).Scan(&at); err != nil {
+			t.Fatal(err)
+		}
+		return at != nil
+	}
+	if !emailed(wanted) {
+		t.Error("the delivered notification was not marked as sent")
+	}
+	if emailed(muted) {
+		t.Error("a muted notification was marked as e-mailed without being sent")
+	}
+}
+
+// Nothing to send is not a reason to send an empty summary.
+func TestADigestIsNotSentWhenEverythingIsMuted(t *testing.T) {
+	worker, db, userID := digestWorker(t)
+	ctx := context.Background()
+	if _, err := db.Pool.Exec(ctx, `UPDATE notification_preferences SET muted_events=ARRAY['COMMENT_ADDED'] WHERE user_id=$1`, userID); err != nil {
+		t.Fatal(err)
+	}
+	addEvent(t, db, userID, "COMMENT_ADDED", "코멘트 알림")
+	sent := 0
+	worker.Sender = func(_ context.Context, _ emailSettings, _, _, _ string) error {
+		sent++
+		return nil
+	}
+	worker.sendDigests(ctx)
+	if sent != 0 {
+		t.Errorf("%d digests went out with nothing in them", sent)
 	}
 }

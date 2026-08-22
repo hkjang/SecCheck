@@ -88,17 +88,24 @@ func (w *Worker) Run(ctx context.Context) {
 // sendDigests delivers one summary per recipient who asked for a daily digest
 // instead of a message per event. It runs at most once per person per day,
 // after the configured hour in the server's local time.
-type digestRecipient struct{ id, email string }
+type digestRecipient struct {
+	id, email string
+	muted     []string
+}
 
 // "Once a day" means once a calendar day where the reader lives. Measuring the
 // day in the container's UTC clock sent a second digest as soon as UTC rolled
 // over, which for a zone ahead of UTC falls in the middle of the reader's
 // working day -- two identical summaries, hours apart.
 func (w *Worker) digestRecipients(ctx context.Context, zone string, at time.Time) ([]digestRecipient, error) {
-	rows, err := w.Store.Pool.Query(ctx, `SELECT p.user_id,u.email FROM notification_preferences p JOIN users u ON u.id=p.user_id
+	// A muted event stays out of the digest as well. Muting only kept an
+	// immediate mail from going out, so a reader on the daily summary was
+	// still sent every type they had asked not to hear about.
+	rows, err := w.Store.Pool.Query(ctx, `SELECT p.user_id,u.email,COALESCE(p.muted_events,'{}') FROM notification_preferences p JOIN users u ON u.id=p.user_id
                 WHERE p.digest='DAILY' AND p.email_enabled AND u.active AND u.email<>''
                   AND (p.digest_sent_at IS NULL OR p.digest_sent_at < date_trunc('day', $2::timestamptz AT TIME ZONE $1) AT TIME ZONE $1)
-                  AND EXISTS(SELECT 1 FROM notifications n WHERE n.recipient_id=p.user_id AND n.emailed_at IS NULL)`, zone, at)
+                  AND EXISTS(SELECT 1 FROM notifications n WHERE n.recipient_id=p.user_id AND n.emailed_at IS NULL
+                                AND n.event_type <> ALL(COALESCE(p.muted_events,'{}')))`, zone, at)
 	if err != nil {
 		return nil, err
 	}
@@ -106,7 +113,7 @@ func (w *Worker) digestRecipients(ctx context.Context, zone string, at time.Time
 	var recipients []digestRecipient
 	for rows.Next() {
 		var rec digestRecipient
-		if rows.Scan(&rec.id, &rec.email) == nil {
+		if rows.Scan(&rec.id, &rec.email, &rec.muted) == nil {
 			recipients = append(recipients, rec)
 		}
 	}
@@ -146,7 +153,7 @@ func (w *Worker) sendDigests(ctx context.Context) {
 		// marked as sent. Marking every unsent notification instead swallowed
 		// anything that arrived while the digest was being delivered: it was
 		// stamped as emailed without ever appearing in one.
-		items, err := w.Store.Pool.Query(ctx, `SELECT id,title,body,created_at FROM notifications WHERE recipient_id=$1 AND emailed_at IS NULL ORDER BY created_at LIMIT 200`, rec.id)
+		items, err := w.Store.Pool.Query(ctx, `SELECT id,title,body,created_at FROM notifications WHERE recipient_id=$1 AND emailed_at IS NULL AND event_type <> ALL($2::text[]) ORDER BY created_at LIMIT 200`, rec.id, rec.muted)
 		if err != nil {
 			continue
 		}
