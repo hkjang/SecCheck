@@ -249,7 +249,7 @@ func (s *Server) dashboard(w http.ResponseWriter, r *http.Request) {
 	}
 	var overdue int
 	args2 := append([]any{}, args...)
-	_ = s.Store.Pool.QueryRow(r.Context(), `SELECT count(*) FROM review_requests WHERE `+where+` AND planned_open_date BETWEEN current_date AND current_date+14`, args2...).Scan(&overdue)
+	_ = s.Store.Pool.QueryRow(r.Context(), `SELECT count(*) FROM review_requests WHERE `+where+` AND planned_open_date BETWEEN display_today() AND display_today()+14`, args2...).Scan(&overdue)
 	var openChanges int
 	_ = s.Store.Pool.QueryRow(r.Context(), `SELECT count(*) FROM change_requests c JOIN review_requests r ON r.id=c.review_request_id WHERE `+strings.ReplaceAll(where, "review_requests.", "r.")+` AND c.status='OPEN'`, args...).Scan(&openChanges)
 	analytics := map[string]any{}
@@ -305,7 +305,7 @@ func (s *Server) myFollowUps(r *http.Request) []map[string]any {
 	}
 	rows, err := s.Store.Pool.Query(r.Context(), `SELECT rr.id,review_requests.id AS review_id,review_requests.review_number,review_requests.service_name,si.item_code,si.title,
                 rr.follow_up,to_char(rr.follow_up_due_date,'YYYY-MM-DD') AS due_date,
-                (rr.follow_up_due_date IS NOT NULL AND rr.follow_up_due_date < current_date) AS overdue,
+                (rr.follow_up_due_date IS NOT NULL AND rr.follow_up_due_date < display_today()) AS overdue,
                 (rr.follow_up_reported_at IS NOT NULL) AS reported
                 FROM review_results rr
                 JOIN submission_items si ON si.id=rr.submission_item_id
@@ -326,11 +326,11 @@ func (s *Server) dueChangeRequests(r *http.Request) []map[string]any {
 		where = "TRUE"
 		args = nil
 	}
-	rows, err := s.Store.Pool.Query(r.Context(), `SELECT c.id,c.review_request_id,review_requests.review_number,review_requests.service_name,si.item_code,si.title,c.due_date,c.status,(c.due_date < current_date) AS overdue
+	rows, err := s.Store.Pool.Query(r.Context(), `SELECT c.id,c.review_request_id,review_requests.review_number,review_requests.service_name,si.item_code,si.title,c.due_date,c.status,(c.due_date < display_today()) AS overdue
                 FROM change_requests c
                 JOIN review_requests ON review_requests.id=c.review_request_id
                 JOIN submission_items si ON si.id=c.submission_item_id
-                WHERE c.status<>'VERIFIED' AND c.due_date IS NOT NULL AND c.due_date <= current_date+7 AND `+where+`
+                WHERE c.status<>'VERIFIED' AND c.due_date IS NOT NULL AND c.due_date <= display_today()+7 AND `+where+`
                 ORDER BY c.due_date ASC LIMIT 12`, args...)
 	if err != nil {
 		return []map[string]any{}

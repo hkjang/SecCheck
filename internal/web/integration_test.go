@@ -2907,3 +2907,68 @@ func TestPartialUpdatesKeepTheFieldsTheCallerLeftOut(t *testing.T) {
 		t.Errorf("an invalid code was accepted: %d %s", res.status, res.body)
 	}
 }
+
+// "Overdue" is a statement about the calendar the installation displays. It
+// was decided in the container's UTC clock, so with the default Asia/Seoul
+// display zone an action that ran out at midnight was still reported as on
+// time until nine in the morning.
+func TestOverdueIsDecidedInTheDisplayTimezone(t *testing.T) {
+	h := newHarness(t)
+	admin := h.login(adminOf(h))
+	ctx := context.Background()
+	h.user("overdue-requester", "REQUESTER")
+	author := h.login("overdue-requester")
+	reviewID := author.createReview("기한 판정 서비스")
+	items := []map[string]any{}
+	if err := json.Unmarshal([]byte(author.do(http.MethodGet, "/api/v1/review-requests/"+reviewID+"/items", nil).body), &items); err != nil {
+		t.Fatal(err)
+	}
+	itemID := items[0]["id"].(string)
+	var adminID string
+	if err := h.db.Pool.QueryRow(ctx, `SELECT id FROM users WHERE username='integration-admin'`).Scan(&adminID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := h.db.Pool.Exec(ctx, `UPDATE review_requests SET reviewer_id=$2,status='REVIEWING' WHERE id=$1`, reviewID, adminID); err != nil {
+		t.Fatal(err)
+	}
+	// Due on the day it is now in Midway, which is yesterday or the day before
+	// in Kiritimati -- the two zones are 25 hours apart and never share a date.
+	var due string
+	if err := h.db.Pool.QueryRow(ctx, `SELECT (now() AT TIME ZONE 'Pacific/Midway')::date::text`).Scan(&due); err != nil {
+		t.Fatal(err)
+	}
+	if res := admin.do(http.MethodPut, "/api/v1/review-requests/"+reviewID+"/review-results/"+itemID,
+		map[string]any{"result": "CONDITIONAL", "opinion": "기한 확인", "follow_up": "기한 내 보완", "follow_up_due_date": due, "expected_updated_at": ""}); res.status != http.StatusOK {
+		t.Fatalf("recording the verdict: %d %s", res.status, res.body)
+	}
+	if _, err := h.db.Pool.Exec(ctx, `UPDATE review_requests SET status='APPROVED',approved_at=now() WHERE id=$1`, reviewID); err != nil {
+		t.Fatal(err)
+	}
+
+	overdue := func(zone string) bool {
+		t.Helper()
+		if _, err := h.db.Pool.Exec(ctx, `UPDATE settings SET value_json = jsonb_set(value_json,'{timezone}',to_jsonb($1::text)) WHERE key='general'`, zone); err != nil {
+			t.Fatal(err)
+		}
+		res := admin.do(http.MethodGet, "/api/v1/reports/reviews?from=2000-01-01&to=2099-12-31", nil)
+		if res.status != http.StatusOK {
+			t.Fatalf("reading the register in %s: %d %s", zone, res.status, res.body)
+		}
+		rows, _ := res.json()["follow_ups"].([]any)
+		for _, raw := range rows {
+			row, _ := raw.(map[string]any)
+			if row != nil && row["due_on"] == due {
+				flag, _ := row["overdue"].(bool)
+				return flag
+			}
+		}
+		t.Fatalf("the action is missing from the register in %s: %s", zone, res.body)
+		return false
+	}
+	if overdue("Pacific/Midway") {
+		t.Error("an action due today was reported as overdue")
+	}
+	if !overdue("Pacific/Kiritimati") {
+		t.Error("an action whose date has passed where the installation lives was reported as on time")
+	}
+}

@@ -161,7 +161,7 @@ func (w *Worker) remindDueFollowUps(ctx context.Context) int64 {
                   SELECT rr.id FROM review_results rr
                   WHERE btrim(rr.follow_up)<>'' AND rr.follow_up_done_at IS NULL
                     AND rr.follow_up_due_date IS NOT NULL
-                    AND rr.follow_up_due_date <= current_date+7
+                    AND rr.follow_up_due_date <= display_today()+7
                     AND (rr.follow_up_reminded_at IS NULL OR rr.follow_up_reminded_at < now()-interval '7 days')
                   LIMIT 200)
                 RETURNING id,submission_item_id,follow_up,follow_up_due_date`)
@@ -306,7 +306,7 @@ func (w *Worker) remindDueChangeRequests(ctx context.Context) int64 {
                 WHERE id IN (
                   SELECT c.id FROM change_requests c
                   WHERE c.status<>'VERIFIED' AND c.due_date IS NOT NULL
-                    AND c.due_date <= current_date+2
+                    AND c.due_date <= display_today()+2
                     AND (c.reminded_at IS NULL OR c.reminded_at < now()-interval '3 days')
                   LIMIT 200)
                 RETURNING id,review_request_id,COALESCE(assignee_id,requester_id),due_date`)

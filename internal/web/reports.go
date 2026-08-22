@@ -146,7 +146,7 @@ func (s *Server) buildReport(r *http.Request, scope reportScope) (reportData, er
 	if data.FollowUps, err = s.reportRows(ctx, `SELECT rr.id,r.review_number,r.service_name,r.department,si.item_code,si.title,rr.result,rr.follow_up,
                 to_char(COALESCE(r.approved_at,r.updated_at),'YYYY-MM-DD') AS decided_on,
                 to_char(rr.follow_up_due_date,'YYYY-MM-DD') AS due_on,
-                (rr.follow_up_done_at IS NULL AND rr.follow_up_due_date IS NOT NULL AND rr.follow_up_due_date < current_date) AS overdue,
+                (rr.follow_up_done_at IS NULL AND rr.follow_up_due_date IS NOT NULL AND rr.follow_up_due_date < display_today()) AS overdue,
                 to_char(rr.follow_up_reported_at,'YYYY-MM-DD') AS reported_on,
                 COALESCE(ru.display_name,'') AS reported_by,
                 to_char(rr.follow_up_done_at,'YYYY-MM-DD') AS done_on,

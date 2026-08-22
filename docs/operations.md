@@ -275,6 +275,7 @@ docker compose exec seccheck /app/seccheck selftest --username admin --password 
 | 007 | 참여자 역할과 검사 상세 |
 | 008 | 감사로그 대상 인덱스 |
 | 009~012 | 후속조치 이행·기한·알림·보고 |
+| 013 | 기한 판정 기준일 함수 `display_today()` (표시 시간대 기준) |
 
 ## 업그레이드와 롤백
 

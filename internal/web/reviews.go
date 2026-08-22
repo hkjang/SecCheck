@@ -96,7 +96,7 @@ func (s *Server) reviewFilter(r *http.Request) (string, []any) {
 		add("review_requests.created_at < $%d::date + 1", v)
 	}
 	if strings.TrimSpace(query.Get("overdue")) == "1" {
-		where += " AND EXISTS(SELECT 1 FROM change_requests oc WHERE oc.review_request_id=review_requests.id AND oc.status<>'VERIFIED' AND oc.due_date < current_date)"
+		where += " AND EXISTS(SELECT 1 FROM change_requests oc WHERE oc.review_request_id=review_requests.id AND oc.status<>'VERIFIED' AND oc.due_date < display_today())"
 	}
 	if v := strings.TrimSpace(query.Get("mine")); v != "" {
 		where += " AND " + myTurnClause(sess, len(args)+1)
@@ -108,7 +108,7 @@ func (s *Server) reviewFilter(r *http.Request) (string, []any) {
 const reviewSelect = `SELECT review_requests.id,review_number,service_name,service_type,change_type,review_requests.department,review_requests.status,planned_open_date,requester_id,reviewer_id,approver_id,
         requester.display_name,COALESCE(reviewer.display_name,''),
         (SELECT count(*) FROM change_requests c WHERE c.review_request_id=review_requests.id AND c.status<>'VERIFIED'),
-        (SELECT count(*) FROM change_requests c WHERE c.review_request_id=review_requests.id AND c.status<>'VERIFIED' AND c.due_date < current_date),
+        (SELECT count(*) FROM change_requests c WHERE c.review_request_id=review_requests.id AND c.status<>'VERIFIED' AND c.due_date < display_today()),
         review_requests.created_at,review_requests.updated_at
         FROM review_requests JOIN users requester ON requester.id=review_requests.requester_id LEFT JOIN users reviewer ON reviewer.id=review_requests.reviewer_id WHERE `
 
