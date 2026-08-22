@@ -627,3 +627,58 @@ func TestTheSideHoldingAReviewIsReminded(t *testing.T) {
 		t.Errorf("a review that has moved on was reported again: %d notices", len(again))
 	}
 }
+
+// A queue nobody is working on must not produce one message per reviewer per
+// review. That is a flood, and a flood teaches people to ignore the alert.
+func TestUnclaimedReviewsAreGatheredIntoOneReminder(t *testing.T) {
+	db := testdb.New(t)
+	ctx := context.Background()
+	requester := testdb.Bootstrap(t, db, "flood-requester")
+	worker := maintenance.New(db, nil)
+	exec := func(sql string, args ...any) {
+		t.Helper()
+		if _, err := db.Pool.Exec(ctx, sql, args...); err != nil {
+			t.Fatalf("%s: %v", sql, err)
+		}
+	}
+	var reviewers []string
+	for _, name := range []string{"flood-reviewer-1", "flood-reviewer-2"} {
+		id := store.NewID()
+		exec(`INSERT INTO users(id,username,display_name,auth_source,active) VALUES($1,$2,$2,'local',true)`, id, name)
+		exec(`INSERT INTO user_roles(user_id,role_code) VALUES($1,'SECURITY_REVIEWER')`, id)
+		reviewers = append(reviewers, id)
+	}
+	for i, age := range []int{4, 6, 9, 12} {
+		exec(`INSERT INTO review_requests(id,review_number,service_name,description,service_type,change_type,builder_id,developer_id,department,requester_id,exposure,status,updated_at)
+                      VALUES($1,$2,'s','d','WEB','NEW',$3,$3,'보안팀',$3,'INTERNAL','SUBMITTED',now()-make_interval(days=>$4))`,
+			store.NewID(), fmt.Sprintf("SR-OPEN-%d", i), requester, age)
+	}
+
+	worker.Sweep(ctx)
+	for _, reviewer := range reviewers {
+		var bodies []string
+		rows, err := db.Pool.Query(ctx, `SELECT body FROM notifications WHERE recipient_id=$1 AND event_type='REVIEW_STALLED'`, reviewer)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for rows.Next() {
+			var body string
+			if rows.Scan(&body) == nil {
+				bodies = append(bodies, body)
+			}
+		}
+		rows.Close()
+		if len(bodies) != 1 {
+			t.Fatalf("a reviewer received %d messages about four unclaimed reviews, want 1: %v", len(bodies), bodies)
+		}
+		if !strings.Contains(bodies[0], "4건") {
+			t.Errorf("the reminder does not say how many are waiting: %s", bodies[0])
+		}
+		if !strings.Contains(bodies[0], "12일째") {
+			t.Errorf("the reminder does not say how long the oldest has waited: %s", bodies[0])
+		}
+		if !strings.Contains(bodies[0], "외 1건") {
+			t.Errorf("the reminder does not account for the ones it did not name: %s", bodies[0])
+		}
+	}
+}

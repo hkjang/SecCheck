@@ -285,6 +285,11 @@ func (w *Worker) remindDueFollowUps(ctx context.Context) int64 {
 	return sent
 }
 
+type stalled struct {
+	id, number, service, status, reviewer, approver string
+	since                                           time.Time
+}
+
 // remindStalledReviews tells whoever the review is waiting on. Reminders were
 // only ever aimed at the requester side -- change request due, follow-up due --
 // so a review submitted and never picked up, started and left, or sitting for a
@@ -304,10 +309,6 @@ func (w *Worker) remindStalledReviews(ctx context.Context) int64 {
 		w.Store.Log(ctx, "ERROR", "", "maintenance", "stalled review query failed", map[string]any{"error": err.Error()})
 		return 0
 	}
-	type stalled struct {
-		id, number, service, status, reviewer, approver string
-		since                                           time.Time
-	}
 	var pending []stalled
 	for rows.Next() {
 		var item stalled
@@ -318,6 +319,7 @@ func (w *Worker) remindStalledReviews(ctx context.Context) int64 {
 	rows.Close()
 
 	var sent int64
+	var unclaimed []stalled
 	for _, item := range pending {
 		days := int(time.Since(item.since).Hours() / 24)
 		waiting := map[string]string{
@@ -327,26 +329,59 @@ func (w *Worker) remindStalledReviews(ctx context.Context) int64 {
 			"APPROVAL_PENDING": "최종 승인을 기다리고 있습니다",
 		}[item.status]
 		body := fmt.Sprintf("%s(%s)가 %d일째 %s. 담당하신 건을 확인해 주세요.", item.number, item.service, days, waiting)
-		// Whoever the state says owns it. An unassigned queue item belongs to
-		// the reviewers as a group, which is who would otherwise never hear.
-		var recipients []string
+		// Whoever the state says owns it gets their own reminder, because it
+		// is their review. A review nobody has taken belongs to the reviewers
+		// as a group and is gathered below: one reminder each per sweep, not
+		// one per reviewer per review, which for a neglected queue would be a
+		// flood that teaches people to ignore the alert.
+		recipient := ""
 		if item.status == "APPROVAL_PENDING" {
-			if approver, _ := w.activeRecipient(ctx, item.approver, item.reviewer); approver != "" {
-				recipients = []string{approver}
-			}
-		} else if reviewer, _ := w.activeRecipient(ctx, item.reviewer); reviewer != "" {
-			recipients = []string{reviewer}
+			recipient, _ = w.activeRecipient(ctx, item.approver, item.reviewer)
 		} else {
-			recipients = w.securityReviewers(ctx)
+			recipient, _ = w.activeRecipient(ctx, item.reviewer)
 		}
-		if len(recipients) == 0 {
-			w.Store.Log(ctx, "WARN", "", "maintenance", "정체된 심의를 알릴 활성 담당자가 없습니다.", map[string]any{"review_number": item.number, "status": item.status})
+		if recipient == "" {
+			unclaimed = append(unclaimed, item)
 			continue
 		}
-		for _, recipient := range recipients {
-			if err = w.Store.Notify(ctx, recipient, "REVIEW_STALLED", "심의가 멈춰 있습니다", body, "REVIEW_REQUEST", item.id); err == nil {
-				sent++
-			}
+		if err = w.Store.Notify(ctx, recipient, "REVIEW_STALLED", "심의가 멈춰 있습니다", body, "REVIEW_REQUEST", item.id); err == nil {
+			sent++
+		}
+	}
+	return sent + w.remindUnclaimedReviews(ctx, unclaimed)
+}
+
+// remindUnclaimedReviews tells the reviewers, once, about everything waiting
+// with no owner. It names the oldest few and counts the rest so the message
+// stays readable when the queue has been left for a while.
+func (w *Worker) remindUnclaimedReviews(ctx context.Context, waiting []stalled) int64 {
+	if len(waiting) == 0 {
+		return 0
+	}
+	reviewers := w.securityReviewers(ctx)
+	if len(reviewers) == 0 {
+		w.Store.Log(ctx, "WARN", "", "maintenance", "담당자 없는 심의가 밀려 있으나 알릴 활성 보안 담당자가 없습니다.", map[string]any{"reviews": len(waiting)})
+		return 0
+	}
+	oldest := waiting[0]
+	var named []string
+	for i, item := range waiting {
+		if item.since.Before(oldest.since) {
+			oldest = item
+		}
+		if i < 3 {
+			named = append(named, fmt.Sprintf("%s(%s)", item.number, item.service))
+		}
+	}
+	body := fmt.Sprintf("담당자가 지정되지 않은 심의 %d건이 3일 이상 대기 중입니다: %s", len(waiting), strings.Join(named, ", "))
+	if len(waiting) > len(named) {
+		body += fmt.Sprintf(" 외 %d건", len(waiting)-len(named))
+	}
+	body += fmt.Sprintf(". 가장 오래된 건은 %d일째입니다. 보안 검토 Queue에서 담당자를 지정하세요.", int(time.Since(oldest.since).Hours()/24))
+	var sent int64
+	for _, reviewer := range reviewers {
+		if err := w.Store.Notify(ctx, reviewer, "REVIEW_STALLED", "담당자 없는 심의가 대기 중입니다", body, "REVIEW_REQUEST", oldest.id); err == nil {
+			sent++
 		}
 	}
 	return sent
