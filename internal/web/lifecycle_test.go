@@ -1,9 +1,13 @@
 package web_test
 
 import (
+	"archive/zip"
+	"bytes"
 	"context"
 	"encoding/json"
+	"io"
 	"net/http"
+	"strings"
 	"testing"
 )
 
@@ -118,9 +122,25 @@ func TestAReviewGoesFromDraftToApproved(t *testing.T) {
 		t.Fatalf("the final status is %s, want APPROVED", got)
 	}
 
-	// 8. What the review produced has to be readable and self-consistent.
-	if res := requester.do(http.MethodGet, "/api/v1/review-requests/"+reviewID+"/export/xlsx", nil); res.status != http.StatusOK {
-		t.Errorf("the completed review could not be exported: %d", res.status)
+	// 8. The workbook is what the organisation files, so it has to carry the
+	// decision -- not merely open. A draft's export was checked before; an
+	// approved one, which is the version anybody keeps, was not.
+	book := requester.do(http.MethodGet, "/api/v1/review-requests/"+reviewID+"/export/xlsx", nil)
+	if book.status != http.StatusOK {
+		t.Fatalf("the completed review could not be exported: %d", book.status)
+	}
+	text := workbookText(t, book.body)
+	var number string
+	if err := h.db.Pool.QueryRow(ctx, `SELECT review_number FROM review_requests WHERE id=$1`, reviewID).Scan(&number); err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{number, "생애주기 서비스", "최종 결과", "최종 의견", "적합", "항목별 결과", "검토결과"} {
+		if !strings.Contains(text, want) {
+			t.Errorf("the exported review does not carry %q", want)
+		}
+	}
+	if strings.Contains(text, "보완 요청 사유가 필요") {
+		t.Error("the export leaked a validation message")
 	}
 	var approvals, results int
 	if err := h.db.Pool.QueryRow(ctx, `SELECT (SELECT count(*) FROM approvals WHERE review_request_id=$1),
@@ -257,4 +277,32 @@ func TestAReviewCanBeRejectedAndClosed(t *testing.T) {
 	if valid, _ := chain["valid"].(bool); !valid {
 		t.Errorf("the audit chain does not verify after rejections: %v", chain)
 	}
+}
+
+// workbookText returns every string an xlsx carries, which is enough to say
+// whether a value reached the document without depending on where in the
+// sheet it landed.
+func workbookText(t *testing.T, body string) string {
+	t.Helper()
+	reader, err := zip.NewReader(bytes.NewReader([]byte(body)), int64(len(body)))
+	if err != nil {
+		t.Fatalf("the export is not a workbook: %v", err)
+	}
+	var out strings.Builder
+	for _, file := range reader.File {
+		if !strings.HasPrefix(file.Name, "xl/sharedStrings") && !strings.HasPrefix(file.Name, "xl/worksheets") && file.Name != "xl/workbook.xml" {
+			continue
+		}
+		rc, err := file.Open()
+		if err != nil {
+			t.Fatal(err)
+		}
+		content, err := io.ReadAll(rc)
+		rc.Close()
+		if err != nil {
+			t.Fatal(err)
+		}
+		out.Write(content)
+	}
+	return out.String()
 }
