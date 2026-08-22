@@ -17,6 +17,8 @@ import (
 	"strings"
 
 	"github.com/hkjang/SecCheck/internal/store"
+
+	"github.com/jackc/pgx/v5"
 )
 
 type uploadSettings struct {
@@ -60,6 +62,9 @@ func (s *Server) uploadEvidence(w http.ResponseWriter, r *http.Request) {
 			_, err = tx.Exec(r.Context(), `INSERT INTO evidence_versions(id,evidence_id,version,stored_filename,size_bytes,sha256,mime_type,key_owner_id,key_version,scan_status,uploaded_by) VALUES($1,$2,1,$3,$4,$5,$6,$7,$8,$9,$7)`, store.NewID(), id, stored, size, digest, upload.MIME, uid, version, upload.Scan)
 		}
 		if err == nil {
+			err = enqueueScan(r.Context(), tx, id, upload.Scan)
+		}
+		if err == nil {
 			err = tx.Commit(r.Context())
 		} else {
 			_ = tx.Rollback(r.Context())
@@ -70,7 +75,6 @@ func (s *Server) uploadEvidence(w http.ResponseWriter, r *http.Request) {
 		s.fault(w, r, "UPLOAD_FAILED", "증적 정보를 저장하지 못했습니다.", err)
 		return
 	}
-	s.enqueueScan(r.Context(), id, upload.Scan)
 	_ = s.Store.Audit(r.Context(), auditFrom(r, "UPLOAD_EVIDENCE", "EVIDENCE", id, nil, map[string]any{"filename": upload.Name, "size": size, "sha256": digest, "scan_status": upload.Scan}))
 	jsonResponse(w, 201, map[string]any{"id": id, "original_filename": upload.Name, "mime_type": upload.MIME, "size_bytes": size, "sha256": digest, "scan_status": upload.Scan, "version": 1})
 }
@@ -79,12 +83,22 @@ func (s *Server) uploadEvidence(w http.ResponseWriter, r *http.Request) {
 // upload no longer blocks on clamd. Until the scan reports CLEAN the evidence
 // cannot be downloaded and submission validation keeps rejecting it, so the
 // fail-closed guarantee is preserved.
-func (s *Server) enqueueScan(ctx context.Context, evidenceID, status string) {
+//
+// The job is written in the same transaction as the evidence. It used to be a
+// separate statement whose error was discarded, and losing it left the file
+// PENDING for good: not downloadable, blocking submission, and with no job in
+// the queue for an administrator to retry. Either both exist now, or the
+// upload fails and the ciphertext is removed.
+func enqueueScan(ctx context.Context, tx pgx.Tx, evidenceID, status string) error {
 	if status != scanPending {
-		return
+		return nil
 	}
-	payload, _ := json.Marshal(map[string]string{"evidence_id": evidenceID})
-	_, _ = s.Store.Pool.Exec(ctx, `INSERT INTO jobs(id,type,payload) VALUES($1,'SCAN_EVIDENCE',$2)`, store.NewID(), payload)
+	payload, err := json.Marshal(map[string]string{"evidence_id": evidenceID})
+	if err != nil {
+		return err
+	}
+	_, err = tx.Exec(ctx, `INSERT INTO jobs(id,type,payload) VALUES($1,'SCAN_EVIDENCE',$2)`, store.NewID(), payload)
+	return err
 }
 
 func (s *Server) newEvidenceVersion(w http.ResponseWriter, r *http.Request) {
@@ -121,6 +135,9 @@ func (s *Server) newEvidenceVersion(w http.ResponseWriter, r *http.Request) {
 			_, err = tx.Exec(r.Context(), `UPDATE evidences SET original_filename=$2,stored_filename=$3,mime_type=$4,size_bytes=$5,sha256=$6,uploaded_by=$7,key_owner_id=$7,key_version=$8,scan_status=$9,current_version=$10 WHERE id=$1`, id, upload.Name, stored, upload.MIME, size, digest, uid, keyVersion, upload.Scan, version)
 		}
 		if err == nil {
+			err = enqueueScan(r.Context(), tx, id, upload.Scan)
+		}
+		if err == nil {
 			err = tx.Commit(r.Context())
 		} else {
 			_ = tx.Rollback(r.Context())
@@ -131,7 +148,6 @@ func (s *Server) newEvidenceVersion(w http.ResponseWriter, r *http.Request) {
 		s.fault(w, r, "UPLOAD_FAILED", "새 증적 버전을 저장하지 못했습니다.", err)
 		return
 	}
-	s.enqueueScan(r.Context(), id, upload.Scan)
 	_ = s.Store.Audit(r.Context(), auditFrom(r, "UPLOAD_EVIDENCE_VERSION", "EVIDENCE", id, nil, map[string]any{"version": version, "filename": upload.Name, "sha256": digest}))
 	jsonResponse(w, 201, map[string]any{"id": id, "version": version, "scan_status": upload.Scan})
 }

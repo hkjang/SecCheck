@@ -2169,3 +2169,58 @@ func TestMetricsCountLostAuditEvents(t *testing.T) {
 		t.Errorf("after a lost event /metrics reports %s, want 1", got)
 	}
 }
+
+// The malware scan job is written with the evidence, not after it. Losing the
+// job used to leave the file PENDING for good: undownloadable, blocking
+// submission, and absent from the queue an administrator would retry from.
+func TestEvidenceAndItsScanJobAreWrittenTogether(t *testing.T) {
+	h := newHarness(t)
+	h.user("atomic-uploader", "REQUESTER")
+	uploader := h.login("atomic-uploader")
+	reviewID := uploader.createReview("원자성 확인")
+	items := []map[string]any{}
+	if err := json.Unmarshal([]byte(uploader.do(http.MethodGet, "/api/v1/review-requests/"+reviewID+"/items", nil).body), &items); err != nil {
+		t.Fatal(err)
+	}
+	itemID := items[0]["id"].(string)
+	path := fmt.Sprintf("/api/v1/review-requests/%s/items/%s/evidences", reviewID, itemID)
+	ctx := context.Background()
+	// A scan job only exists when scanning is switched on; with ClamAV off the
+	// upload is marked SKIPPED and needs nothing from the queue.
+	if _, err := h.db.Pool.Exec(ctx, `UPDATE settings SET value_json = value_json || '{"clamav_enabled":true}'::jsonb WHERE key='upload'`); err != nil {
+		t.Fatal(err)
+	}
+
+	res := uploader.upload(path, "정상.txt", "본문")
+	if res.status != http.StatusCreated {
+		t.Fatalf("upload returned %d %s", res.status, res.body)
+	}
+	evidenceID, _ := res.json()["id"].(string)
+	var queued int
+	if err := h.db.Pool.QueryRow(ctx, `SELECT count(*) FROM jobs WHERE type='SCAN_EVIDENCE' AND payload->>'evidence_id'=$1`, evidenceID).Scan(&queued); err != nil {
+		t.Fatal(err)
+	}
+	if queued != 1 {
+		t.Fatalf("the upload queued %d scan jobs, want 1", queued)
+	}
+
+	// With the queue unwritable the upload has to fail outright rather than
+	// storing a file nothing will ever clear.
+	if _, err := h.db.Pool.Exec(ctx, `ALTER TABLE jobs RENAME TO jobs_gone`); err != nil {
+		t.Fatal(err)
+	}
+	blocked := uploader.upload(path, "대기.txt", "본문")
+	if _, err := h.db.Pool.Exec(ctx, `ALTER TABLE jobs_gone RENAME TO jobs`); err != nil {
+		t.Fatal(err)
+	}
+	if blocked.status == http.StatusCreated {
+		t.Error("the upload succeeded while its scan job could not be queued")
+	}
+	var stranded int
+	if err := h.db.Pool.QueryRow(ctx, `SELECT count(*) FROM evidences WHERE submission_item_id=$1 AND original_filename='대기.txt'`, itemID).Scan(&stranded); err != nil {
+		t.Fatal(err)
+	}
+	if stranded != 0 {
+		t.Errorf("%d evidence rows survived without a scan job", stranded)
+	}
+}
