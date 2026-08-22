@@ -3360,3 +3360,43 @@ func TestAFollowUpHasToSayWhenItIsDue(t *testing.T) {
 		t.Errorf("the deadline was not stored: %v", due)
 	}
 }
+
+// A correction asked for without a date is asked for once: the reminder worker
+// only looks at dated change requests, and an undated one can never be counted
+// as overdue on the review list.
+func TestAChangeRequestHasToSayWhenItIsDue(t *testing.T) {
+	h := newHarness(t)
+	admin := h.login(adminOf(h))
+	ctx := context.Background()
+	h.user("change-due-requester", "REQUESTER")
+	author := h.login("change-due-requester")
+	reviewID := author.createReview("보완 기한 서비스")
+	items := []map[string]any{}
+	if err := json.Unmarshal([]byte(author.do(http.MethodGet, "/api/v1/review-requests/"+reviewID+"/items", nil).body), &items); err != nil {
+		t.Fatal(err)
+	}
+	itemID := items[0]["id"].(string)
+	var adminID string
+	if err := h.db.Pool.QueryRow(ctx, `SELECT id FROM users WHERE username='integration-admin'`).Scan(&adminID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := h.db.Pool.Exec(ctx, `UPDATE review_requests SET reviewer_id=$2,status='REVIEWING' WHERE id=$1`, reviewID, adminID); err != nil {
+		t.Fatal(err)
+	}
+	path := "/api/v1/review-requests/" + reviewID + "/change-requests"
+
+	undated := admin.do(http.MethodPost, path, map[string]any{"item_id": itemID, "reason": "증적을 보완하세요", "assignee_id": "", "due_date": ""})
+	if undated.status != http.StatusUnprocessableEntity || undated.errorCode() != "DUE_DATE_REQUIRED" {
+		t.Errorf("a change request with no deadline was accepted: %d %s", undated.status, undated.body)
+	}
+	var count int
+	if err := h.db.Pool.QueryRow(ctx, `SELECT count(*) FROM change_requests WHERE review_request_id=$1`, reviewID).Scan(&count); err != nil {
+		t.Fatal(err)
+	}
+	if count != 0 {
+		t.Errorf("the refused change request was written anyway: %d rows", count)
+	}
+	if res := admin.do(http.MethodPost, path, map[string]any{"item_id": itemID, "reason": "증적을 보완하세요", "assignee_id": "", "due_date": "2030-03-31"}); res.status != http.StatusCreated {
+		t.Fatalf("a dated change request was refused: %d %s", res.status, res.body)
+	}
+}

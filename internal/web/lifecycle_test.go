@@ -91,7 +91,7 @@ func TestAReviewGoesFromDraftToApproved(t *testing.T) {
 
 	// 4. One item needs more work, which sends the review back.
 	post(reviewer, "/api/v1/review-requests/"+reviewID+"/change-requests",
-		map[string]any{"item_id": ids[0], "reason": "증적을 보완하세요", "assignee_id": requesterID, "due_date": ""}, http.StatusCreated, "change request")
+		map[string]any{"item_id": ids[0], "reason": "증적을 보완하세요", "assignee_id": requesterID, "due_date": "2030-03-31"}, http.StatusCreated, "change request")
 	if got := status(reviewID); got != "CHANGE_REQUESTED" {
 		t.Fatalf("raising a change request left the review at %s", got)
 	}

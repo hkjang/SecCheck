@@ -1289,6 +1289,13 @@ func (s *Server) createChangeRequest(w http.ResponseWriter, r *http.Request) {
 		problem(w, 422, "VALIDATION_FAILED", "항목과 보완 사유가 필요합니다.", nil)
 		return
 	}
+	// Same reason a follow-up needs one: the reminder worker only looks at
+	// dated change requests, and an undated one can never be reported as
+	// overdue. A correction asked for without a date is asked for once.
+	if strings.TrimSpace(in.DueDate) == "" {
+		problem(w, 422, "DUE_DATE_REQUIRED", "보완 요청에는 완료 예정일이 필요합니다. 기한이 없으면 알림도 지연 판정도 동작하지 않습니다.", map[string]string{"due_date": "필수 입력 항목입니다."})
+		return
+	}
 	if !s.itemBelongsToLatestSubmission(r.Context(), in.ItemID, id) {
 		problem(w, 404, "NOT_FOUND", "현재 제출본의 검토 항목을 찾을 수 없습니다.", nil)
 		return
