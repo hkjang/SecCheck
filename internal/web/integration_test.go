@@ -2784,6 +2784,9 @@ func TestChecklistItemEditsAreRecordedByWhatTheyDid(t *testing.T) {
 		t.Fatal(err)
 	}
 	base := fmt.Sprintf("/api/v1/templates/%s/versions/%s/items", templateID, versionID)
+	if res := admin.do(http.MethodPost, base, map[string]any{"item_code": "A-0", "title": "오타 규칙", "question": "질문", "category": "DEVELOPMENT", "severity": "MEDIUM", "answer_type": "YNNA", "applicability_rule": map[string]any{"field": "exposuer", "operator": "eq", "value": "EXTERNAL"}}); res.status != http.StatusUnprocessableEntity {
+		t.Errorf("an item whose rule names a field that does not exist was accepted: %d %s", res.status, res.body)
+	}
 	item := admin.do(http.MethodPost, base, map[string]any{"item_code": "A-1", "title": "보안요건", "question": "질문", "category": "DEVELOPMENT", "severity": "MEDIUM", "answer_type": "YNNA", "required": true, "sort_order": 1})
 	if item.status != http.StatusCreated {
 		t.Fatalf("adding an item: %d %s", item.status, item.body)

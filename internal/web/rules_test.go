@@ -98,3 +98,53 @@ func TestImportReportExplainsWhatWillHappen(t *testing.T) {
 		t.Errorf("an unmapped column should be reported: %v", report.MissingFields)
 	}
 }
+
+// A rule that names a field the review form does not have can never match, so
+// the item it guards silently stops appearing in reviews. That is a security
+// requirement nobody is assessing and nobody was told about, and a typo is all
+// it takes -- so it is refused at the point it is written.
+func TestARuleCannotNameSomethingTheEngineWillNeverSee(t *testing.T) {
+	known := ruleVocabulary()
+	if len(known) < 10 || !known["exposure"] {
+		t.Fatalf("the rule vocabulary does not look like the review form: %v", known)
+	}
+	rule := func(body string) any {
+		t.Helper()
+		var node any
+		if err := json.Unmarshal([]byte(body), &node); err != nil {
+			t.Fatal(err)
+		}
+		return node
+	}
+	for _, accepted := range []string{
+		`{"field":"exposure","operator":"eq","value":"EXTERNAL"}`,
+		`{"field":"has_admin_page","operator":"exists","value":true}`,
+		`{"all":[{"field":"uses_cloud","operator":"eq","value":true},{"not":{"field":"internet_access","operator":"eq","value":false}}]}`,
+		`{"any":[{"field":"service_type","operator":"in","value":["WEB","APP"]}]}`,
+		`{"field":"business_criticality","value":"HIGH"}`,
+	} {
+		if err := checkedRule(rule(accepted)); err != nil {
+			t.Errorf("a rule the engine understands was refused: %s -- %v", accepted, err)
+		}
+	}
+	for _, refused := range []struct{ body, because string }{
+		{`{"field":"exposure_level","operator":"eq","value":"EXTERNAL"}`, "a field the form does not have"},
+		{`{"field":"exposure","operator":"matches","value":"EXTERNAL"}`, "an operator the engine does not have"},
+		{`{"operator":"eq","value":"EXTERNAL"}`, "no field at all"},
+		{`{"all":[]}`, "an empty group"},
+		{`{"all":[{"field":"nope","operator":"eq","value":1}]}`, "an unknown field inside a group"},
+		{`{"field":"service_type","operator":"in","value":"WEB"}`, "in without a list"},
+		{`["exposure"]`, "not an object"},
+	} {
+		if err := checkedRule(rule(refused.body)); err == nil {
+			t.Errorf("a rule with %s was accepted: %s", refused.because, refused.body)
+		}
+	}
+	// No rule at all means the item always applies, which is not an error.
+	if err := checkedRule(nil); err != nil {
+		t.Errorf("an item without a rule was refused: %v", err)
+	}
+	if err := checkedRule(map[string]any{}); err != nil {
+		t.Errorf("an empty rule was refused: %v", err)
+	}
+}

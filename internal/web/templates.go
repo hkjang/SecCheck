@@ -377,6 +377,10 @@ func (s *Server) createTemplateItem(w http.ResponseWriter, r *http.Request) {
 		problem(w, 422, "VALIDATION_FAILED", "항목 코드, 제목 및 질문이 필요합니다.", nil)
 		return
 	}
+	if err := checkedRule(in.ApplicabilityRule); err != nil {
+		problem(w, 422, "VALIDATION_FAILED", "적용 조건을 확인하세요: "+err.Error(), map[string]string{"applicability_rule": err.Error()})
+		return
+	}
 	id := store.NewID()
 	secID, err := s.sectionID(r.Context(), r.PathValue("versionID"), in.Section)
 	if err != nil {
@@ -415,6 +419,10 @@ func (s *Server) updateTemplateItem(w http.ResponseWriter, r *http.Request) {
 	}
 	if blankedOut(in.ItemCode) || blankedOut(in.Title) || blankedOut(in.Question) {
 		problem(w, 422, "VALIDATION_FAILED", "항목 코드, 제목 및 질문은 비울 수 없습니다.", nil)
+		return
+	}
+	if err := checkedRule(in.ApplicabilityRule); err != nil {
+		problem(w, 422, "VALIDATION_FAILED", "적용 조건을 확인하세요: "+err.Error(), map[string]string{"applicability_rule": err.Error()})
 		return
 	}
 	var secID string

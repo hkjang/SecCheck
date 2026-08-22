@@ -302,6 +302,75 @@ func reviewFields(in reviewInput) map[string]any {
 	return map[string]any{"service_type": in.ServiceType, "change_type": in.ChangeType, "exposure": in.Exposure, "has_admin_page": in.HasAdminPage, "processes_personal_data": in.ProcessesPersonalData, "processes_credit_data": in.ProcessesCreditData, "external_customer_service": in.ExternalCustomerService, "uses_cloud": in.UsesCloud, "uses_docker": in.UsesDocker, "uses_kubernetes": in.UsesKubernetes, "external_integration": in.ExternalIntegration, "internet_access": in.InternetAccess, "business_criticality": in.BusinessCriticality}
 }
 
+// A rule that names a field the review form does not have can never match, so
+// the item it guards quietly stops appearing in reviews: a security
+// requirement that is never assessed and nobody is told about. The vocabulary
+// is taken from reviewFields itself, so it cannot drift from what the engine
+// actually evaluates.
+func ruleVocabulary() map[string]bool {
+	known := map[string]bool{}
+	for name := range reviewFields(reviewInput{}) {
+		known[name] = true
+	}
+	return known
+}
+
+var ruleOperators = map[string]bool{"": true, "eq": true, "=": true, "neq": true, "!=": true, "in": true, "contains": true, "gt": true, "gte": true, "lt": true, "lte": true, "exists": true}
+
+// validateRule reports the first thing in a rule that the engine could never
+// act on, in a form an administrator can correct.
+func validateRule(node any, known map[string]bool) error {
+	m, ok := node.(map[string]any)
+	if !ok {
+		return errors.New("조건은 객체여야 합니다")
+	}
+	for _, key := range []string{"all", "any"} {
+		if group, exists := m[key]; exists {
+			list, isList := group.([]any)
+			if !isList || len(list) == 0 {
+				return fmt.Errorf("%s 조건에는 하나 이상의 하위 조건이 필요합니다", key)
+			}
+			for _, child := range list {
+				if err := validateRule(child, known); err != nil {
+					return err
+				}
+			}
+			return nil
+		}
+	}
+	if not, exists := m["not"]; exists {
+		return validateRule(not, known)
+	}
+	field, _ := m["field"].(string)
+	if field == "" {
+		return errors.New("조건에 field가 없습니다")
+	}
+	if !known[field] {
+		return fmt.Errorf("알 수 없는 항목입니다: %s", field)
+	}
+	op, _ := m["operator"].(string)
+	if !ruleOperators[strings.ToLower(op)] {
+		return fmt.Errorf("알 수 없는 연산자입니다: %s", op)
+	}
+	if strings.EqualFold(op, "in") {
+		if values, isList := m["value"].([]any); !isList || len(values) == 0 {
+			return errors.New("in 연산자에는 값 목록이 필요합니다")
+		}
+	}
+	return nil
+}
+
+// checkedRule validates what a caller sent for an item, if anything.
+func checkedRule(rule any) error {
+	if rule == nil {
+		return nil
+	}
+	if m, ok := rule.(map[string]any); ok && len(m) == 0 {
+		return nil
+	}
+	return validateRule(rule, ruleVocabulary())
+}
+
 func evaluateRule(raw []byte, fields map[string]any) bool {
 	if len(raw) == 0 || string(raw) == "{}" || string(raw) == "null" {
 		return true
