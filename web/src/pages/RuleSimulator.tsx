@@ -3,8 +3,8 @@ import { FlaskConical, Play } from 'lucide-react'
 import { errorMessage, post } from '../lib/api'
 import { Badge, Button, Empty, Field, Loading, Toggle, useToast } from '../components/ui'
 
-type Outcome = { template: string; version: string; item_code: string; category: string; title: string; severity: string; applied: boolean; reason: string }
-type Result = { applied: number; excluded: number; templates: { template: string; applied: number; total: number }[]; items: Outcome[] }
+type Outcome = { template: string; version: string; item_code: string; category: string; title: string; severity: string; applied: boolean; reason: string; rule_error?: string }
+type Result = { applied: number; excluded: number; broken?: number; templates: { template: string; applied: number; total: number }[]; items: Outcome[] }
 
 const profileToggles: [string, string][] = [
   ['has_admin_page', '관리자 페이지 있음'], ['processes_personal_data', '개인정보 처리'], ['processes_credit_data', '신용정보 처리'],
@@ -31,6 +31,7 @@ export default function RuleSimulator() {
     catch (e) { toast.push(errorMessage(e), 'error') } finally { setBusy(false) }
   }
   const shown = (result?.items || []).filter(i => showExcluded || i.applied)
+  const brokenItems = (result?.items || []).filter(i => i.rule_error)
   return <div className="page">
     <div className="page-header"><div><h1 className="page-title">Rule Engine 시뮬레이터</h1><p className="page-description">심의를 만들지 않고 서비스 특성만으로 어떤 체크리스트가 배정되는지 확인합니다. 게시 버전은 수정할 수 없으므로 게시 전에 규칙을 검증하세요.</p></div><Button variant="primary" disabled={busy} onClick={run}><Play size={14} /> {busy ? '계산 중…' : '시뮬레이션 실행'}</Button></div>
 
@@ -49,6 +50,10 @@ export default function RuleSimulator() {
         <div className="card stat-card"><div className="stat-icon green"><Play /></div><div><span className="stat-value">{result.applied}</span><div className="stat-label">배정될 항목</div></div></div>
         <div className="card stat-card"><div className="stat-icon"><FlaskConical /></div><div><span className="stat-value">{result.excluded}</span><div className="stat-label">제외될 항목</div></div></div>
       </div>
+      {brokenItems.length > 0 && <section className="card"><div className="card-header"><h2>적용 규칙 오류</h2><Badge tone="red">{brokenItems.length}개</Badge></div>
+        <div className="card-body"><p className="subtle">아래 항목은 적용 규칙이 심의 입력에 없는 값을 가리키고 있어, 이 프로필뿐 아니라 <strong>어떤 심의에도 배정되지 않습니다</strong>. 게시된 버전은 수정할 수 없으므로 새 버전에서 규칙을 고쳐야 합니다.</p></div>
+        <div className="table-wrap"><table><caption className="sr-only">적용 규칙 오류 목록</caption><thead><tr><th scope="col">항목코드</th><th scope="col">템플릿</th><th scope="col">보안요건</th><th scope="col">오류</th></tr></thead>
+          <tbody>{brokenItems.map((item, i) => <tr key={`broken-${item.template}-${item.item_code}-${i}`}><td><code>{item.item_code}</code></td><td className="subtle">{item.template} {item.version}</td><td>{item.title}</td><td>{item.rule_error}</td></tr>)}</tbody></table></div></section>}
       <section className="card"><div className="card-header"><h2>템플릿별 배정</h2><button type="button" className={`chip ${showExcluded ? 'on' : ''}`} aria-pressed={showExcluded} onClick={() => setShowExcluded(!showExcluded)}>제외 항목도 보기</button></div>
         <div className="table-wrap"><table><caption className="sr-only">템플릿별 배정 결과</caption><thead><tr><th scope="col">템플릿</th><th scope="col">배정 / 전체</th></tr></thead><tbody>{result.templates.map(t => <tr key={t.template}><td>{t.template}</td><td><Badge tone={t.applied ? 'green' : ''}>{t.applied} / {t.total}</Badge></td></tr>)}</tbody></table></div></section>
       <section className="card"><div className="card-header"><h2>항목별 결과</h2><Badge>{shown.length}개</Badge></div>

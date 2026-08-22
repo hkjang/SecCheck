@@ -3245,3 +3245,74 @@ func TestTheUserDirectoryCanBeNarrowed(t *testing.T) {
 		t.Errorf("a disabled account is still offered as an assignee: %v", got)
 	}
 }
+
+// Rules written before the vocabulary was checked can still be stored, and a
+// rule that names something the engine never sees excludes its item from every
+// review, not just this one. The simulator is where a template administrator
+// would look, so that is where it has to say so.
+func TestTheSimulatorNamesRulesThatCanNeverMatch(t *testing.T) {
+	h := newHarness(t)
+	admin := h.login(adminOf(h))
+	ctx := context.Background()
+
+	created := admin.do(http.MethodPost, "/api/v1/templates", map[string]any{"name": "규칙 점검 템플릿", "category": "DEVELOPMENT", "description": "", "version": "V1"})
+	if created.status != http.StatusCreated {
+		t.Fatalf("creating a template: %d %s", created.status, created.body)
+	}
+	templateID, _ := created.json()["id"].(string)
+	var versionID string
+	if err := h.db.Pool.QueryRow(ctx, `SELECT id FROM checklist_versions WHERE template_id=$1`, templateID).Scan(&versionID); err != nil {
+		t.Fatal(err)
+	}
+	base := fmt.Sprintf("/api/v1/templates/%s/versions/%s/items", templateID, versionID)
+	sound := admin.do(http.MethodPost, base, map[string]any{"item_code": "OK-1", "title": "정상 규칙", "question": "질문", "category": "DEVELOPMENT", "severity": "MEDIUM", "answer_type": "YNNA", "sort_order": 1,
+		"applicability_rule": map[string]any{"field": "exposure", "operator": "eq", "value": "EXTERNAL"}})
+	if sound.status != http.StatusCreated {
+		t.Fatalf("adding a sound item: %d %s", sound.status, sound.body)
+	}
+	broken := admin.do(http.MethodPost, base, map[string]any{"item_code": "BAD-1", "title": "오타 규칙", "question": "질문", "category": "DEVELOPMENT", "severity": "HIGH", "answer_type": "YNNA", "sort_order": 2})
+	if broken.status != http.StatusCreated {
+		t.Fatalf("adding the second item: %d %s", broken.status, broken.body)
+	}
+	brokenID, _ := broken.json()["id"].(string)
+	// Written directly, the way it could have been before the check existed.
+	if _, err := h.db.Pool.Exec(ctx, `UPDATE checklist_items SET applicability_rule='{"field":"exposuer","operator":"eq","value":"EXTERNAL"}'::jsonb WHERE id=$1`, brokenID); err != nil {
+		t.Fatal(err)
+	}
+	if res := admin.do(http.MethodPost, fmt.Sprintf("/api/v1/templates/%s/versions/%s/publish", templateID, versionID), nil); res.status >= 300 {
+		t.Fatalf("publishing the version: %d %s", res.status, res.body)
+	}
+
+	result := admin.do(http.MethodPost, "/api/v1/templates/rule-simulation", map[string]any{
+		"service_name": "점검", "description": "d", "service_type": "WEB", "change_type": "NEW",
+		"department": "보안팀", "exposure": "EXTERNAL",
+	}).json()
+	if count, _ := result["broken"].(float64); count != 1 {
+		t.Errorf("the simulator reported %v rules it can never satisfy, want 1", result["broken"])
+	}
+	var reported, sane map[string]any
+	for _, raw := range result["items"].([]any) {
+		row, _ := raw.(map[string]any)
+		switch row["item_code"] {
+		case "BAD-1":
+			reported = row
+		case "OK-1":
+			sane = row
+		}
+	}
+	if reported == nil || sane == nil {
+		t.Fatalf("the simulation did not cover both items: %v", result["items"])
+	}
+	if ruleError, _ := reported["rule_error"].(string); !strings.Contains(ruleError, "exposuer") {
+		t.Errorf("the broken item does not name what is wrong with it: %v", reported)
+	}
+	if applied, _ := reported["applied"].(bool); applied {
+		t.Error("an item whose rule can never match was reported as assigned")
+	}
+	if _, marked := sane["rule_error"]; marked {
+		t.Errorf("a sound rule was reported as broken: %v", sane)
+	}
+	if applied, _ := sane["applied"].(bool); !applied {
+		t.Errorf("the sound item was not assigned to a matching profile: %v", sane)
+	}
+}

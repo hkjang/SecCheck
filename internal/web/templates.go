@@ -1001,10 +1001,15 @@ func (s *Server) simulateRules(w http.ResponseWriter, r *http.Request) {
 		Severity string `json:"severity"`
 		Applied  bool   `json:"applied"`
 		Reason   string `json:"reason"`
+		// A rule written before the vocabulary was checked can name something
+		// the engine never sees, in which case the item is not excluded by
+		// this profile -- it is excluded by every profile, for ever.
+		RuleError string `json:"rule_error,omitempty"`
 	}
 	items := []outcome{}
 	byTemplate := map[string]map[string]int{}
-	applied, excluded := 0, 0
+	vocabulary := ruleVocabulary()
+	applied, excluded, broken := 0, 0, 0
 	for rows.Next() {
 		var o outcome
 		var rule []byte
@@ -1012,7 +1017,18 @@ func (s *Server) simulateRules(w http.ResponseWriter, r *http.Request) {
 			s.fault(w, r, "QUERY_FAILED", "체크리스트를 불러오지 못했습니다.", err)
 			return
 		}
+		if len(rule) > 0 && string(rule) != "{}" && string(rule) != "null" {
+			var node any
+			if json.Unmarshal(rule, &node) != nil {
+				o.RuleError = "적용 규칙을 읽을 수 없습니다"
+			} else if ruleErr := validateRule(node, vocabulary); ruleErr != nil {
+				o.RuleError = ruleErr.Error()
+			}
+		}
 		switch {
+		case o.RuleError != "":
+			o.Reason = "적용 규칙에 오류가 있어 어떤 심의에도 배정되지 않습니다: " + o.RuleError
+			broken++
 		case !categoryApplies(o.Category, in):
 			o.Reason = "서비스 특성상 해당 분류가 적용되지 않습니다"
 		case !evaluateRule(rule, fields):
@@ -1044,5 +1060,5 @@ func (s *Server) simulateRules(w http.ResponseWriter, r *http.Request) {
 		summary = append(summary, map[string]any{"template": name, "applied": counts["applied"], "total": counts["total"]})
 	}
 	sort.Slice(summary, func(i, j int) bool { return summary[i]["template"].(string) < summary[j]["template"].(string) })
-	jsonResponse(w, 200, map[string]any{"applied": applied, "excluded": excluded, "profile": fields, "templates": summary, "items": items})
+	jsonResponse(w, 200, map[string]any{"applied": applied, "excluded": excluded, "broken": broken, "profile": fields, "templates": summary, "items": items})
 }
