@@ -167,3 +167,36 @@ func TestApiGuideRoleColumnMatchesTheServer(t *testing.T) {
 		}
 	}
 }
+
+// An installation that skips many releases applies every migration at once,
+// so the operations guide lists what each one does. A migration missing from
+// that list is one an operator cannot anticipate.
+func TestEveryMigrationIsListedInTheOperationsManual(t *testing.T) {
+	manual := repoFile(t, "docs/operations.md")
+	files, err := filepath.Glob(filepath.Join("..", "..", "internal", "store", "migrations", "*.sql"))
+	if err != nil || len(files) == 0 {
+		t.Fatalf("no migrations found: %v", err)
+	}
+	section := manual
+	if start := strings.Index(manual, "### 마이그레이션"); start >= 0 {
+		section = manual[start:]
+	} else {
+		t.Fatal("the operations guide has no migration section")
+	}
+	for _, file := range files {
+		number := filepath.Base(file)[:3]
+		// Ranges such as "009~012" cover several files with one row.
+		if strings.Contains(section, number) {
+			continue
+		}
+		listed := false
+		for _, rang := range regexp.MustCompile(`(\d{3})~(\d{3})`).FindAllStringSubmatch(section, -1) {
+			if rang[1] <= number && number <= rang[2] {
+				listed = true
+			}
+		}
+		if !listed {
+			t.Errorf("migration %s is not described in the operations guide", filepath.Base(file))
+		}
+	}
+}
