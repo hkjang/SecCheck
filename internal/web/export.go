@@ -32,7 +32,7 @@ func (s *Server) exportReview(w http.ResponseWriter, r *http.Request) {
 	}
 	data, err := s.loadExportData(r, id)
 	if err != nil {
-		problem(w, 500, "EXPORT_FAILED", "심의 데이터를 내보내지 못했습니다.", nil)
+		s.fault(w, r, "EXPORT_FAILED", "심의 데이터를 내보내지 못했습니다.", err)
 		return
 	}
 	base := sanitizeFilename(fmt.Sprint(data.Review["review_number"]) + "-" + fmt.Sprint(data.Review["service_name"]))
@@ -40,9 +40,9 @@ func (s *Server) exportReview(w http.ResponseWriter, r *http.Request) {
 	case "json":
 		s.writeJSONExport(w, data, base)
 	case "xlsx", "excel":
-		s.writeExcelExport(w, data, base)
+		s.writeExcelExport(w, r, data, base)
 	case "pdf":
-		s.writePDFExport(w, data, base)
+		s.writePDFExport(w, r, data, base)
 	case "zip":
 		s.writeZIPExport(w, r, data, base)
 	default:
@@ -135,7 +135,7 @@ func (s *Server) writeJSONExport(w http.ResponseWriter, data exportData, base st
 	_ = json.NewEncoder(w).Encode(data)
 }
 
-func (s *Server) writeExcelExport(w http.ResponseWriter, data exportData, base string) {
+func (s *Server) writeExcelExport(w http.ResponseWriter, r *http.Request, data exportData, base string) {
 	f := excelize.NewFile()
 	defer f.Close()
 	summary := "심의 결과"
@@ -187,7 +187,7 @@ func (s *Server) writeExcelExport(w http.ResponseWriter, data exportData, base s
 	}
 	buf, err := f.WriteToBuffer()
 	if err != nil {
-		problem(w, 500, "EXPORT_FAILED", "Excel 파일을 생성하지 못했습니다.", nil)
+		s.fault(w, r, "EXPORT_FAILED", "Excel 파일을 생성하지 못했습니다.", err)
 		return
 	}
 	w.Header().Set("Content-Type", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
@@ -195,9 +195,10 @@ func (s *Server) writeExcelExport(w http.ResponseWriter, data exportData, base s
 	_, _ = w.Write(buf.Bytes())
 }
 
-func (s *Server) writePDFExport(w http.ResponseWriter, data exportData, base string) {
+func (s *Server) writePDFExport(w http.ResponseWriter, r *http.Request, data exportData, base string) {
 	font := findKoreanFont()
 	if font == "" {
+		s.Store.Log(r.Context(), "ERROR", requestID(r), "api", "PDF 생성용 한글 글꼴이 설치되지 않았습니다.", map[string]any{"code": "FONT_MISSING", "path": r.URL.Path})
 		problem(w, 500, "FONT_MISSING", "PDF 생성용 한글 글꼴이 설치되지 않았습니다.", nil)
 		return
 	}
@@ -234,7 +235,7 @@ func (s *Server) writePDFExport(w http.ResponseWriter, data exportData, base str
 	}
 	var buf bytes.Buffer
 	if err := pdf.Output(&buf); err != nil {
-		problem(w, 500, "EXPORT_FAILED", "PDF 파일을 생성하지 못했습니다.", nil)
+		s.fault(w, r, "EXPORT_FAILED", "PDF 파일을 생성하지 못했습니다.", err)
 		return
 	}
 	w.Header().Set("Content-Type", "application/pdf")
@@ -259,7 +260,7 @@ func (s *Server) writeZIPExport(w http.ResponseWriter, r *http.Request, data exp
 	reviewID := r.PathValue("id")
 	rows, err := s.Store.Pool.Query(r.Context(), `SELECT e.id,e.original_filename,e.stored_filename,e.key_owner_id,e.key_version,e.current_version,e.scan_status FROM evidences e JOIN submission_items si ON si.id=e.submission_item_id JOIN submissions sub ON sub.id=si.submission_id WHERE sub.review_request_id=$1 AND e.deleted_at IS NULL ORDER BY e.created_at`, reviewID)
 	if err != nil {
-		problem(w, 500, "EXPORT_FAILED", "증적 목록을 불러오지 못했습니다.", nil)
+		s.fault(w, r, "EXPORT_FAILED", "증적 목록을 불러오지 못했습니다.", err)
 		return
 	}
 	defer rows.Close()

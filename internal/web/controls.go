@@ -23,7 +23,7 @@ func (s *Server) listControls(w http.ResponseWriter, r *http.Request) {
 	// Correlated sub-queries let each count use its own index instead.
 	var total int64
 	if err := s.Store.Pool.QueryRow(r.Context(), `SELECT count(*) FROM security_controls c WHERE `+where, args...).Scan(&total); err != nil {
-		problem(w, 500, "QUERY_FAILED", "Security Control을 불러오지 못했습니다.", nil)
+		s.fault(w, r, "QUERY_FAILED", "Security Control을 불러오지 못했습니다.", err)
 		return
 	}
 	limit, offset := parsePage(r)
@@ -34,7 +34,7 @@ func (s *Server) listControls(w http.ResponseWriter, r *http.Request) {
                 FROM security_controls c LEFT JOIN users u ON u.id=c.owner_id WHERE `+where+
 		` ORDER BY c.code LIMIT $`+intString(len(paged)-1)+` OFFSET $`+intString(len(paged)), paged...)
 	if err != nil {
-		problem(w, 500, "QUERY_FAILED", "Security Control을 불러오지 못했습니다.", nil)
+		s.fault(w, r, "QUERY_FAILED", "Security Control을 불러오지 못했습니다.", err)
 		return
 	}
 	items := scanDynamic(rows, []string{"id", "code", "title", "description", "owner_id", "owner", "created_at", "updated_at", "mapped_items", "affected_reviews"})
@@ -111,7 +111,7 @@ func (s *Server) deleteControl(w http.ResponseWriter, r *http.Request) {
 func (s *Server) controlImpact(w http.ResponseWriter, r *http.Request) {
 	rows, err := s.Store.Pool.Query(r.Context(), `SELECT i.id,t.name,v.version,i.item_code,i.title,v.status,count(DISTINCT sub.review_request_id) AS affected_reviews FROM checklist_items i JOIN checklist_versions v ON v.id=i.version_id JOIN checklist_templates t ON t.id=v.template_id LEFT JOIN submission_items si ON si.source_item_id=i.id LEFT JOIN submissions sub ON sub.id=si.submission_id WHERE i.control_id=$1 GROUP BY i.id,t.name,v.version,v.status,v.created_at,i.sort_order ORDER BY t.name,v.created_at DESC,i.sort_order`, r.PathValue("id"))
 	if err != nil {
-		problem(w, 500, "QUERY_FAILED", "영향 범위를 불러오지 못했습니다.", nil)
+		s.fault(w, r, "QUERY_FAILED", "영향 범위를 불러오지 못했습니다.", err)
 		return
 	}
 	jsonResponse(w, 200, scanDynamic(rows, []string{"item_id", "template_name", "template_version", "item_code", "title", "version_status", "affected_reviews"}))

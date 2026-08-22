@@ -20,7 +20,7 @@ import (
 func (s *Server) listUsers(w http.ResponseWriter, r *http.Request) {
 	rows, err := s.Store.Pool.Query(r.Context(), `SELECT u.id,u.username,u.display_name,u.email,u.department,u.auth_source,u.active,u.last_login_at,u.created_at,u.failed_login_count,CASE WHEN u.locked_until>now() THEN u.locked_until END,u.totp_enabled,COALESCE(array_agg(ur.role_code ORDER BY ur.role_code) FILTER(WHERE ur.role_code IS NOT NULL),'{}') FROM users u LEFT JOIN user_roles ur ON ur.user_id=u.id GROUP BY u.id ORDER BY u.display_name`)
 	if err != nil {
-		problem(w, 500, "QUERY_FAILED", "사용자를 불러오지 못했습니다.", nil)
+		s.fault(w, r, "QUERY_FAILED", "사용자를 불러오지 못했습니다.", err)
 		return
 	}
 	jsonResponse(w, 200, scanDynamic(rows, []string{"id", "username", "display_name", "email", "department", "auth_source", "active", "last_login_at", "created_at", "failed_login_count", "locked_until", "totp_enabled", "roles"}))
@@ -157,7 +157,7 @@ func (s *Server) resetUserPassword(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if _, err = s.Store.Pool.Exec(r.Context(), `UPDATE users SET password_hash=$2,failed_login_count=0,locked_until=NULL,updated_at=now() WHERE id=$1`, id, hash); err != nil {
-		problem(w, 500, "UPDATE_FAILED", "비밀번호를 재설정하지 못했습니다.", nil)
+		s.fault(w, r, "UPDATE_FAILED", "비밀번호를 재설정하지 못했습니다.", err)
 		return
 	}
 	_, _ = s.Store.Pool.Exec(r.Context(), `DELETE FROM sessions WHERE user_id=$1`, id)
@@ -178,7 +178,7 @@ func (s *Server) unlockUser(w http.ResponseWriter, r *http.Request) {
 func (s *Server) listSettings(w http.ResponseWriter, r *http.Request) {
 	rows, err := s.Store.Pool.Query(r.Context(), `SELECT key,value_json,encrypted_value<>'',sensitive,updated_at FROM settings ORDER BY key`)
 	if err != nil {
-		problem(w, 500, "QUERY_FAILED", "설정을 불러오지 못했습니다.", nil)
+		s.fault(w, r, "QUERY_FAILED", "설정을 불러오지 못했습니다.", err)
 		return
 	}
 	jsonResponse(w, 200, scanDynamic(rows, []string{"key", "value", "secret_configured", "sensitive", "updated_at"}))
@@ -214,7 +214,7 @@ func (s *Server) updateSetting(w http.ResponseWriter, r *http.Request) {
 	if secret != "" {
 		encrypted, err = s.Box.Encrypt([]byte(secret), []byte("setting:"+key))
 		if err != nil {
-			problem(w, 500, "ENCRYPTION_FAILED", "비밀 설정을 암호화하지 못했습니다.", nil)
+			s.fault(w, r, "ENCRYPTION_FAILED", "비밀 설정을 암호화하지 못했습니다.", err)
 			return
 		}
 	}
@@ -224,7 +224,7 @@ func (s *Server) updateSetting(w http.ResponseWriter, r *http.Request) {
 		_, err = s.Store.Pool.Exec(r.Context(), `UPDATE settings SET value_json=$2,updated_by=$3,updated_at=now() WHERE key=$1`, key, b, session(r).User.ID)
 	}
 	if err != nil {
-		problem(w, 500, "UPDATE_FAILED", "설정을 저장하지 못했습니다.", nil)
+		s.fault(w, r, "UPDATE_FAILED", "설정을 저장하지 못했습니다.", err)
 		return
 	}
 	safe := map[string]any{}
@@ -418,7 +418,7 @@ func (s *Server) listAudit(w http.ResponseWriter, r *http.Request) {
 	args = append(args, limit)
 	rows, err := s.Store.Pool.Query(r.Context(), `SELECT event_id,timestamp,user_id,user_name,source_ip,session_id,event_type,target_type,target_id,before_value,after_value,request_id,result,previous_hash,event_hash FROM audit_logs WHERE `+where+` ORDER BY timestamp DESC LIMIT $`+intString(len(args)), args...)
 	if err != nil {
-		problem(w, 500, "QUERY_FAILED", "감사 로그를 불러오지 못했습니다.", nil)
+		s.fault(w, r, "QUERY_FAILED", "감사 로그를 불러오지 못했습니다.", err)
 		return
 	}
 	records := scanDynamic(rows, auditColumns)
@@ -504,7 +504,7 @@ func (s *Server) verifyAudit(w http.ResponseWriter, r *http.Request) {
 	}
 	rows, err := s.Store.Pool.Query(r.Context(), `SELECT event_id,previous_hash,canonical_payload,event_hash,chain_sequence FROM audit_logs WHERE chain_sequence>$1 ORDER BY chain_sequence`, fromSequence)
 	if err != nil {
-		problem(w, 500, "VERIFY_FAILED", "감사로그를 검증하지 못했습니다.", nil)
+		s.fault(w, r, "VERIFY_FAILED", "감사로그를 검증하지 못했습니다.", err)
 		return
 	}
 	defer rows.Close()
@@ -514,7 +514,7 @@ func (s *Server) verifyAudit(w http.ResponseWriter, r *http.Request) {
 		var id, linked, payload, storedHash string
 		var sequence int64
 		if err = rows.Scan(&id, &linked, &payload, &storedHash, &sequence); err != nil {
-			problem(w, 500, "VERIFY_FAILED", "감사로그를 검증하지 못했습니다.", nil)
+			s.fault(w, r, "VERIFY_FAILED", "감사로그를 검증하지 못했습니다.", err)
 			return
 		}
 		checked++
@@ -533,7 +533,7 @@ func (s *Server) verifyAudit(w http.ResponseWriter, r *http.Request) {
 		expectedSequence++
 	}
 	if err = rows.Err(); err != nil {
-		problem(w, 500, "VERIFY_FAILED", "감사로그를 검증하지 못했습니다.", nil)
+		s.fault(w, r, "VERIFY_FAILED", "감사로그를 검증하지 못했습니다.", err)
 		return
 	}
 	var head string
@@ -590,7 +590,7 @@ func (s *Server) listLogs(w http.ResponseWriter, r *http.Request) {
 	args = append(args, limit)
 	rows, err := s.Store.Pool.Query(r.Context(), `SELECT id,timestamp,level,request_id,component,message,fields FROM application_logs WHERE `+where+` ORDER BY timestamp DESC LIMIT $`+intString(len(args)), args...)
 	if err != nil {
-		problem(w, 500, "QUERY_FAILED", "서버 로그를 불러오지 못했습니다.", nil)
+		s.fault(w, r, "QUERY_FAILED", "서버 로그를 불러오지 못했습니다.", err)
 		return
 	}
 	jsonResponse(w, 200, scanDynamic(rows, []string{"id", "timestamp", "level", "request_id", "component", "message", "fields"}))
@@ -652,7 +652,7 @@ func (s *Server) listJobs(w http.ResponseWriter, r *http.Request) {
 	args = append(args, limit)
 	rows, err := s.Store.Pool.Query(r.Context(), `SELECT id,type,status,attempts,available_at,locked_at,last_error,created_at,updated_at FROM jobs WHERE `+where+` ORDER BY updated_at DESC LIMIT $`+intString(len(args)), args...)
 	if err != nil {
-		problem(w, 500, "QUERY_FAILED", "작업 큐를 불러오지 못했습니다.", nil)
+		s.fault(w, r, "QUERY_FAILED", "작업 큐를 불러오지 못했습니다.", err)
 		return
 	}
 	items := scanDynamic(rows, []string{"id", "type", "status", "attempts", "available_at", "locked_at", "last_error", "created_at", "updated_at"})
@@ -701,7 +701,7 @@ func (s *Server) retryJob(w http.ResponseWriter, r *http.Request) {
 func (s *Server) retryFailedJobs(w http.ResponseWriter, r *http.Request) {
 	tag, err := s.Store.Pool.Exec(r.Context(), `UPDATE jobs SET status='PENDING',attempts=0,available_at=now(),locked_at=NULL,last_error='',updated_at=now() WHERE status='FAILED'`)
 	if err != nil {
-		problem(w, 500, "UPDATE_FAILED", "작업을 재시도하지 못했습니다.", nil)
+		s.fault(w, r, "UPDATE_FAILED", "작업을 재시도하지 못했습니다.", err)
 		return
 	}
 	_, _ = s.Store.Pool.Exec(r.Context(), `UPDATE evidences SET scan_status='PENDING' WHERE scan_status='ERROR' AND deleted_at IS NULL`)

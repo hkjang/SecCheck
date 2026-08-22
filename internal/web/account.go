@@ -15,7 +15,7 @@ func (s *Server) listSessions(w http.ResponseWriter, r *http.Request) {
 	sess := session(r)
 	rows, err := s.Store.Pool.Query(r.Context(), `SELECT id,source_ip,user_agent,created_at,last_seen_at,expires_at,(id=$2) AS current FROM sessions WHERE user_id=$1 AND expires_at>now() ORDER BY last_seen_at DESC`, sess.User.ID, sess.ID)
 	if err != nil {
-		problem(w, 500, "QUERY_FAILED", "세션을 불러오지 못했습니다.", nil)
+		s.fault(w, r, "QUERY_FAILED", "세션을 불러오지 못했습니다.", err)
 		return
 	}
 	jsonResponse(w, 200, scanDynamic(rows, []string{"id", "source_ip", "user_agent", "created_at", "last_seen_at", "expires_at", "current"}))
@@ -41,7 +41,7 @@ func (s *Server) revokeOtherSessions(w http.ResponseWriter, r *http.Request) {
 	sess := session(r)
 	tag, err := s.Store.Pool.Exec(r.Context(), `DELETE FROM sessions WHERE user_id=$1 AND id<>$2`, sess.User.ID, sess.ID)
 	if err != nil {
-		problem(w, 500, "UPDATE_FAILED", "세션을 종료하지 못했습니다.", nil)
+		s.fault(w, r, "UPDATE_FAILED", "세션을 종료하지 못했습니다.", err)
 		return
 	}
 	_ = s.Store.Audit(r.Context(), auditFrom(r, "REVOKE_SESSION", "SESSION", "others", nil, map[string]any{"revoked": tag.RowsAffected()}))
@@ -58,11 +58,11 @@ func (s *Server) startTOTPEnrollment(w http.ResponseWriter, r *http.Request) {
 	}
 	secret, err := auth.NewTOTPSecret()
 	if err != nil {
-		problem(w, 500, "TOTP_FAILED", "일회용 코드 설정을 시작하지 못했습니다.", nil)
+		s.fault(w, r, "TOTP_FAILED", "일회용 코드 설정을 시작하지 못했습니다.", err)
 		return
 	}
 	if err = s.Auth.StoreTOTPSecret(r.Context(), sess.User.ID, secret); err != nil {
-		problem(w, 500, "TOTP_FAILED", "일회용 코드 설정을 저장하지 못했습니다.", nil)
+		s.fault(w, r, "TOTP_FAILED", "일회용 코드 설정을 저장하지 못했습니다.", err)
 		return
 	}
 	_ = s.Store.Audit(r.Context(), auditFrom(r, "TOTP_ENROLLMENT_STARTED", "USER", sess.User.ID, nil, nil))
@@ -110,7 +110,7 @@ func (s *Server) disableTOTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := s.Auth.DisableTOTP(r.Context(), sess.User.ID); err != nil {
-		problem(w, 500, "UPDATE_FAILED", "일회용 코드를 해제하지 못했습니다.", nil)
+		s.fault(w, r, "UPDATE_FAILED", "일회용 코드를 해제하지 못했습니다.", err)
 		return
 	}
 	_ = s.Store.Audit(r.Context(), auditFrom(r, "TOTP_DISABLED", "USER", sess.User.ID, nil, nil))
@@ -211,7 +211,7 @@ func (s *Server) bulkSaveResponses(w http.ResponseWriter, r *http.Request) {
                 `+conflict,
 		in.Applicability, in.SelfAssessment, in.CurrentState, in.NAReason, in.ActionPlan, in.AssignedTo, session(r).User.ID, in.ItemIDs, reviewID)
 	if err != nil {
-		problem(w, 500, "UPDATE_FAILED", "일괄 적용에 실패했습니다.", nil)
+		s.fault(w, r, "UPDATE_FAILED", "일괄 적용에 실패했습니다.", err)
 		return
 	}
 	_ = s.Store.Audit(r.Context(), auditFrom(r, "BULK_UPDATE_RESPONSE", "REVIEW_REQUEST", reviewID, nil, map[string]any{"items": len(in.ItemIDs), "applied": tag.RowsAffected(), "applicability": in.Applicability, "overwrite": in.Overwrite}))
@@ -236,7 +236,7 @@ func (s *Server) bulkAssign(w http.ResponseWriter, r *http.Request, reviewID str
                 ON CONFLICT(submission_item_id) DO UPDATE SET assigned_to=EXCLUDED.assigned_to,updated_at=now()`,
 		assignee, session(r).User.ID, itemIDs, reviewID)
 	if err != nil {
-		problem(w, 500, "UPDATE_FAILED", "담당자를 배정하지 못했습니다.", nil)
+		s.fault(w, r, "UPDATE_FAILED", "담당자를 배정하지 못했습니다.", err)
 		return
 	}
 	if assignee != "" && tag.RowsAffected() > 0 {
@@ -321,7 +321,7 @@ func (s *Server) updateNotificationPreferences(w http.ResponseWriter, r *http.Re
                 ON CONFLICT(user_id) DO UPDATE SET email_enabled=EXCLUDED.email_enabled,digest=EXCLUDED.digest,muted_events=EXCLUDED.muted_events,updated_at=now()`,
 		session(r).User.ID, in.EmailEnabled, in.Digest, muted)
 	if err != nil {
-		problem(w, 500, "UPDATE_FAILED", "알림 설정을 저장하지 못했습니다.", nil)
+		s.fault(w, r, "UPDATE_FAILED", "알림 설정을 저장하지 못했습니다.", err)
 		return
 	}
 	_ = s.Store.Audit(r.Context(), auditFrom(r, "UPDATE_NOTIFICATION_PREFERENCE", "USER", session(r).User.ID, nil, map[string]any{"email_enabled": in.EmailEnabled, "digest": in.Digest, "muted": len(muted)}))

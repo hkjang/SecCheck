@@ -44,13 +44,13 @@ func (s *Server) uploadEvidence(w http.ResponseWriter, r *http.Request) {
 	uid := session(r).User.ID
 	key, version, err := s.activeUserKey(r.Context(), uid)
 	if err != nil {
-		problem(w, 500, "KEY_UNAVAILABLE", "개인 암호화 키를 사용할 수 없습니다.", nil)
+		s.fault(w, r, "KEY_UNAVAILABLE", "개인 암호화 키를 사용할 수 없습니다.", err)
 		return
 	}
 	id, stored := store.NewID(), store.NewID()+".enc"
 	size, digest, err := s.writeEvidenceStream(stored, key, []byte("evidence:"+id+":1"), upload.File)
 	if err != nil {
-		problem(w, 500, "STORAGE_FAILED", "증적을 저장하지 못했습니다.", nil)
+		s.fault(w, r, "STORAGE_FAILED", "증적을 저장하지 못했습니다.", err)
 		return
 	}
 	tx, err := s.Store.Pool.Begin(r.Context())
@@ -67,7 +67,7 @@ func (s *Server) uploadEvidence(w http.ResponseWriter, r *http.Request) {
 	}
 	if err != nil {
 		_ = os.Remove(s.evidencePath(stored))
-		problem(w, 500, "UPLOAD_FAILED", "증적 정보를 저장하지 못했습니다.", nil)
+		s.fault(w, r, "UPLOAD_FAILED", "증적 정보를 저장하지 못했습니다.", err)
 		return
 	}
 	s.enqueueScan(r.Context(), id, upload.Scan)
@@ -103,7 +103,7 @@ func (s *Server) newEvidenceVersion(w http.ResponseWriter, r *http.Request) {
 	uid := session(r).User.ID
 	key, keyVersion, err := s.activeUserKey(r.Context(), uid)
 	if err != nil {
-		problem(w, 500, "KEY_UNAVAILABLE", "개인 암호화 키를 사용할 수 없습니다.", nil)
+		s.fault(w, r, "KEY_UNAVAILABLE", "개인 암호화 키를 사용할 수 없습니다.", err)
 		return
 	}
 	var version int
@@ -111,7 +111,7 @@ func (s *Server) newEvidenceVersion(w http.ResponseWriter, r *http.Request) {
 	stored := store.NewID() + ".enc"
 	size, digest, err := s.writeEvidenceStream(stored, key, []byte(fmt.Sprintf("evidence:%s:%d", id, version)), upload.File)
 	if err != nil {
-		problem(w, 500, "STORAGE_FAILED", "증적을 저장하지 못했습니다.", nil)
+		s.fault(w, r, "STORAGE_FAILED", "증적을 저장하지 못했습니다.", err)
 		return
 	}
 	tx, err := s.Store.Pool.Begin(r.Context())
@@ -128,7 +128,7 @@ func (s *Server) newEvidenceVersion(w http.ResponseWriter, r *http.Request) {
 	}
 	if err != nil {
 		_ = os.Remove(s.evidencePath(stored))
-		problem(w, 500, "UPLOAD_FAILED", "새 증적 버전을 저장하지 못했습니다.", nil)
+		s.fault(w, r, "UPLOAD_FAILED", "새 증적 버전을 저장하지 못했습니다.", err)
 		return
 	}
 	s.enqueueScan(r.Context(), id, upload.Scan)
@@ -158,7 +158,7 @@ func (s *Server) downloadEvidence(w http.ResponseWriter, r *http.Request) {
 	}
 	key, err := s.userKey(r.Context(), owner, keyVersion)
 	if err != nil {
-		problem(w, 500, "KEY_UNAVAILABLE", "증적 암호화 키를 사용할 수 없습니다.", nil)
+		s.fault(w, r, "KEY_UNAVAILABLE", "증적 암호화 키를 사용할 수 없습니다.", err)
 		return
 	}
 	w.Header().Set("Content-Type", mime)

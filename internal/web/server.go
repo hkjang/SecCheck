@@ -384,6 +384,21 @@ func jsonResponse(w http.ResponseWriter, status int, v any) {
 	w.WriteHeader(status)
 	_ = json.NewEncoder(w).Encode(v)
 }
+
+// fault answers with a 500 and records why. The message a reader sees cannot
+// carry the cause -- it would leak the shape of the database -- and until this
+// existed the cause was not written down anywhere at all: the access log noted
+// that a request had failed and stopped there. An installation with no
+// internet access has nothing else to go on.
+func (s *Server) fault(w http.ResponseWriter, r *http.Request, code, message string, cause error) {
+	detail := "no rows affected"
+	if cause != nil {
+		detail = cause.Error()
+	}
+	s.Store.Log(r.Context(), "ERROR", requestID(r), "api", message, map[string]any{"code": code, "path": r.URL.Path, "error": detail})
+	problem(w, http.StatusInternalServerError, code, message, nil)
+}
+
 func problem(w http.ResponseWriter, status int, code, message string, details any) {
 	jsonResponse(w, status, map[string]any{"error": map[string]any{"code": code, "message": message, "details": details}})
 }

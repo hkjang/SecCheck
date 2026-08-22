@@ -58,7 +58,7 @@ func (s *Server) reviewReport(w http.ResponseWriter, r *http.Request) {
 	scope := reportFilter(r)
 	data, err := s.buildReport(r, scope)
 	if err != nil {
-		problem(w, 500, "QUERY_FAILED", "리포트를 만들지 못했습니다.", nil)
+		s.fault(w, r, "QUERY_FAILED", "리포트를 만들지 못했습니다.", err)
 		return
 	}
 	if r.URL.Query().Get("format") == "xlsx" {

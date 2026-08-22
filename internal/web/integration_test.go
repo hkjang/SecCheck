@@ -2101,3 +2101,42 @@ func TestSeveralEvidenceFilesAttachToOneItem(t *testing.T) {
 		t.Errorf("the item carries %d evidence files, want 3", stored)
 	}
 }
+
+// A 500 used to leave the access log saying only that a request had failed.
+// On an installation with no internet access, the cause has to be written
+// down somewhere or nobody can act on it.
+func TestServerFaultsRecordTheirCause(t *testing.T) {
+	h := newHarness(t)
+	admin := h.login(adminOf(h))
+	ctx := context.Background()
+
+	// Break a table the listing depends on, so the query genuinely fails.
+	// Not application_logs: that is where the entry itself has to go, and a
+	// database fault that hides its own record is covered in the store tests.
+	if _, err := h.db.Pool.Exec(ctx, `ALTER TABLE security_controls RENAME TO security_controls_hidden`); err != nil {
+		t.Fatal(err)
+	}
+	res := admin.do(http.MethodGet, "/api/v1/security-controls", nil)
+	if _, err := h.db.Pool.Exec(ctx, `ALTER TABLE security_controls_hidden RENAME TO security_controls`); err != nil {
+		t.Fatal(err)
+	}
+	if res.status != http.StatusInternalServerError {
+		t.Fatalf("the broken listing returned %d %s", res.status, res.body)
+	}
+	if strings.Contains(res.body, "security_controls") {
+		t.Errorf("the response handed the database error to the caller: %s", res.body)
+	}
+
+	var message, detail string
+	err := h.db.Pool.QueryRow(ctx, `SELECT message,COALESCE(fields->>'error','') FROM application_logs
+                WHERE component='api' AND fields->>'code'='QUERY_FAILED' ORDER BY timestamp DESC LIMIT 1`).Scan(&message, &detail)
+	if err != nil {
+		t.Fatalf("the failure left no log entry: %v", err)
+	}
+	if !strings.Contains(detail, "security_controls") {
+		t.Errorf("the log entry does not name the cause: %q", detail)
+	}
+	if message == "" {
+		t.Error("the log entry has no message")
+	}
+}

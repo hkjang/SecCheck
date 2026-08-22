@@ -42,7 +42,7 @@ func (s *Server) listTemplates(w http.ResponseWriter, r *http.Request) {
 	}
 	var total int64
 	if err := s.Store.Pool.QueryRow(r.Context(), `SELECT count(*) FROM checklist_templates t WHERE `+where, args...).Scan(&total); err != nil {
-		problem(w, 500, "QUERY_FAILED", "템플릿을 불러오지 못했습니다.", nil)
+		s.fault(w, r, "QUERY_FAILED", "템플릿을 불러오지 못했습니다.", err)
 		return
 	}
 	limit, offset := parsePage(r)
@@ -50,7 +50,7 @@ func (s *Server) listTemplates(w http.ResponseWriter, r *http.Request) {
 	rows, err := s.Store.Pool.Query(r.Context(), `SELECT t.id,t.name,t.category,t.description,t.active,t.created_at,t.updated_at,COALESCE((SELECT jsonb_agg(jsonb_build_object('id',v.id,'version',v.version,'status',v.status,'change_note',v.change_note,'source_filename',v.source_filename,'published_at',v.published_at,'created_at',v.created_at) ORDER BY v.created_at DESC) FROM checklist_versions v WHERE v.template_id=t.id),'[]') FROM checklist_templates t WHERE `+where+
 		` ORDER BY t.category,t.name LIMIT $`+intString(len(paged)-1)+` OFFSET $`+intString(len(paged)), paged...)
 	if err != nil {
-		problem(w, 500, "QUERY_FAILED", "템플릿을 불러오지 못했습니다.", nil)
+		s.fault(w, r, "QUERY_FAILED", "템플릿을 불러오지 못했습니다.", err)
 		return
 	}
 	items := scanDynamic(rows, []string{"id", "name", "category", "description", "active", "created_at", "updated_at", "versions"})
@@ -162,7 +162,7 @@ func (s *Server) copyTemplate(w http.ResponseWriter, r *http.Request) {
 	}
 	tx, err := s.Store.Pool.Begin(r.Context())
 	if err != nil {
-		problem(w, 500, "COPY_FAILED", "템플릿을 복제하지 못했습니다.", nil)
+		s.fault(w, r, "COPY_FAILED", "템플릿을 복제하지 못했습니다.", err)
 		return
 	}
 	defer tx.Rollback(r.Context())
@@ -181,11 +181,11 @@ func (s *Server) copyTemplate(w http.ResponseWriter, r *http.Request) {
 		err = cloneVersion(r.Context(), tx, srcVersion, vid)
 	}
 	if err != nil {
-		problem(w, 500, "COPY_FAILED", "템플릿을 복제하지 못했습니다.", nil)
+		s.fault(w, r, "COPY_FAILED", "템플릿을 복제하지 못했습니다.", err)
 		return
 	}
 	if err = tx.Commit(r.Context()); err != nil {
-		problem(w, 500, "COPY_FAILED", "템플릿을 복제하지 못했습니다.", nil)
+		s.fault(w, r, "COPY_FAILED", "템플릿을 복제하지 못했습니다.", err)
 		return
 	}
 	_ = s.Store.Audit(r.Context(), auditFrom(r, "CREATE_TEMPLATE", "TEMPLATE", tid, map[string]string{"source": source}, map[string]string{"name": in.Name}))
@@ -331,14 +331,14 @@ func (s *Server) createTemplateItem(w http.ResponseWriter, r *http.Request) {
 	id := store.NewID()
 	secID, err := s.sectionID(r.Context(), r.PathValue("versionID"), in.Section)
 	if err != nil {
-		problem(w, 500, "CREATE_FAILED", "섹션을 만들지 못했습니다.", nil)
+		s.fault(w, r, "CREATE_FAILED", "섹션을 만들지 못했습니다.", err)
 		return
 	}
 	rule, _ := json.Marshal(in.ApplicabilityRule)
 	opts, _ := json.Marshal(in.Options)
 	tx, err := s.Store.Pool.Begin(r.Context())
 	if err != nil {
-		problem(w, 500, "CREATE_FAILED", "항목을 만들지 못했습니다.", nil)
+		s.fault(w, r, "CREATE_FAILED", "항목을 만들지 못했습니다.", err)
 		return
 	}
 	defer tx.Rollback(r.Context())
@@ -353,7 +353,7 @@ func (s *Server) createTemplateItem(w http.ResponseWriter, r *http.Request) {
 	}
 	_, err = tx.Exec(r.Context(), `INSERT INTO template_changes(id,version_id,item_code,change_type,after_json,changed_by) SELECT $1,version_id,item_code,'ADD',to_jsonb(checklist_items),$2 FROM checklist_items WHERE id=$3`, store.NewID(), session(r).User.ID, id)
 	if err != nil || tx.Commit(r.Context()) != nil {
-		problem(w, 500, "CREATE_FAILED", "항목 변경 이력을 저장하지 못했습니다.", nil)
+		s.fault(w, r, "CREATE_FAILED", "항목 변경 이력을 저장하지 못했습니다.", err)
 		return
 	}
 	_ = s.Store.Audit(r.Context(), auditFrom(r, "UPDATE_TEMPLATE", "CHECKLIST_ITEM", id, nil, in))
@@ -366,14 +366,14 @@ func (s *Server) updateTemplateItem(w http.ResponseWriter, r *http.Request) {
 	}
 	secID, err := s.sectionID(r.Context(), r.PathValue("versionID"), in.Section)
 	if err != nil {
-		problem(w, 500, "UPDATE_FAILED", "섹션을 만들지 못했습니다.", nil)
+		s.fault(w, r, "UPDATE_FAILED", "섹션을 만들지 못했습니다.", err)
 		return
 	}
 	rule, _ := json.Marshal(in.ApplicabilityRule)
 	opts, _ := json.Marshal(in.Options)
 	tx, err := s.Store.Pool.Begin(r.Context())
 	if err != nil {
-		problem(w, 500, "UPDATE_FAILED", "항목을 저장하지 못했습니다.", nil)
+		s.fault(w, r, "UPDATE_FAILED", "항목을 저장하지 못했습니다.", err)
 		return
 	}
 	defer tx.Rollback(r.Context())
@@ -386,7 +386,7 @@ func (s *Server) updateTemplateItem(w http.ResponseWriter, r *http.Request) {
 	}
 	_, err = tx.Exec(r.Context(), `INSERT INTO template_changes(id,version_id,item_code,change_type,before_json,after_json,changed_by) SELECT $1,version_id,item_code,'MODIFY',$2,to_jsonb(checklist_items),$3 FROM checklist_items WHERE id=$4`, store.NewID(), before, session(r).User.ID, r.PathValue("itemID"))
 	if err != nil || tx.Commit(r.Context()) != nil {
-		problem(w, 500, "UPDATE_FAILED", "항목 변경 이력을 저장하지 못했습니다.", nil)
+		s.fault(w, r, "UPDATE_FAILED", "항목 변경 이력을 저장하지 못했습니다.", err)
 		return
 	}
 	_ = s.Store.Audit(r.Context(), auditFrom(r, "UPDATE_TEMPLATE", "CHECKLIST_ITEM", r.PathValue("itemID"), nil, in))
@@ -395,7 +395,7 @@ func (s *Server) updateTemplateItem(w http.ResponseWriter, r *http.Request) {
 func (s *Server) deleteTemplateItem(w http.ResponseWriter, r *http.Request) {
 	tx, err := s.Store.Pool.Begin(r.Context())
 	if err != nil {
-		problem(w, 500, "DELETE_FAILED", "항목을 삭제하지 못했습니다.", nil)
+		s.fault(w, r, "DELETE_FAILED", "항목을 삭제하지 못했습니다.", err)
 		return
 	}
 	defer tx.Rollback(r.Context())
@@ -409,7 +409,7 @@ func (s *Server) deleteTemplateItem(w http.ResponseWriter, r *http.Request) {
 	}
 	_, err = tx.Exec(r.Context(), `INSERT INTO template_changes(id,version_id,item_code,change_type,before_json,changed_by) VALUES($1,$2,$3,'DELETE',$4,$5)`, store.NewID(), r.PathValue("versionID"), code, before, session(r).User.ID)
 	if err != nil || tx.Commit(r.Context()) != nil {
-		problem(w, 500, "DELETE_FAILED", "항목 변경 이력을 저장하지 못했습니다.", nil)
+		s.fault(w, r, "DELETE_FAILED", "항목 변경 이력을 저장하지 못했습니다.", err)
 		return
 	}
 	_ = s.Store.Audit(r.Context(), auditFrom(r, "UPDATE_TEMPLATE", "CHECKLIST_ITEM", r.PathValue("itemID"), nil, map[string]bool{"deleted": true}))
@@ -464,7 +464,7 @@ func (s *Server) versionDiff(w http.ResponseWriter, r *http.Request) {
 	}
 	rows, err := s.Store.Pool.Query(r.Context(), `WITH a AS (SELECT item_code,to_jsonb(checklist_items)-'id'-'version_id' AS value FROM checklist_items WHERE version_id=$1),b AS (SELECT item_code,to_jsonb(checklist_items)-'id'-'version_id' AS value FROM checklist_items WHERE version_id=$2) SELECT COALESCE(a.item_code,b.item_code),CASE WHEN b.item_code IS NULL THEN 'ADD' WHEN a.item_code IS NULL THEN 'DELETE' WHEN a.value<>b.value THEN 'MODIFY' ELSE 'UNCHANGED' END,a.value,b.value FROM a FULL JOIN b USING(item_code) WHERE a.value IS DISTINCT FROM b.value ORDER BY COALESCE(a.item_code,b.item_code)`, current, base)
 	if err != nil {
-		problem(w, 500, "DIFF_FAILED", "버전을 비교하지 못했습니다.", nil)
+		s.fault(w, r, "DIFF_FAILED", "버전을 비교하지 못했습니다.", err)
 		return
 	}
 	jsonResponse(w, 200, map[string]any{"base_version_id": base, "current_version_id": current, "changes": scanDynamic(rows, []string{"item_code", "change_type", "current", "base"})})
@@ -473,7 +473,7 @@ func (s *Server) versionDiff(w http.ResponseWriter, r *http.Request) {
 func (s *Server) versionChanges(w http.ResponseWriter, r *http.Request) {
 	rows, err := s.Store.Pool.Query(r.Context(), `SELECT c.id,c.item_code,c.change_type,c.before_json,c.after_json,u.display_name AS changed_by,c.created_at FROM template_changes c JOIN checklist_versions v ON v.id=c.version_id JOIN users u ON u.id=c.changed_by WHERE c.version_id=$1 AND v.template_id=$2 ORDER BY c.created_at DESC LIMIT 500`, r.PathValue("versionID"), r.PathValue("id"))
 	if err != nil {
-		problem(w, 500, "QUERY_FAILED", "변경 이력을 불러오지 못했습니다.", nil)
+		s.fault(w, r, "QUERY_FAILED", "변경 이력을 불러오지 못했습니다.", err)
 		return
 	}
 	jsonResponse(w, 200, scanDynamic(rows, []string{"id", "item_code", "change_type", "before", "after", "changed_by", "created_at"}))
@@ -694,6 +694,7 @@ func (s *Server) importTemplate(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	if err != nil {
+		s.Store.Log(r.Context(), "ERROR", requestID(r), "api", "템플릿을 저장하지 못했습니다.", map[string]any{"code": "IMPORT_FAILED", "path": r.URL.Path, "error": err.Error()})
 		problem(w, 500, "IMPORT_FAILED", "템플릿을 저장하지 못했습니다.", err.Error())
 		return
 	}
@@ -843,7 +844,7 @@ func (s *Server) exportTemplate(w http.ResponseWriter, r *http.Request) {
 	}
 	rows, err := s.Store.Pool.Query(r.Context(), `SELECT COALESCE(sec.name,''),i.item_code,i.title,i.question,i.guide,i.legal_basis,i.example,i.severity,i.required,i.answer_type,i.evidence_required FROM checklist_items i LEFT JOIN checklist_sections sec ON sec.id=i.section_id WHERE i.version_id=$1 ORDER BY i.sort_order`, vid)
 	if err != nil {
-		problem(w, 500, "EXPORT_FAILED", "템플릿을 내보내지 못했습니다.", nil)
+		s.fault(w, r, "EXPORT_FAILED", "템플릿을 내보내지 못했습니다.", err)
 		return
 	}
 	defer rows.Close()
@@ -860,7 +861,7 @@ func (s *Server) exportTemplate(w http.ResponseWriter, r *http.Request) {
 	for rows.Next() {
 		var vals [11]any
 		if err = rows.Scan(&vals[0], &vals[1], &vals[2], &vals[3], &vals[4], &vals[5], &vals[6], &vals[7], &vals[8], &vals[9], &vals[10]); err != nil {
-			problem(w, 500, "EXPORT_FAILED", "템플릿을 내보내지 못했습니다.", nil)
+			s.fault(w, r, "EXPORT_FAILED", "템플릿을 내보내지 못했습니다.", err)
 			return
 		}
 		for i, v := range vals {
@@ -872,7 +873,7 @@ func (s *Server) exportTemplate(w http.ResponseWriter, r *http.Request) {
 	_ = f.SetColWidth(sheet, "A", "K", 22)
 	buf, err := f.WriteToBuffer()
 	if err != nil {
-		problem(w, 500, "EXPORT_FAILED", "템플릿을 내보내지 못했습니다.", nil)
+		s.fault(w, r, "EXPORT_FAILED", "템플릿을 내보내지 못했습니다.", err)
 		return
 	}
 	filename := sanitizeFilename(name + "-" + version + ".xlsx")
@@ -915,7 +916,7 @@ func (s *Server) simulateRules(w http.ResponseWriter, r *http.Request) {
                   AND v.id=(SELECT v2.id FROM checklist_versions v2 WHERE v2.template_id=t.id AND v2.status='PUBLISHED' ORDER BY v2.published_at DESC NULLS LAST,v2.created_at DESC LIMIT 1)
                 ORDER BY t.name,i.sort_order`)
 	if err != nil {
-		problem(w, 500, "QUERY_FAILED", "체크리스트를 불러오지 못했습니다.", nil)
+		s.fault(w, r, "QUERY_FAILED", "체크리스트를 불러오지 못했습니다.", err)
 		return
 	}
 	defer rows.Close()
@@ -938,7 +939,7 @@ func (s *Server) simulateRules(w http.ResponseWriter, r *http.Request) {
 		var o outcome
 		var rule []byte
 		if err = rows.Scan(&o.Template, &o.Version, new(string), &o.ItemCode, &o.Category, &o.Title, &o.Severity, &rule); err != nil {
-			problem(w, 500, "QUERY_FAILED", "체크리스트를 불러오지 못했습니다.", nil)
+			s.fault(w, r, "QUERY_FAILED", "체크리스트를 불러오지 못했습니다.", err)
 			return
 		}
 		switch {
@@ -965,7 +966,7 @@ func (s *Server) simulateRules(w http.ResponseWriter, r *http.Request) {
 		items = append(items, o)
 	}
 	if err = rows.Err(); err != nil {
-		problem(w, 500, "QUERY_FAILED", "체크리스트를 불러오지 못했습니다.", nil)
+		s.fault(w, r, "QUERY_FAILED", "체크리스트를 불러오지 못했습니다.", err)
 		return
 	}
 	summary := []map[string]any{}

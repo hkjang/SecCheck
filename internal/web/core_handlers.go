@@ -165,7 +165,7 @@ func (s *Server) updateMe(w http.ResponseWriter, r *http.Request) {
 	sess := session(r)
 	_, err := s.Store.Pool.Exec(r.Context(), `UPDATE users SET display_name=$2,email=$3,department=$4,updated_at=now() WHERE id=$1`, sess.User.ID, strings.TrimSpace(in.DisplayName), strings.TrimSpace(in.Email), strings.TrimSpace(in.Department))
 	if err != nil {
-		problem(w, 500, "UPDATE_FAILED", "프로필을 저장하지 못했습니다.", nil)
+		s.fault(w, r, "UPDATE_FAILED", "프로필을 저장하지 못했습니다.", err)
 		return
 	}
 	_ = s.Store.Audit(r.Context(), auditFrom(r, "UPDATE_PROFILE", "USER", sess.User.ID, nil, in))
@@ -208,7 +208,7 @@ func (s *Server) changePassword(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if _, err = s.Store.Pool.Exec(r.Context(), `UPDATE users SET password_hash=$2,failed_login_count=0,locked_until=NULL,updated_at=now() WHERE id=$1`, sess.User.ID, hash); err != nil {
-		problem(w, 500, "UPDATE_FAILED", "비밀번호를 변경하지 못했습니다.", nil)
+		s.fault(w, r, "UPDATE_FAILED", "비밀번호를 변경하지 못했습니다.", err)
 		return
 	}
 	_, _ = s.Store.Pool.Exec(r.Context(), `DELETE FROM sessions WHERE user_id=$1 AND id<>$2`, sess.User.ID, sess.ID)
@@ -231,7 +231,7 @@ func (s *Server) dashboard(w http.ResponseWriter, r *http.Request) {
 	q := `SELECT status,count(*) FROM review_requests WHERE ` + where + ` GROUP BY status`
 	rows, err := s.Store.Pool.Query(r.Context(), q, args...)
 	if err != nil {
-		problem(w, 500, "QUERY_FAILED", "대시보드를 불러오지 못했습니다.", nil)
+		s.fault(w, r, "QUERY_FAILED", "대시보드를 불러오지 못했습니다.", err)
 		return
 	}
 	defer rows.Close()
@@ -322,20 +322,20 @@ func (s *Server) search(w http.ResponseWriter, r *http.Request) {
 	args = append([]any{like}, args...)
 	rows, err := s.Store.Pool.Query(r.Context(), `SELECT review_requests.id,review_number,service_name,status,review_requests.department FROM review_requests JOIN users requester ON requester.id=review_requests.requester_id JOIN users builder ON builder.id=review_requests.builder_id JOIN users developer ON developer.id=review_requests.developer_id LEFT JOIN users reviewer ON reviewer.id=review_requests.reviewer_id LEFT JOIN users approver ON approver.id=review_requests.approver_id WHERE `+where+` AND (review_number ILIKE $1 OR service_name ILIKE $1 OR review_requests.department ILIKE $1 OR requester.display_name ILIKE $1 OR builder.display_name ILIKE $1 OR developer.display_name ILIKE $1 OR reviewer.display_name ILIKE $1 OR approver.display_name ILIKE $1 OR EXISTS(SELECT 1 FROM submissions sx JOIN submission_items six ON six.submission_id=sx.id WHERE sx.review_request_id=review_requests.id AND six.template_name ILIKE $1)) ORDER BY review_requests.updated_at DESC LIMIT 20`, args...)
 	if err != nil {
-		problem(w, 500, "SEARCH_FAILED", "검색하지 못했습니다.", nil)
+		s.fault(w, r, "SEARCH_FAILED", "검색하지 못했습니다.", err)
 		return
 	}
 	reviews := scanDynamic(rows, []string{"id", "review_number", "service_name", "status", "department"})
 	itemWhere := strings.ReplaceAll(where, "review_requests.", "r.")
 	rows, err = s.Store.Pool.Query(r.Context(), `SELECT DISTINCT r.id AS review_id,r.review_number,si.item_code,si.title,si.category FROM submission_items si JOIN submissions s ON s.id=si.submission_id JOIN review_requests r ON r.id=s.review_request_id LEFT JOIN review_results rr ON rr.submission_item_id=si.id WHERE `+itemWhere+` AND (si.item_code ILIKE $1 OR si.title ILIKE $1 OR si.question ILIKE $1 OR si.template_name ILIKE $1 OR rr.opinion ILIKE $1) LIMIT 20`, args...)
 	if err != nil {
-		problem(w, 500, "SEARCH_FAILED", "검색하지 못했습니다.", nil)
+		s.fault(w, r, "SEARCH_FAILED", "검색하지 못했습니다.", err)
 		return
 	}
 	items := scanDynamic(rows, []string{"review_id", "review_number", "item_code", "title", "category"})
 	rows, err = s.Store.Pool.Query(r.Context(), `SELECT DISTINCT r.id AS review_id,r.review_number,e.id,e.original_filename,e.mime_type,e.created_at FROM evidences e JOIN submission_items si ON si.id=e.submission_item_id JOIN submissions sub ON sub.id=si.submission_id JOIN review_requests r ON r.id=sub.review_request_id WHERE e.deleted_at IS NULL AND `+itemWhere+` AND e.original_filename ILIKE $1 ORDER BY e.created_at DESC LIMIT 20`, args...)
 	if err != nil {
-		problem(w, 500, "SEARCH_FAILED", "검색하지 못했습니다.", nil)
+		s.fault(w, r, "SEARCH_FAILED", "검색하지 못했습니다.", err)
 		return
 	}
 	evidences := scanDynamic(rows, []string{"review_id", "review_number", "id", "original_filename", "mime_type", "created_at"})
@@ -388,7 +388,7 @@ func (s *Server) notifications(w http.ResponseWriter, r *http.Request) {
 	rows, err := s.Store.Pool.Query(r.Context(), `SELECT id,event_type,title,body,status,target_type,target_id,read_at,created_at FROM notifications WHERE `+where+
 		` ORDER BY created_at DESC LIMIT $`+intString(len(args)-1)+` OFFSET $`+intString(len(args)), args...)
 	if err != nil {
-		problem(w, 500, "QUERY_FAILED", "알림을 불러오지 못했습니다.", nil)
+		s.fault(w, r, "QUERY_FAILED", "알림을 불러오지 못했습니다.", err)
 		return
 	}
 	items := scanDynamic(rows, []string{"id", "event_type", "title", "body", "status", "target_type", "target_id", "read_at", "created_at"})
@@ -398,7 +398,7 @@ func (s *Server) notifications(w http.ResponseWriter, r *http.Request) {
 func (s *Server) userDirectory(w http.ResponseWriter, r *http.Request) {
 	rows, err := s.Store.Pool.Query(r.Context(), `SELECT id,username,display_name,department FROM users WHERE active ORDER BY display_name`)
 	if err != nil {
-		problem(w, 500, "QUERY_FAILED", "사용자 목록을 불러오지 못했습니다.", nil)
+		s.fault(w, r, "QUERY_FAILED", "사용자 목록을 불러오지 못했습니다.", err)
 		return
 	}
 	jsonResponse(w, 200, scanDynamic(rows, []string{"id", "username", "display_name", "department"}))
@@ -415,7 +415,7 @@ func (s *Server) unreadNotifications(w http.ResponseWriter, r *http.Request) {
 func (s *Server) readAllNotifications(w http.ResponseWriter, r *http.Request) {
 	tag, err := s.Store.Pool.Exec(r.Context(), `UPDATE notifications SET read_at=now(),status='READ' WHERE recipient_id=$1 AND read_at IS NULL`, session(r).User.ID)
 	if err != nil {
-		problem(w, 500, "UPDATE_FAILED", "알림을 갱신하지 못했습니다.", nil)
+		s.fault(w, r, "UPDATE_FAILED", "알림을 갱신하지 못했습니다.", err)
 		return
 	}
 	jsonResponse(w, 200, map[string]any{"updated": tag.RowsAffected()})
@@ -424,7 +424,7 @@ func (s *Server) readAllNotifications(w http.ResponseWriter, r *http.Request) {
 func (s *Server) readNotification(w http.ResponseWriter, r *http.Request) {
 	_, err := s.Store.Pool.Exec(r.Context(), `UPDATE notifications SET read_at=now(),status='READ' WHERE id=$1 AND recipient_id=$2`, r.PathValue("id"), session(r).User.ID)
 	if err != nil {
-		problem(w, 500, "UPDATE_FAILED", "알림을 갱신하지 못했습니다.", nil)
+		s.fault(w, r, "UPDATE_FAILED", "알림을 갱신하지 못했습니다.", err)
 		return
 	}
 	w.WriteHeader(204)
@@ -448,7 +448,7 @@ func (s *Server) ensureUserDataKey(ctx context.Context, userID string) error {
 func (s *Server) listAPIKeys(w http.ResponseWriter, r *http.Request) {
 	rows, err := s.Store.Pool.Query(r.Context(), `SELECT id,name,prefix,scopes,expires_at,last_used_at,revoked_at,created_at FROM api_keys WHERE user_id=$1 ORDER BY created_at DESC`, session(r).User.ID)
 	if err != nil {
-		problem(w, 500, "QUERY_FAILED", "API 키를 불러오지 못했습니다.", nil)
+		s.fault(w, r, "QUERY_FAILED", "API 키를 불러오지 못했습니다.", err)
 		return
 	}
 	jsonResponse(w, 200, scanDynamic(rows, []string{"id", "name", "prefix", "scopes", "expires_at", "last_used_at", "revoked_at", "created_at"}))
@@ -497,7 +497,7 @@ func (s *Server) issueAPIKey(w http.ResponseWriter, r *http.Request, name string
 	id := store.NewID()
 	_, err := s.Store.Pool.Exec(r.Context(), `INSERT INTO api_keys(id,user_id,name,prefix,secret_hash,scopes,expires_at) VALUES($1,$2,$3,$4,$5,$6,$7)`, id, session(r).User.ID, name, token[:12], h[:], scopes, expires)
 	if err != nil {
-		problem(w, 500, "CREATE_FAILED", "API 키를 만들지 못했습니다.", nil)
+		s.fault(w, r, "CREATE_FAILED", "API 키를 만들지 못했습니다.", err)
 		return
 	}
 	_ = s.Store.Audit(r.Context(), auditFrom(r, "ROTATE_API_KEY", "API_KEY", id, map[string]any{"rotated_from": rotatedFrom}, map[string]any{"name": name, "scopes": scopes}))
@@ -519,7 +519,7 @@ func (s *Server) rotateDataKey(w http.ResponseWriter, r *http.Request) {
 	key, _ := cryptox.RandomBytes(32)
 	encrypted, err := s.Box.Encrypt(key, []byte(fmt.Sprintf("user-key:%s:%d", uid, version)))
 	if err != nil {
-		problem(w, 500, "ROTATE_FAILED", "암호화 키를 회전하지 못했습니다.", nil)
+		s.fault(w, r, "ROTATE_FAILED", "암호화 키를 회전하지 못했습니다.", err)
 		return
 	}
 	tx, err := s.Store.Pool.Begin(r.Context())
@@ -535,7 +535,7 @@ func (s *Server) rotateDataKey(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	if err != nil {
-		problem(w, 500, "ROTATE_FAILED", "암호화 키를 회전하지 못했습니다.", nil)
+		s.fault(w, r, "ROTATE_FAILED", "암호화 키를 회전하지 못했습니다.", err)
 		return
 	}
 	_ = s.Store.Audit(r.Context(), auditFrom(r, "ROTATE_ENCRYPTION_KEY", "USER_KEY", uid, nil, map[string]any{"version": version}))

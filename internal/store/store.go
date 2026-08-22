@@ -8,6 +8,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"sort"
 	"strconv"
 	"strings"
@@ -336,7 +337,14 @@ func (s *Store) Log(ctx context.Context, level, requestID, component, message st
 	if fields == nil {
 		b = []byte(`{}`)
 	}
-	_, _ = s.Pool.Exec(ctx, `INSERT INTO application_logs(level,request_id,component,message,fields) VALUES($1,$2,$3,$4,$5)`, level, requestID, component, message, b)
+	if _, err := s.Pool.Exec(ctx, `INSERT INTO application_logs(level,request_id,component,message,fields) VALUES($1,$2,$3,$4,$5)`, level, requestID, component, message, b); err != nil {
+		// Structured logs live in the database, so a database fault would
+		// otherwise erase the record of itself -- the one failure where the
+		// log matters most is the one it cannot write down. Standard error
+		// is the only place left that a container log collector still reads.
+		slog.Error("application log could not be stored", "level", level, "component", component, "message", message,
+			"fields", string(b), "request_id", requestID, "error", err)
+	}
 }
 
 func NewID() string {

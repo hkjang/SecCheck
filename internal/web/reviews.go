@@ -121,7 +121,7 @@ func (s *Server) listReviewRequests(w http.ResponseWriter, r *http.Request) {
 	if r.URL.Query().Get("format") == "csv" {
 		rows, err := s.Store.Pool.Query(r.Context(), reviewSelect+where+` ORDER BY `+order+` LIMIT `+intString(exportRowCap+1), args...)
 		if err != nil {
-			problem(w, 500, "QUERY_FAILED", "심의 목록을 불러오지 못했습니다.", nil)
+			s.fault(w, r, "QUERY_FAILED", "심의 목록을 불러오지 못했습니다.", err)
 			return
 		}
 		records, truncated := capExport(w, scanDynamic(rows, reviewColumns))
@@ -133,13 +133,13 @@ func (s *Server) listReviewRequests(w http.ResponseWriter, r *http.Request) {
 	limit, offset := parsePage(r)
 	var total int64
 	if err := s.Store.Pool.QueryRow(r.Context(), `SELECT count(*) FROM review_requests WHERE `+where, args...).Scan(&total); err != nil {
-		problem(w, 500, "QUERY_FAILED", "심의 목록을 불러오지 못했습니다.", nil)
+		s.fault(w, r, "QUERY_FAILED", "심의 목록을 불러오지 못했습니다.", err)
 		return
 	}
 	paged := append(append([]any{}, args...), limit, offset)
 	rows, err := s.Store.Pool.Query(r.Context(), reviewSelect+where+fmt.Sprintf(` ORDER BY %s LIMIT $%d OFFSET $%d`, order, len(args)+1, len(args)+2), paged...)
 	if err != nil {
-		problem(w, 500, "QUERY_FAILED", "심의 목록을 불러오지 못했습니다.", nil)
+		s.fault(w, r, "QUERY_FAILED", "심의 목록을 불러오지 못했습니다.", err)
 		return
 	}
 	items := scanDynamic(rows, reviewColumns)
@@ -200,33 +200,33 @@ func (s *Server) createReviewRequest(w http.ResponseWriter, r *http.Request) {
 	sess := session(r)
 	tx, err := s.Store.Pool.Begin(r.Context())
 	if err != nil {
-		problem(w, 500, "CREATE_FAILED", "심의를 생성하지 못했습니다.", nil)
+		s.fault(w, r, "CREATE_FAILED", "심의를 생성하지 못했습니다.", err)
 		return
 	}
 	defer tx.Rollback(r.Context())
 	number, err := s.nextReviewNumber(r, tx)
 	if err != nil {
-		problem(w, 500, "CREATE_FAILED", "심의번호를 발번하지 못했습니다.", nil)
+		s.fault(w, r, "CREATE_FAILED", "심의번호를 발번하지 못했습니다.", err)
 		return
 	}
 	id, submissionID := store.NewID(), store.NewID()
 	_, err = tx.Exec(r.Context(), `INSERT INTO review_requests(id,review_number,service_name,description,service_type,change_type,builder_id,developer_id,operator_id,department,requester_id,reviewer_id,approver_id,planned_open_date,exposure,has_admin_page,processes_personal_data,processes_credit_data,external_customer_service,uses_cloud,uses_docker,uses_kubernetes,external_integration,internet_access,business_criticality,manual_rule_override_reason) VALUES($1,$2,$3,$4,$5,$6,$7,$8,NULLIF($9,''),$10,$11,NULLIF($12,''),NULLIF($13,''),NULLIF($14,'')::date,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26)`, id, number, in.ServiceName, in.Description, in.ServiceType, in.ChangeType, in.BuilderID, in.DeveloperID, in.OperatorID, in.Department, sess.User.ID, in.ReviewerID, in.ApproverID, dateValue(in.PlannedOpenDate), in.Exposure, in.HasAdminPage, in.ProcessesPersonalData, in.ProcessesCreditData, in.ExternalCustomerService, in.UsesCloud, in.UsesDocker, in.UsesKubernetes, in.ExternalIntegration, in.InternetAccess, in.BusinessCriticality, in.ManualRuleOverrideReason)
 	if err != nil {
-		problem(w, 500, "CREATE_FAILED", "심의를 생성하지 못했습니다.", err.Error())
+		s.fault(w, r, "CREATE_FAILED", "심의를 생성하지 못했습니다.", err)
 		return
 	}
 	_, err = tx.Exec(r.Context(), `INSERT INTO submissions(id,review_request_id) VALUES($1,$2)`, submissionID, id)
 	if err != nil {
-		problem(w, 500, "CREATE_FAILED", "제출본을 생성하지 못했습니다.", nil)
+		s.fault(w, r, "CREATE_FAILED", "제출본을 생성하지 못했습니다.", err)
 		return
 	}
 	n, err := s.snapshotApplicableItems(r.Context(), tx, submissionID, in)
 	if err != nil {
-		problem(w, 500, "SNAPSHOT_FAILED", "체크리스트를 배정하지 못했습니다.", err.Error())
+		s.fault(w, r, "SNAPSHOT_FAILED", "체크리스트를 배정하지 못했습니다.", err)
 		return
 	}
 	if err = tx.Commit(r.Context()); err != nil {
-		problem(w, 500, "CREATE_FAILED", "심의를 생성하지 못했습니다.", nil)
+		s.fault(w, r, "CREATE_FAILED", "심의를 생성하지 못했습니다.", err)
 		return
 	}
 	_ = s.Store.Audit(r.Context(), auditFrom(r, "CREATE_SUBMISSION", "REVIEW_REQUEST", id, nil, map[string]any{"review_number": number, "items": n}))
@@ -505,14 +505,14 @@ func (s *Server) reviewHistory(w http.ResponseWriter, r *http.Request) {
                 OR a.target_id IN (SELECT c.id FROM change_requests c WHERE c.review_request_id=$1))`
 	var total int64
 	if err := s.Store.Pool.QueryRow(r.Context(), `SELECT count(*) FROM audit_logs a WHERE `+scope, id).Scan(&total); err != nil {
-		problem(w, 500, "QUERY_FAILED", "심의 이력을 불러오지 못했습니다.", nil)
+		s.fault(w, r, "QUERY_FAILED", "심의 이력을 불러오지 못했습니다.", err)
 		return
 	}
 	rows, err := s.Store.Pool.Query(r.Context(), `SELECT a.timestamp,a.event_type,a.user_name,a.target_type,a.target_id,a.result,
                 COALESCE((SELECT si.item_code FROM submission_items si WHERE si.id=a.target_id),'') AS item_code
                 FROM audit_logs a WHERE `+scope+` ORDER BY a.timestamp DESC LIMIT $2 OFFSET $3`, id, limit, offset)
 	if err != nil {
-		problem(w, 500, "QUERY_FAILED", "심의 이력을 불러오지 못했습니다.", nil)
+		s.fault(w, r, "QUERY_FAILED", "심의 이력을 불러오지 못했습니다.", err)
 		return
 	}
 	items := scanDynamic(rows, []string{"timestamp", "event_type", "user_name", "target_type", "target_id", "result", "item_code"})
@@ -532,7 +532,7 @@ func (s *Server) listSubmissionItems(w http.ResponseWriter, r *http.Request) {
 	}
 	rows, err := s.Store.Pool.Query(r.Context(), `SELECT si.id,si.template_name,si.template_version,si.item_code,si.section,si.category,si.title,si.question,si.guide,si.legal_basis,si.example,si.severity,si.required,si.answer_type,si.evidence_required,si.options_json,si.sort_order,COALESCE(to_jsonb(resp),'{}'),COALESCE(to_jsonb(rr),'{}'),COALESCE((SELECT jsonb_agg(to_jsonb(e)-'stored_filename' ORDER BY e.created_at) FROM evidences e WHERE e.submission_item_id=si.id AND e.deleted_at IS NULL),'[]'),COALESCE((SELECT jsonb_agg(to_jsonb(cr) ORDER BY cr.created_at) FROM change_requests cr WHERE cr.submission_item_id=si.id),'[]'),COALESCE((SELECT jsonb_agg(to_jsonb(c)||jsonb_build_object('author_name',u.display_name) ORDER BY c.created_at) FROM comments c JOIN users u ON u.id=c.author_id WHERE c.submission_item_id=si.id),'[]') FROM submissions sub JOIN submission_items si ON si.submission_id=sub.id LEFT JOIN responses resp ON resp.submission_item_id=si.id LEFT JOIN review_results rr ON rr.submission_item_id=si.id WHERE sub.review_request_id=$1 AND sub.revision=(SELECT max(revision) FROM submissions WHERE review_request_id=$1) ORDER BY si.template_name,si.sort_order`, id)
 	if err != nil {
-		problem(w, 500, "QUERY_FAILED", "체크리스트를 불러오지 못했습니다.", nil)
+		s.fault(w, r, "QUERY_FAILED", "체크리스트를 불러오지 못했습니다.", err)
 		return
 	}
 	jsonResponse(w, 200, scanDynamic(rows, []string{"id", "template_name", "template_version", "item_code", "section", "category", "title", "question", "guide", "legal_basis", "example", "severity", "required", "answer_type", "evidence_required", "options", "sort_order", "response", "review_result", "evidences", "change_requests", "comments"}))
@@ -562,7 +562,7 @@ func (s *Server) addComment(w http.ResponseWriter, r *http.Request) {
 	id := store.NewID()
 	_, err := s.Store.Pool.Exec(r.Context(), `INSERT INTO comments(id,submission_item_id,author_id,body) VALUES($1,$2,$3,$4)`, id, itemID, session(r).User.ID, in.Body)
 	if err != nil {
-		problem(w, 500, "CREATE_FAILED", "코멘트를 저장하지 못했습니다.", nil)
+		s.fault(w, r, "CREATE_FAILED", "코멘트를 저장하지 못했습니다.", err)
 		return
 	}
 	s.notifyComment(r, reviewID, itemID, in.Body)
@@ -714,7 +714,7 @@ func (s *Server) submitReview(w http.ResponseWriter, r *http.Request) {
 	}
 	issues, err := s.validateSubmission(r.Context(), id)
 	if err != nil {
-		problem(w, 500, "VALIDATION_FAILED", "제출 검증에 실패했습니다.", nil)
+		s.fault(w, r, "VALIDATION_FAILED", "제출 검증에 실패했습니다.", err)
 		return
 	}
 	if len(issues) > 0 {
@@ -1011,7 +1011,7 @@ func (s *Server) bulkSaveReviewResults(w http.ResponseWriter, r *http.Request) {
                 `+conflict,
 		session(r).User.ID, in.FinalApplicability, in.Result, in.Opinion, in.EvidenceAdequacy, in.ItemIDs, reviewID)
 	if err != nil {
-		problem(w, 500, "UPDATE_FAILED", "일괄 판정에 실패했습니다.", nil)
+		s.fault(w, r, "UPDATE_FAILED", "일괄 판정에 실패했습니다.", err)
 		return
 	}
 	_ = s.Store.Audit(r.Context(), auditFrom(r, "BULK_REVIEW_RESULT", "REVIEW_REQUEST", reviewID, nil, map[string]any{"items": len(in.ItemIDs), "applied": tag.RowsAffected(), "result": in.Result, "overwrite": in.Overwrite}))
@@ -1097,7 +1097,7 @@ func (s *Server) createChangeRequest(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	if err != nil {
-		problem(w, 500, "CREATE_FAILED", "보완 요청을 만들지 못했습니다.", nil)
+		s.fault(w, r, "CREATE_FAILED", "보완 요청을 만들지 못했습니다.", err)
 		return
 	}
 	recipient := in.AssigneeID
@@ -1145,7 +1145,7 @@ func (s *Server) updateChangeRequest(w http.ResponseWriter, r *http.Request) {
 	}
 	_, err = s.Store.Pool.Exec(r.Context(), `UPDATE change_requests SET answer=COALESCE(NULLIF($2,''),answer),status=$3,updated_at=now() WHERE id=$1`, id, in.Answer, in.Status)
 	if err != nil {
-		problem(w, 500, "UPDATE_FAILED", "보완 요청을 저장하지 못했습니다.", nil)
+		s.fault(w, r, "UPDATE_FAILED", "보완 요청을 저장하지 못했습니다.", err)
 		return
 	}
 	_ = s.Store.Audit(r.Context(), auditFrom(r, "UPDATE_CHANGE_REQUEST", "CHANGE_REQUEST", id, map[string]string{"status": status}, in))
@@ -1192,7 +1192,7 @@ func (s *Server) completeReview(w http.ResponseWriter, r *http.Request) {
 	}
 	tag, err := s.Store.Pool.Exec(r.Context(), `UPDATE review_requests SET status=$2,final_opinion=$3,final_result=$4,approved_at=CASE WHEN $2='APPROVED' THEN now() ELSE NULL END,updated_at=now() WHERE id=$1 AND status='REVIEWING'`, id, next, in.FinalOpinion, in.FinalResult)
 	if err != nil || tag.RowsAffected() == 0 {
-		problem(w, 500, "UPDATE_FAILED", "검토를 완료하지 못했습니다.", nil)
+		s.fault(w, r, "UPDATE_FAILED", "검토를 완료하지 못했습니다.", err)
 		return
 	}
 	event := "APPROVE"
@@ -1301,7 +1301,7 @@ func (s *Server) addParticipant(w http.ResponseWriter, r *http.Request) {
 	_, err := s.Store.Pool.Exec(r.Context(), `INSERT INTO review_participants(review_request_id,user_id,participant_role) VALUES($1,$2,$3)
                 ON CONFLICT(review_request_id,user_id) DO UPDATE SET participant_role=EXCLUDED.participant_role`, id, in.UserID, in.Role)
 	if err != nil {
-		problem(w, 500, "UPDATE_FAILED", "공동 작성자를 지정하지 못했습니다.", nil)
+		s.fault(w, r, "UPDATE_FAILED", "공동 작성자를 지정하지 못했습니다.", err)
 		return
 	}
 	_ = s.Store.Audit(r.Context(), auditFrom(r, "ADD_PARTICIPANT", "REVIEW_REQUEST", id, nil, in))
@@ -1317,7 +1317,7 @@ func (s *Server) listRuleCandidates(w http.ResponseWriter, r *http.Request) {
 	}
 	rows, err := s.Store.Pool.Query(r.Context(), `SELECT i.id,t.name,v.version,i.item_code,COALESCE(sec.name,''),i.category,i.title,i.question,i.severity,COALESCE((SELECT si.id FROM submissions sub JOIN submission_items si ON si.submission_id=sub.id WHERE sub.review_request_id=$1 AND sub.revision=(SELECT max(revision) FROM submissions WHERE review_request_id=$1) AND si.source_item_id=i.id LIMIT 1),'') AS assigned_item_id FROM checklist_items i JOIN checklist_versions v ON v.id=i.version_id JOIN checklist_templates t ON t.id=v.template_id LEFT JOIN checklist_sections sec ON sec.id=i.section_id WHERE t.active AND v.status='PUBLISHED' AND v.id=(SELECT v2.id FROM checklist_versions v2 WHERE v2.template_id=t.id AND v2.status='PUBLISHED' ORDER BY v2.published_at DESC NULLS LAST,v2.created_at DESC LIMIT 1) ORDER BY t.name,i.sort_order`, reviewID)
 	if err != nil {
-		problem(w, 500, "QUERY_FAILED", "Rule 후보를 불러오지 못했습니다.", nil)
+		s.fault(w, r, "QUERY_FAILED", "Rule 후보를 불러오지 못했습니다.", err)
 		return
 	}
 	jsonResponse(w, 200, map[string]any{"editable": status == "DRAFT", "items": scanDynamic(rows, []string{"source_item_id", "template_name", "template_version", "item_code", "section", "category", "title", "question", "severity", "assigned_item_id"})})
@@ -1342,7 +1342,7 @@ func (s *Server) overrideRuleResult(w http.ResponseWriter, r *http.Request) {
 	}
 	tx, err := s.Store.Pool.Begin(r.Context())
 	if err != nil {
-		problem(w, 500, "UPDATE_FAILED", "Rule 결과를 변경하지 못했습니다.", nil)
+		s.fault(w, r, "UPDATE_FAILED", "Rule 결과를 변경하지 못했습니다.", err)
 		return
 	}
 	defer tx.Rollback(r.Context())
@@ -1391,7 +1391,7 @@ func (s *Server) overrideRuleResult(w http.ResponseWriter, r *http.Request) {
 		err = tx.Commit(r.Context())
 	}
 	if err != nil {
-		problem(w, 500, "UPDATE_FAILED", "Rule 결과를 변경하지 못했습니다.", nil)
+		s.fault(w, r, "UPDATE_FAILED", "Rule 결과를 변경하지 못했습니다.", err)
 		return
 	}
 	_ = s.Store.Audit(r.Context(), auditFrom(r, "OVERRIDE_RULE", "REVIEW_REQUEST", reviewID, nil, map[string]any{"action": in.Action, "source_item_id": sourceID, "reason": in.Reason}))
@@ -1413,13 +1413,13 @@ func (s *Server) copyReview(w http.ResponseWriter, r *http.Request) {
 	}
 	tx, err := s.Store.Pool.Begin(r.Context())
 	if err != nil {
-		problem(w, 500, "COPY_FAILED", "심의를 복사하지 못했습니다.", nil)
+		s.fault(w, r, "COPY_FAILED", "심의를 복사하지 못했습니다.", err)
 		return
 	}
 	defer tx.Rollback(r.Context())
 	number, err := s.nextReviewNumber(r, tx)
 	if err != nil {
-		problem(w, 500, "COPY_FAILED", "심의번호를 발번하지 못했습니다.", nil)
+		s.fault(w, r, "COPY_FAILED", "심의번호를 발번하지 못했습니다.", err)
 		return
 	}
 	id, submissionID := store.NewID(), store.NewID()
@@ -1454,7 +1454,7 @@ func (s *Server) copyReview(w http.ResponseWriter, r *http.Request) {
 		err = tx.Commit(r.Context())
 	}
 	if err != nil {
-		problem(w, 500, "COPY_FAILED", "심의를 복사하지 못했습니다.", err.Error())
+		s.fault(w, r, "COPY_FAILED", "심의를 복사하지 못했습니다.", err)
 		return
 	}
 	_ = s.Store.Audit(r.Context(), auditFrom(r, "COPY_SUBMISSION", "REVIEW_REQUEST", id, map[string]string{"source": source}, map[string]any{"review_number": number, "carried": carried, "new_items": added, "dropped_items": dropped}))
