@@ -13,6 +13,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 	_ "time/tzdata" // the image must resolve zone names even without system tzdata
 
@@ -25,6 +26,8 @@ var migrations embed.FS
 
 type Store struct {
 	Pool *pgxpool.Pool
+
+	auditFailures atomic.Int64
 
 	zoneMu   sync.Mutex
 	zoneAt   time.Time
@@ -294,7 +297,31 @@ func (s *Store) Setting(ctx context.Context, key string, out any) (string, error
 	return encrypted, nil
 }
 
+// Audit appends one event to the hash chain. Callers discard the error --
+// the action they are recording has already happened, so refusing the request
+// would be a lie -- which means a failure here would otherwise vanish: the
+// chain still verifies, because it is consistent with what it contains, and
+// nothing says an event is missing from it. For a service whose whole claim
+// is a tamper-evident record, losing events quietly is the worst outcome
+// available, so every failure is counted, logged, and left on standard error
+// where it survives the database being the thing that broke.
 func (s *Store) Audit(ctx context.Context, e AuditEvent) error {
+	err := s.appendAudit(ctx, e)
+	if err != nil {
+		s.auditFailures.Add(1)
+		slog.Error("audit event could not be recorded", "event_type", e.EventType, "target_type", e.TargetType,
+			"target_id", e.TargetID, "user", e.UserName, "error", err)
+		s.Log(ctx, "ERROR", e.RequestID, "audit", "감사 이벤트를 기록하지 못했습니다.",
+			map[string]any{"event_type": e.EventType, "target_type": e.TargetType, "target_id": e.TargetID, "error": err.Error()})
+	}
+	return err
+}
+
+// AuditFailures counts events lost since the process started. It is in memory
+// on purpose: the database is exactly what may be unavailable when it grows.
+func (s *Store) AuditFailures() int64 { return s.auditFailures.Load() }
+
+func (s *Store) appendAudit(ctx context.Context, e AuditEvent) error {
 	if e.Result == "" {
 		e.Result = "SUCCESS"
 	}

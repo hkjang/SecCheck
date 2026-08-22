@@ -61,3 +61,48 @@ func TestLoggingStaysQuietWhenTheDatabaseAcceptsIt(t *testing.T) {
 	}
 	_ = store.NewID()
 }
+
+// Callers cannot act on an audit failure -- the action is already done -- so
+// the failure has to be impossible to overlook instead: counted, written to
+// the application log, and left on standard error for the case where the
+// database is what broke.
+func TestLostAuditEventsAreCountedAndReported(t *testing.T) {
+	db := testdb.New(t)
+	ctx := context.Background()
+	var captured bytes.Buffer
+	previous := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&captured, &slog.HandlerOptions{Level: slog.LevelError})))
+	t.Cleanup(func() { slog.SetDefault(previous) })
+
+	userID := testdb.Bootstrap(t, db, "audited")
+	if err := db.Audit(ctx, store.AuditEvent{UserID: userID, UserName: "audited", EventType: "LOGIN", TargetType: "USER", TargetID: userID}); err != nil {
+		t.Fatalf("a healthy audit write failed: %v", err)
+	}
+	if n := db.AuditFailures(); n != 0 {
+		t.Fatalf("a successful write counted %d failures", n)
+	}
+
+	if _, err := db.Pool.Exec(ctx, `ALTER TABLE audit_logs RENAME TO audit_logs_gone`); err != nil {
+		t.Fatal(err)
+	}
+	err := db.Audit(ctx, store.AuditEvent{UserID: userID, UserName: "audited", EventType: "DELETE_EVIDENCE", TargetType: "EVIDENCE", TargetID: "e1"})
+	if _, renameErr := db.Pool.Exec(ctx, `ALTER TABLE audit_logs_gone RENAME TO audit_logs`); renameErr != nil {
+		t.Fatal(renameErr)
+	}
+	if err == nil {
+		t.Fatal("a write into a missing table reported success")
+	}
+	if n := db.AuditFailures(); n != 1 {
+		t.Errorf("audit failures = %d, want 1", n)
+	}
+	if out := captured.String(); !strings.Contains(out, "audit event could not be recorded") || !strings.Contains(out, "DELETE_EVIDENCE") {
+		t.Errorf("standard error does not name the lost event:\n%s", out)
+	}
+	var logged int
+	if err := db.Pool.QueryRow(ctx, `SELECT count(*) FROM application_logs WHERE component='audit' AND fields->>'event_type'='DELETE_EVIDENCE'`).Scan(&logged); err != nil {
+		t.Fatal(err)
+	}
+	if logged != 1 {
+		t.Errorf("the application log has %d entries for the lost event, want 1", logged)
+	}
+}

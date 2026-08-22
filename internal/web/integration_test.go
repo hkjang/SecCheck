@@ -2140,3 +2140,32 @@ func TestServerFaultsRecordTheirCause(t *testing.T) {
 		t.Error("the log entry has no message")
 	}
 }
+
+// The counter has to reach /metrics, or an operator has nothing to alert on.
+func TestMetricsCountLostAuditEvents(t *testing.T) {
+	h := newHarness(t)
+	admin := h.login(adminOf(h))
+	ctx := context.Background()
+	reading := func() string {
+		for _, line := range strings.Split(admin.do(http.MethodGet, "/metrics", nil).body, "\n") {
+			if strings.HasPrefix(line, "seccheck_audit_write_failures ") {
+				return strings.Fields(line)[1]
+			}
+		}
+		t.Fatal("/metrics does not carry seccheck_audit_write_failures")
+		return ""
+	}
+	if got := reading(); got != "0" {
+		t.Fatalf("a healthy service reports %s lost audit events", got)
+	}
+	if _, err := h.db.Pool.Exec(ctx, `ALTER TABLE audit_logs RENAME TO audit_logs_gone`); err != nil {
+		t.Fatal(err)
+	}
+	_ = h.db.Audit(ctx, store.AuditEvent{UserName: "tester", EventType: "LOGIN", TargetType: "USER", TargetID: "x"})
+	if _, err := h.db.Pool.Exec(ctx, `ALTER TABLE audit_logs_gone RENAME TO audit_logs`); err != nil {
+		t.Fatal(err)
+	}
+	if got := reading(); got != "1" {
+		t.Errorf("after a lost event /metrics reports %s, want 1", got)
+	}
+}
