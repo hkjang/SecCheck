@@ -1098,6 +1098,7 @@ func (s *Server) saveReviewResult(w http.ResponseWriter, r *http.Request) {
 		Opinion            string `json:"opinion"`
 		EvidenceAdequacy   string `json:"evidence_adequacy"`
 		FollowUp           string `json:"follow_up"`
+		FollowUpDueDate    string `json:"follow_up_due_date"`
 		NAApproved         *bool  `json:"na_approved"`
 		ExpectedUpdatedAt  string `json:"expected_updated_at"`
 	}
@@ -1115,7 +1116,7 @@ func (s *Server) saveReviewResult(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var savedAt time.Time
-	err := s.Store.Pool.QueryRow(r.Context(), `INSERT INTO review_results(id,submission_item_id,reviewer_id,final_applicability,result,opinion,evidence_adequacy,na_approved,follow_up) SELECT $1,si.id,$2,$3,$4,$5,$6,$7,$8 FROM submission_items si JOIN submissions sub ON sub.id=si.submission_id JOIN review_requests rq ON rq.id=sub.review_request_id WHERE si.id=$9 AND sub.review_request_id=$10 AND rq.status='REVIEWING' AND sub.revision=(SELECT max(revision) FROM submissions WHERE review_request_id=$10) ON CONFLICT(submission_item_id) DO UPDATE SET reviewer_id=EXCLUDED.reviewer_id,final_applicability=EXCLUDED.final_applicability,result=EXCLUDED.result,opinion=EXCLUDED.opinion,evidence_adequacy=EXCLUDED.evidence_adequacy,na_approved=EXCLUDED.na_approved,follow_up=EXCLUDED.follow_up,updated_at=now() RETURNING updated_at`, store.NewID(), session(r).User.ID, in.FinalApplicability, in.Result, in.Opinion, in.EvidenceAdequacy, in.NAApproved, in.FollowUp, itemID, id).Scan(&savedAt)
+	err := s.Store.Pool.QueryRow(r.Context(), `INSERT INTO review_results(id,submission_item_id,reviewer_id,final_applicability,result,opinion,evidence_adequacy,na_approved,follow_up,follow_up_due_date) SELECT $1,si.id,$2,$3,$4,$5,$6,$7,$8,NULLIF($11,'')::date FROM submission_items si JOIN submissions sub ON sub.id=si.submission_id JOIN review_requests rq ON rq.id=sub.review_request_id WHERE si.id=$9 AND sub.review_request_id=$10 AND rq.status='REVIEWING' AND sub.revision=(SELECT max(revision) FROM submissions WHERE review_request_id=$10) ON CONFLICT(submission_item_id) DO UPDATE SET reviewer_id=EXCLUDED.reviewer_id,final_applicability=EXCLUDED.final_applicability,result=EXCLUDED.result,opinion=EXCLUDED.opinion,evidence_adequacy=EXCLUDED.evidence_adequacy,na_approved=EXCLUDED.na_approved,follow_up=EXCLUDED.follow_up,follow_up_due_date=EXCLUDED.follow_up_due_date,updated_at=now() RETURNING updated_at`, store.NewID(), session(r).User.ID, in.FinalApplicability, in.Result, in.Opinion, in.EvidenceAdequacy, in.NAApproved, in.FollowUp, itemID, id, strings.TrimSpace(in.FollowUpDueDate)).Scan(&savedAt)
 	if err != nil {
 		problem(w, 404, "NOT_FOUND", "검토 항목을 찾을 수 없습니다.", nil)
 		return

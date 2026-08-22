@@ -2330,7 +2330,7 @@ func TestTheReportCollectsOutstandingFollowUps(t *testing.T) {
 	}
 	withAction := items[0]["id"].(string)
 	if res := admin.do(http.MethodPut, "/api/v1/review-requests/"+reviewID+"/review-results/"+withAction,
-		map[string]any{"result": "CONDITIONAL", "opinion": "조건부", "follow_up": "3개월 내 WAF 규칙 보완", "expected_updated_at": ""}); res.status != http.StatusOK {
+		map[string]any{"result": "CONDITIONAL", "opinion": "조건부", "follow_up": "3개월 내 WAF 규칙 보완", "follow_up_due_date": "2020-01-31", "expected_updated_at": ""}); res.status != http.StatusOK {
 		t.Fatalf("saving a verdict with a follow-up: %d %s", res.status, res.body)
 	}
 	// An item judged without a commitment must not appear in the register.
@@ -2352,6 +2352,14 @@ func TestTheReportCollectsOutstandingFollowUps(t *testing.T) {
 	}
 	if number, _ := entry["review_number"].(string); number == "" {
 		t.Error("the register entry does not name its review")
+	}
+	// A date in the past has to read as late, or "outstanding" carries no
+	// urgency and the register is just a list.
+	if due, _ := entry["due_on"].(string); due != "2020-01-31" {
+		t.Errorf("the register entry has due_on=%q", due)
+	}
+	if overdue, _ := entry["overdue"].(bool); !overdue {
+		t.Error("an action past its date is not marked late")
 	}
 
 	book := admin.do(http.MethodGet, "/api/v1/reports/reviews?format=xlsx", nil)

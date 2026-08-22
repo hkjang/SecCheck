@@ -145,6 +145,8 @@ func (s *Server) buildReport(r *http.Request, scope reportScope) (reportData, er
 	}
 	if data.FollowUps, err = s.reportRows(ctx, `SELECT rr.id,r.review_number,r.service_name,r.department,si.item_code,si.title,rr.result,rr.follow_up,
                 to_char(COALESCE(r.approved_at,r.updated_at),'YYYY-MM-DD') AS decided_on,
+                to_char(rr.follow_up_due_date,'YYYY-MM-DD') AS due_on,
+                (rr.follow_up_done_at IS NULL AND rr.follow_up_due_date IS NOT NULL AND rr.follow_up_due_date < current_date) AS overdue,
                 to_char(rr.follow_up_done_at,'YYYY-MM-DD') AS done_on,
                 COALESCE(u.display_name,'') AS done_by, rr.follow_up_note
                 FROM review_results rr
@@ -153,8 +155,8 @@ func (s *Server) buildReport(r *http.Request, scope reportScope) (reportData, er
                 JOIN review_requests r ON r.id=sub.review_request_id
                 LEFT JOIN users u ON u.id=rr.follow_up_done_by
                 WHERE `+scope.where+` AND btrim(rr.follow_up)<>''`+done+`
-                ORDER BY rr.follow_up_done_at NULLS FIRST,COALESCE(r.approved_at,r.updated_at) DESC,r.review_number,si.item_code LIMIT 500`,
-		scope.args, "id", "review_number", "service_name", "department", "item_code", "title", "result", "follow_up", "decided_on", "done_on", "done_by", "follow_up_note"); err != nil {
+                ORDER BY rr.follow_up_done_at NULLS FIRST,rr.follow_up_due_date NULLS LAST,COALESCE(r.approved_at,r.updated_at) DESC,r.review_number,si.item_code LIMIT 500`,
+		scope.args, "id", "review_number", "service_name", "department", "item_code", "title", "result", "follow_up", "decided_on", "due_on", "overdue", "done_on", "done_by", "follow_up_note"); err != nil {
 		return data, err
 	}
 	// Aging looks at what is still open right now, which is the queue the team
@@ -227,8 +229,8 @@ func (s *Server) writeReportWorkbook(w http.ResponseWriter, r *http.Request, dat
 		{"검토 결과", []any{"판정", "항목 수"}, []string{"result", "count"}, data.ByResult},
 		{"반복 미흡 항목", []any{"항목코드", "보안요건", "분류", "발생 건수"}, []string{"item_code", "title", "category", "count"}, data.Recurring},
 		{"경과 기간", []any{"경과", "진행 중 건수"}, []string{"bucket", "count"}, data.Aging},
-		{"미조치 항목", []any{"심의번호", "서비스", "부서", "항목코드", "보안요건", "판정", "조치 사항", "판정일", "이행일", "이행자", "이행 결과"},
-			[]string{"review_number", "service_name", "department", "item_code", "title", "result", "follow_up", "decided_on", "done_on", "done_by", "follow_up_note"}, data.FollowUps},
+		{"미조치 항목", []any{"심의번호", "서비스", "부서", "항목코드", "보안요건", "판정", "조치 사항", "판정일", "조치 기한", "기한 초과", "이행일", "이행자", "이행 결과"},
+			[]string{"review_number", "service_name", "department", "item_code", "title", "result", "follow_up", "decided_on", "due_on", "overdue", "done_on", "done_by", "follow_up_note"}, data.FollowUps},
 	}
 	for _, sheet := range sheets {
 		if _, err := f.NewSheet(sheet.name); err != nil {

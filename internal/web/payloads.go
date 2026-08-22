@@ -47,7 +47,7 @@ var requestPayloads = map[string][]payloadField{
 	"PUT /api/v1/me/notification-preferences":                          {{"email_enabled", "bool"}, {"digest", "string"}, {"muted_events", "[]string"}},
 	"PUT /api/v1/me/password":                                          {{"current_password", "string"}, {"new_password", "string"}},
 	"PUT /api/v1/review-requests/{id}/responses/{itemID}":              {{"answer", "any"}, {"applicability", "string"}, {"self_assessment", "string"}, {"current_state", "string"}, {"na_reason", "string"}, {"action_plan", "string"}, {"assigned_to", "string"}, {"expected_updated_at", "string"}},
-	"PUT /api/v1/review-requests/{id}/review-results/{itemID}":         {{"final_applicability", "string"}, {"result", "string"}, {"opinion", "string"}, {"evidence_adequacy", "string"}, {"follow_up", "string"}, {"na_approved", "bool"}, {"expected_updated_at", "string"}},
+	"PUT /api/v1/review-requests/{id}/review-results/{itemID}":         {{"final_applicability", "string"}, {"result", "string"}, {"opinion", "string"}, {"evidence_adequacy", "string"}, {"follow_up", "string"}, {"follow_up_due_date", "string"}, {"na_approved", "bool"}, {"expected_updated_at", "string"}},
 }
 
 // objectScopedRoutes need no particular role, but they are not open to every
