@@ -1035,6 +1035,57 @@ func (s *Server) bulkSaveReviewResults(w http.ResponseWriter, r *http.Request) {
 	jsonResponse(w, 200, map[string]any{"requested": len(in.ItemIDs), "applied": tag.RowsAffected(), "skipped": int64(len(in.ItemIDs)) - tag.RowsAffected()})
 }
 
+// markFollowUp records that an action promised at review time was carried
+// out, or takes that back. The register that collects these promises could
+// only grow before: an entry from last year looked the same whether it had
+// been done or forgotten.
+//
+// Any security reviewer may close one, not only the reviewer who wrote it.
+// These outlive the review -- the person who judged the item may have moved
+// on long before the action falls due.
+func (s *Server) markFollowUp(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	var in struct {
+		Done bool   `json:"done"`
+		Note string `json:"note"`
+	}
+	if !decodeJSON(w, r, &in) {
+		return
+	}
+	if len([]rune(in.Note)) > 2000 {
+		problem(w, 422, "VALIDATION_FAILED", "조치 결과는 2000자 이내여야 합니다.", nil)
+		return
+	}
+	sess := session(r)
+	var reviewID, action string
+	query := `UPDATE review_results SET follow_up_done_at=NULL,follow_up_done_by=NULL,follow_up_note='' WHERE id=$1 AND btrim(follow_up)<>''`
+	if in.Done {
+		query = `UPDATE review_results SET follow_up_done_at=now(),follow_up_done_by=$2,follow_up_note=$3 WHERE id=$1 AND btrim(follow_up)<>''`
+	}
+	args := []any{id}
+	if in.Done {
+		args = append(args, sess.User.ID, strings.TrimSpace(in.Note))
+	}
+	tag, err := s.Store.Pool.Exec(r.Context(), query, args...)
+	if err != nil {
+		s.fault(w, r, "UPDATE_FAILED", "조치 상태를 저장하지 못했습니다.", err)
+		return
+	}
+	if tag.RowsAffected() == 0 {
+		problem(w, 404, "NOT_FOUND", "조치 사항이 기록된 검토 결과를 찾을 수 없습니다.", nil)
+		return
+	}
+	_ = s.Store.Pool.QueryRow(r.Context(), `SELECT sub.review_request_id FROM review_results rr
+                JOIN submission_items si ON si.id=rr.submission_item_id
+                JOIN submissions sub ON sub.id=si.submission_id WHERE rr.id=$1`, id).Scan(&reviewID)
+	action = "FOLLOW_UP_REOPENED"
+	if in.Done {
+		action = "FOLLOW_UP_DONE"
+	}
+	_ = s.Store.Audit(r.Context(), auditFrom(r, action, "REVIEW_REQUEST", reviewID, nil, map[string]any{"review_result_id": id, "note": in.Note}))
+	jsonResponse(w, 200, map[string]any{"id": id, "done": in.Done})
+}
+
 func (s *Server) saveReviewResult(w http.ResponseWriter, r *http.Request) {
 	id, itemID := r.PathValue("id"), r.PathValue("itemID")
 	if !s.canReview(r.Context(), session(r), id) {

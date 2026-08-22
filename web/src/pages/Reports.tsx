@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from 'react'
-import { BarChart3, CalendarRange, Download, Timer } from 'lucide-react'
-import { errorMessage, get } from '../lib/api'
-import { Badge, Button, Empty, Field, Loading, StatusBadge, useDownload, useToast } from '../components/ui'
+import { BarChart3, CalendarRange, Check, Download, Timer } from 'lucide-react'
+import { errorMessage, get, post } from '../lib/api'
+import { Badge, Button, Empty, Field, Loading, Modal, StatusBadge, useDownload, useToast } from '../components/ui'
 
 type Row = Record<string, string | number>
 type Report = {
@@ -20,9 +20,11 @@ export default function Reports() {
   const toast = useToast()
   const save = useDownload()
   const [filter, setFilter] = useState({ from: monthStart(), to: today(), department: '' })
+  const [includeDone, setIncludeDone] = useState(false)
   const [data, setData] = useState<Report>()
-  const params = useMemo(() => { const qs = new URLSearchParams(); Object.entries(filter).forEach(([k, v]) => { if (v) qs.set(k, v) }); return qs }, [filter])
-  useEffect(() => { setData(undefined); const timer = window.setTimeout(() => { get<Report>(`/api/v1/reports/reviews?${params}`).then(setData).catch(e => toast.push(errorMessage(e), 'error')) }, 200); return () => clearTimeout(timer) }, [params])
+  const params = useMemo(() => { const qs = new URLSearchParams(); Object.entries(filter).forEach(([k, v]) => { if (v) qs.set(k, v) }); if (includeDone) qs.set('include_done', '1'); return qs }, [filter, includeDone])
+  const reload = () => get<Report>(`/api/v1/reports/reviews?${params}`).then(setData).catch(e => toast.push(errorMessage(e), 'error'))
+  useEffect(() => { setData(undefined); const timer = window.setTimeout(reload, 200); return () => clearTimeout(timer) }, [params])
   const set = (key: keyof typeof filter, value: string) => setFilter(v => ({ ...v, [key]: value }))
   const preset = (months: number) => { const d = new Date(); const start = new Date(d.getFullYear(), d.getMonth() - months + 1, 1); setFilter(v => ({ ...v, from: start.toISOString().slice(0, 10), to: today() })) }
 
@@ -58,7 +60,7 @@ export default function Reports() {
       </div>
       <ReportTable title="부서별 현황" rows={data.by_department} columns={[['department', '부서'], ['created', '신규'], ['completed', '완료'], ['average_days', '평균 처리일']]} />
       <ReportTable title="반복 미흡·부적합 항목" rows={data.recurring_findings} columns={[['item_code', '항목코드'], ['title', '보안요건'], ['category', '분류'], ['count', '발생 건수']]} empty="이 기간에 미흡·부적합 판정이 없습니다." />
-      <ReportTable title="미조치 항목" rows={data.follow_ups} columns={[['review_number', '심의번호'], ['service_name', '서비스'], ['item_code', '항목코드'], ['title', '보안요건'], ['result', '판정'], ['follow_up', '조치 사항'], ['decided_on', '판정일']]} render={{ result: v => <>{resultLabel[String(v)] || String(v)}</> }} empty="조치 사항이 기록된 항목이 없습니다." />
+      <FollowUpTable rows={data.follow_ups} includeDone={includeDone} onToggleScope={() => setIncludeDone(v => !v)} onChanged={reload} />
       <ReportTable title="진행 중 심의 경과" rows={data.aging} columns={[['bucket', '최근 변경 이후'], ['count', '건수']]} empty="진행 중인 심의가 없습니다." />
     </>}
   </div>
@@ -70,5 +72,46 @@ function ReportTable({ title, rows, columns, render, empty }: { title: string; r
       <thead><tr>{columns.map(([key, label]) => <th key={key} scope="col">{label}</th>)}</tr></thead>
       <tbody>{rows.map((row, i) => <tr key={i}>{columns.map(([key]) => <td key={key}>{render?.[key] ? render[key](row[key]) : String(row[key] ?? '-')}</td>)}</tr>)}</tbody>
     </table></div> : <Empty title={empty || '집계할 데이터가 없습니다.'} />}
+  </section>
+}
+
+// The register is the work left over from reviewing. Closing an entry here
+// rather than inside the review it came from is the point: by the time an
+// action falls due, nobody is looking at that review any more.
+function FollowUpTable({ rows, includeDone, onToggleScope, onChanged }: { rows: Row[]; includeDone: boolean; onToggleScope: () => void; onChanged: () => Promise<void> | void }) {
+  const toast = useToast()
+  const [busy, setBusy] = useState('')
+  const [closing, setClosing] = useState<Row>()
+  const [note, setNote] = useState('')
+  const mark = async (row: Row, done: boolean, result = '') => {
+    setBusy(String(row.id))
+    try {
+      await post(`/api/v1/review-results/${row.id}/follow-up`, { done, note: result })
+      toast.push(done ? '조치 완료로 표시했습니다.' : '이행 완료를 해제했습니다.')
+      setClosing(undefined); setNote('')
+      await onChanged()
+    } catch (e) { toast.push(errorMessage(e), 'error') } finally { setBusy('') }
+  }
+  return <section className="card">
+    <div className="card-header"><h2>미조치 항목</h2><Badge>{rows.length}</Badge>
+      <div className="header-actions"><button type="button" className={`chip ${includeDone ? 'on' : ''}`} aria-pressed={includeDone} onClick={onToggleScope}>이행 완료 포함</button></div></div>
+    {rows.length ? <div className="table-wrap"><table><caption className="sr-only">미조치 항목</caption>
+      <thead><tr><th scope="col">심의</th><th scope="col">항목</th><th scope="col">판정</th><th scope="col">조치 사항</th><th scope="col">상태</th><th scope="col"><span className="sr-only">작업</span></th></tr></thead>
+      <tbody>{rows.map(row => <tr key={String(row.id)}>
+        <td>{String(row.review_number)}<div className="subtle">{String(row.service_name)}{row.department ? ` · ${row.department}` : ''}</div></td>
+        <td>{String(row.item_code)}<div className="subtle">{String(row.title)}</div></td>
+        <td>{resultLabel[String(row.result)] || String(row.result)}</td>
+        <td>{String(row.follow_up)}<div className="subtle">{String(row.decided_on)} 판정</div></td>
+        <td>{row.done_on ? <><Badge tone="green">이행 완료</Badge><div className="subtle">{String(row.done_on)} · {String(row.done_by)}</div>{row.follow_up_note ? <div className="subtle">{String(row.follow_up_note)}</div> : null}</> : <Badge tone="amber">미조치</Badge>}</td>
+        <td>{row.done_on
+          ? <Button small disabled={busy === String(row.id)} onClick={() => mark(row, false)}>해제</Button>
+          : <Button small variant="primary" disabled={busy === String(row.id)} onClick={() => { setClosing(row); setNote('') }}><Check size={13} /> 조치 완료</Button>}</td>
+      </tr>)}</tbody></table></div>
+      : <Empty title={includeDone ? '조치 사항이 기록된 항목이 없습니다.' : '미조치 항목이 없습니다.'} description="검토자가 판정과 함께 남긴 조치 사항이 여기 모입니다." />}
+    {closing && <Modal title="조치 완료 처리" onClose={() => setClosing(undefined)}
+      footer={<><Button onClick={() => setClosing(undefined)}>취소</Button><Button variant="primary" disabled={busy !== ''} onClick={() => mark(closing, true, note)}>완료로 표시</Button></>}>
+      <div className="guide-block">{String(closing.review_number)} · {String(closing.item_code)}<br />{String(closing.follow_up)}</div>
+      <Field label="이행 결과" help="무엇을 했는지 남겨 두면 다음 심의에서 근거가 됩니다."><textarea className="textarea" value={note} onChange={e => setNote(e.target.value)} /></Field>
+    </Modal>}
   </section>
 }

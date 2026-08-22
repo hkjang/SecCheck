@@ -2361,4 +2361,54 @@ func TestTheReportCollectsOutstandingFollowUps(t *testing.T) {
 	if text := workbookText(t, book.body); !strings.Contains(text, "미조치 항목") || !strings.Contains(text, "3개월 내 WAF 규칙 보완") {
 		t.Error("the workbook does not carry the follow-up register")
 	}
+
+	// Carrying the action out takes it off the outstanding list, but the
+	// record of it stays available.
+	resultID, _ := entry["id"].(string)
+	if resultID == "" {
+		t.Fatal("the register entry has no identifier to close it by")
+	}
+	if res := admin.do(http.MethodPost, "/api/v1/review-results/"+resultID+"/follow-up", map[string]any{"done": true, "note": "규칙 배포 완료"}); res.status != http.StatusOK {
+		t.Fatalf("closing the action: %d %s", res.status, res.body)
+	}
+	outstanding, _ := admin.do(http.MethodGet, "/api/v1/reports/reviews", nil).json()["follow_ups"].([]any)
+	if len(outstanding) != 0 {
+		t.Errorf("a carried-out action is still listed as outstanding: %v", outstanding)
+	}
+	all, _ := admin.do(http.MethodGet, "/api/v1/reports/reviews?include_done=1", nil).json()["follow_ups"].([]any)
+	if len(all) != 1 {
+		t.Fatalf("including completed actions returned %d entries", len(all))
+	}
+	closed, _ := all[0].(map[string]any)
+	if note, _ := closed["follow_up_note"].(string); note != "규칙 배포 완료" {
+		t.Errorf("the completion note is %q", note)
+	}
+	if by, _ := closed["done_by"].(string); by == "" {
+		t.Error("the register does not say who carried the action out")
+	}
+	var audited int
+	if err := h.db.Pool.QueryRow(ctx, `SELECT count(*) FROM audit_logs WHERE event_type='FOLLOW_UP_DONE'`).Scan(&audited); err != nil {
+		t.Fatal(err)
+	}
+	if audited != 1 {
+		t.Errorf("closing the action left %d audit events", audited)
+	}
+
+	// Reopening puts it back, so a premature closure is recoverable.
+	if res := admin.do(http.MethodPost, "/api/v1/review-results/"+resultID+"/follow-up", map[string]any{"done": false, "note": ""}); res.status != http.StatusOK {
+		t.Fatalf("reopening: %d %s", res.status, res.body)
+	}
+	reopened, _ := admin.do(http.MethodGet, "/api/v1/reports/reviews", nil).json()["follow_ups"].([]any)
+	if len(reopened) != 1 {
+		t.Errorf("a reopened action did not return to the outstanding list")
+	}
+
+	// A verdict with no action of its own cannot be closed.
+	var plain string
+	if err := h.db.Pool.QueryRow(ctx, `SELECT rr.id FROM review_results rr WHERE btrim(rr.follow_up)='' LIMIT 1`).Scan(&plain); err != nil {
+		t.Fatal(err)
+	}
+	if res := admin.do(http.MethodPost, "/api/v1/review-results/"+plain+"/follow-up", map[string]any{"done": true, "note": ""}); res.status != http.StatusNotFound {
+		t.Errorf("a verdict without an action was closed: %d %s", res.status, res.body)
+	}
 }
