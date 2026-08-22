@@ -2,6 +2,7 @@ package maintenance_test
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"strings"
 	"testing"
@@ -227,4 +228,101 @@ func alerts(t *testing.T, db *store.Store, adminID string) int {
 		t.Fatal(err)
 	}
 	return n
+}
+
+// An action promised at review time falls due months later, when nobody is
+// looking at the review or the report. The register shows it; only a
+// notification reaches the person who has to do it.
+func TestFollowUpsAreRemindedWhenTheirDateApproaches(t *testing.T) {
+	db := testdb.New(t)
+	ctx := context.Background()
+	requester := testdb.Bootstrap(t, db, "follow-up-owner")
+	worker := maintenance.New(db, nil)
+
+	exec := func(sql string, args ...any) {
+		t.Helper()
+		if _, err := db.Pool.Exec(ctx, sql, args...); err != nil {
+			t.Fatalf("%s: %v", sql, err)
+		}
+	}
+	reviewID, submissionID := store.NewID(), store.NewID()
+	exec(`INSERT INTO review_requests(id,review_number,service_name,description,service_type,change_type,builder_id,developer_id,department,requester_id,exposure,status)
+                VALUES($1,'SC-2026-000900','후속조치 서비스','설명','WEB','NEW',$2,$2,'보안팀',$2,'INTERNAL','APPROVED')`, reviewID, requester)
+	exec(`INSERT INTO submissions(id,review_request_id,revision,status) VALUES($1,$2,1,'APPROVED')`, submissionID, reviewID)
+
+	// A submitted item points back at the checklist item it was copied from,
+	// so a small published template stands in for the seeded baseline.
+	templateID, versionID := store.NewID(), store.NewID()
+	exec(`INSERT INTO checklist_templates(id,name,category,created_by) VALUES($1,'테스트 템플릿','DEVELOPMENT',$2)`, templateID, requester)
+	exec(`INSERT INTO checklist_versions(id,template_id,version,status,created_by) VALUES($1,$2,'V1','PUBLISHED',$3)`, versionID, templateID, requester)
+	sources := make([]string, 5)
+	for i := range sources {
+		sources[i] = store.NewID()
+		exec(`INSERT INTO checklist_items(id,version_id,item_code,category,title,question,severity,required,answer_type,evidence_required,sort_order)
+                        VALUES($1,$2,$3,'DEVELOPMENT','보안요건','질문','MEDIUM',true,'YNNA',false,$4)`, sources[i], versionID, fmt.Sprintf("S-%d", i), i)
+	}
+	next := 0
+	item := func(code string) string {
+		id := store.NewID()
+		exec(`INSERT INTO submission_items(id,submission_id,source_item_id,template_name,template_version,item_code,section,category,title,question,severity,required,answer_type,evidence_required,sort_order)
+                        VALUES($1,$2,$3,'개발보안','V1',$4,'구분','DEVELOPMENT','보안요건','질문','MEDIUM',true,'YNNA',false,1)`, id, submissionID, sources[next], code)
+		next++
+		return id
+	}
+	result := func(itemID, action string, due any, done bool) string {
+		id := store.NewID()
+		exec(`INSERT INTO review_results(id,submission_item_id,reviewer_id,result,follow_up,follow_up_due_date,follow_up_done_at)
+                        VALUES($1,$2,$3,'CONDITIONAL',$4,$5::date,CASE WHEN $6 THEN now() END)`, id, itemID, requester, action, due, done)
+		return id
+	}
+	soon := result(item("A-1"), "곧 기한", time.Now().AddDate(0, 0, 3).Format("2006-01-02"), false)
+	late := result(item("A-2"), "이미 지남", time.Now().AddDate(0, 0, -5).Format("2006-01-02"), false)
+	distant := result(item("A-3"), "한참 남음", time.Now().AddDate(0, 0, 60).Format("2006-01-02"), false)
+	finished := result(item("A-4"), "이미 이행", time.Now().AddDate(0, 0, -5).Format("2006-01-02"), true)
+	undated := result(item("A-5"), "기한 없음", nil, false)
+
+	worker.Sweep(ctx)
+
+	reminded := func(id string) bool {
+		t.Helper()
+		var at *time.Time
+		if err := db.Pool.QueryRow(ctx, `SELECT follow_up_reminded_at FROM review_results WHERE id=$1`, id).Scan(&at); err != nil {
+			t.Fatal(err)
+		}
+		return at != nil
+	}
+	for name, id := range map[string]string{"due soon": soon, "already late": late} {
+		if !reminded(id) {
+			t.Errorf("%s was not reminded", name)
+		}
+	}
+	for name, id := range map[string]string{"far off": distant, "already carried out": finished, "with no date": undated} {
+		if reminded(id) {
+			t.Errorf("%s should not have been reminded", name)
+		}
+	}
+
+	var notices int
+	if err := db.Pool.QueryRow(ctx, `SELECT count(*) FROM notifications WHERE recipient_id=$1 AND event_type='FOLLOW_UP_DUE'`, requester).Scan(&notices); err != nil {
+		t.Fatal(err)
+	}
+	if notices != 2 {
+		t.Fatalf("the sweep sent %d reminders, want 2", notices)
+	}
+	var late1 int
+	if err := db.Pool.QueryRow(ctx, `SELECT count(*) FROM notifications WHERE event_type='FOLLOW_UP_DUE' AND title='후속조치 기한 초과'`).Scan(&late1); err != nil {
+		t.Fatal(err)
+	}
+	if late1 != 1 {
+		t.Errorf("%d reminders said the date had passed, want 1", late1)
+	}
+
+	// A second sweep in the same week must not repeat itself.
+	worker.Sweep(ctx)
+	if err := db.Pool.QueryRow(ctx, `SELECT count(*) FROM notifications WHERE recipient_id=$1 AND event_type='FOLLOW_UP_DUE'`, requester).Scan(&notices); err != nil {
+		t.Fatal(err)
+	}
+	if notices != 2 {
+		t.Errorf("a second sweep raised the reminder count to %d", notices)
+	}
 }

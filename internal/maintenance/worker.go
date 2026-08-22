@@ -67,6 +67,7 @@ func (w *Worker) Sweep(ctx context.Context) map[string]int64 {
 		removed["expired_lockouts"] = tag.RowsAffected()
 	}
 	removed["due_reminders"] = w.remindDueChangeRequests(ctx)
+	removed["follow_up_reminders"] = w.remindDueFollowUps(ctx)
 	removed["stall_alerts"] = w.alertStalledQueue(ctx)
 	removed["purged_evidence_files"] = w.purgeDeletedEvidence(ctx)
 	total := int64(0)
@@ -118,6 +119,66 @@ func (w *Worker) alertStalledQueue(ctx context.Context) int64 {
 	for _, admin := range admins {
 		if _, err := w.Store.Pool.Exec(ctx, `INSERT INTO notifications(id,recipient_id,event_type,title,body) VALUES($1,$2,'JOB_QUEUE_STALLED',$3,$4)`,
 			store.NewID(), admin, "작업 큐가 처리되지 않고 있습니다", body); err == nil {
+			sent++
+		}
+	}
+	return sent
+}
+
+// remindDueFollowUps tells the service owner when an action promised at
+// review time is nearly due or already late. The register shows the same
+// thing, but nobody opens a report in the months between reviews -- which is
+// precisely the window these actions live in.
+//
+// The requester is the recipient: the action is a condition on their service
+// and the remediation is theirs. The security team watches the register.
+func (w *Worker) remindDueFollowUps(ctx context.Context) int64 {
+	rows, err := w.Store.Pool.Query(ctx, `
+                UPDATE review_results SET follow_up_reminded_at=now()
+                WHERE id IN (
+                  SELECT rr.id FROM review_results rr
+                  WHERE btrim(rr.follow_up)<>'' AND rr.follow_up_done_at IS NULL
+                    AND rr.follow_up_due_date IS NOT NULL
+                    AND rr.follow_up_due_date <= current_date+7
+                    AND (rr.follow_up_reminded_at IS NULL OR rr.follow_up_reminded_at < now()-interval '7 days')
+                  LIMIT 200)
+                RETURNING id,submission_item_id,follow_up,follow_up_due_date`)
+	if err != nil {
+		w.Store.Log(ctx, "ERROR", "", "maintenance", "follow-up reminder query failed", map[string]any{"error": err.Error()})
+		return 0
+	}
+	type reminder struct {
+		id, itemID, action string
+		due                time.Time
+	}
+	var pending []reminder
+	for rows.Next() {
+		var item reminder
+		if err = rows.Scan(&item.id, &item.itemID, &item.action, &item.due); err != nil {
+			continue
+		}
+		pending = append(pending, item)
+	}
+	rows.Close()
+
+	var sent int64
+	today := time.Now().Truncate(24 * time.Hour)
+	for _, item := range pending {
+		var number, service, requester, code string
+		if err = w.Store.Pool.QueryRow(ctx, `SELECT r.review_number,r.service_name,r.requester_id,si.item_code
+                        FROM submission_items si
+                        JOIN submissions sub ON sub.id=si.submission_id
+                        JOIN review_requests r ON r.id=sub.review_request_id
+                        WHERE si.id=$1`, item.itemID).Scan(&number, &service, &requester, &code); err != nil {
+			continue
+		}
+		title := "후속조치 기한 임박"
+		if item.due.Before(today) {
+			title = "후속조치 기한 초과"
+		}
+		body := fmt.Sprintf("%s(%s) %s 항목의 후속조치 기한이 %s입니다: %s", number, service, code, item.due.Format("2006-01-02"), shorten(item.action, 200))
+		if _, err = w.Store.Pool.Exec(ctx, `INSERT INTO notifications(id,recipient_id,event_type,title,body,target_type,target_id) VALUES($1,$2,'FOLLOW_UP_DUE',$3,$4,'REVIEW_REQUEST',(SELECT sub.review_request_id FROM submission_items si JOIN submissions sub ON sub.id=si.submission_id WHERE si.id=$5))`,
+			store.NewID(), requester, title, body, item.itemID); err == nil {
 			sent++
 		}
 	}
@@ -265,4 +326,14 @@ func (w *Worker) delete(ctx context.Context, query string, args ...any) int64 {
 		}
 	}
 	return total
+}
+
+// shorten keeps a notification readable when the action written on a verdict
+// runs long.
+func shorten(v string, n int) string {
+	runes := []rune(v)
+	if len(runes) <= n {
+		return v
+	}
+	return string(runes[:n]) + "…"
 }
