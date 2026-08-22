@@ -2477,3 +2477,44 @@ func TestARequesterIsServedTheReviewersVerdict(t *testing.T) {
 	}
 	_ = requester
 }
+
+// The closing statement of a review -- what it was decided to be, why, and
+// who signed it off -- was recorded and shown nowhere. A requester whose
+// review came back rejected could not read the reason without exporting it.
+func TestAReviewCarriesItsDecisionToTheRequester(t *testing.T) {
+	h := newHarness(t)
+	h.login(adminOf(h))
+	ctx := context.Background()
+	requesterID := h.user("outcome-requester", "REQUESTER")
+	approverID := h.user("outcome-approver", "APPROVER")
+	requester := h.login("outcome-requester")
+	id := store.NewID()
+	if _, err := h.db.Pool.Exec(ctx, `INSERT INTO review_requests(id,review_number,service_name,description,service_type,change_type,builder_id,developer_id,department,requester_id,approver_id,exposure,status,final_result,final_opinion)
+                VALUES($1,$2,'결론 서비스','설명','WEB','NEW',$3,$3,'보안팀',$3,$4,'INTERNAL','APPROVAL_PENDING','APPROVED','권한 분리를 조건으로 적합')`, id, "SR-OUTCOME-1", requesterID, approverID); err != nil {
+		t.Fatal(err)
+	}
+	if res := h.login("outcome-approver").do(http.MethodPost, "/api/v1/review-requests/"+id+"/reject", map[string]string{"comment": "추가 통제가 확인되지 않았습니다"}); res.status != http.StatusOK {
+		t.Fatalf("rejecting: %d %s", res.status, res.body)
+	}
+
+	detail := requester.do(http.MethodGet, "/api/v1/review-requests/"+id, nil).json()
+	if got, _ := detail["final_opinion"].(string); got != "권한 분리를 조건으로 적합" {
+		t.Errorf("the requester is not served the final opinion: %q", got)
+	}
+	if got, _ := detail["final_result"].(string); got != "REJECTED" {
+		t.Errorf("final_result = %q, want REJECTED", got)
+	}
+	decisions, _ := detail["decisions"].([]any)
+	if len(decisions) != 1 {
+		t.Fatalf("the review carries %d decisions: %v", len(decisions), detail["decisions"])
+	}
+	decision, _ := decisions[0].(map[string]any)
+	for key, want := range map[string]string{"decision": "REJECTED", "comment": "추가 통제가 확인되지 않았습니다", "approver_name": "outcome-approver"} {
+		if got, _ := decision[key].(string); got != want {
+			t.Errorf("the decision has %s=%q, want %q", key, got, want)
+		}
+	}
+	if at, _ := decision["decided_at"].(string); at == "" {
+		t.Error("the decision does not say when it was made")
+	}
+}
