@@ -319,6 +319,41 @@ type itemInput struct {
 	SortOrder         int    `json:"sort_order"`
 }
 
+// A PATCH used to overwrite every column from the decoded body, so a caller who
+// sent only the field they wanted changed silently blanked the rest of the item.
+type itemPatch struct {
+	Section           *string `json:"section"`
+	ControlID         *string `json:"control_id"`
+	ItemCode          *string `json:"item_code"`
+	Category          *string `json:"category"`
+	Title             *string `json:"title"`
+	Question          *string `json:"question"`
+	Guide             *string `json:"guide"`
+	LegalBasis        *string `json:"legal_basis"`
+	Example           *string `json:"example"`
+	Severity          *string `json:"severity"`
+	AnswerType        *string `json:"answer_type"`
+	Required          *bool   `json:"required"`
+	EvidenceRequired  *bool   `json:"evidence_required"`
+	ApplicabilityRule any     `json:"applicability_rule"`
+	Options           any     `json:"options"`
+	SortOrder         *int    `json:"sort_order"`
+}
+
+// A value the caller left out stays as it is; one sent empty where the item
+// cannot be empty is a mistake worth reporting rather than storing.
+func patchedValue(v *string, fallback string) *string {
+	if v == nil {
+		return nil
+	}
+	if strings.TrimSpace(*v) == "" && fallback != "" {
+		return &fallback
+	}
+	return v
+}
+
+func blankedOut(v *string) bool { return v != nil && strings.TrimSpace(*v) == "" }
+
 func (s *Server) createTemplateItem(w http.ResponseWriter, r *http.Request) {
 	var in itemInput
 	if !decodeJSON(w, r, &in) {
@@ -356,21 +391,33 @@ func (s *Server) createTemplateItem(w http.ResponseWriter, r *http.Request) {
 		s.fault(w, r, "CREATE_FAILED", "항목 변경 이력을 저장하지 못했습니다.", err)
 		return
 	}
-	_ = s.Store.Audit(r.Context(), auditFrom(r, "UPDATE_TEMPLATE", "CHECKLIST_ITEM", id, nil, in))
+	_ = s.Store.Audit(r.Context(), auditFrom(r, "CREATE_CHECKLIST_ITEM", "CHECKLIST_ITEM", id, nil, in))
 	jsonResponse(w, 201, map[string]string{"id": id})
 }
 func (s *Server) updateTemplateItem(w http.ResponseWriter, r *http.Request) {
-	var in itemInput
+	var in itemPatch
 	if !decodeJSON(w, r, &in) {
 		return
 	}
-	secID, err := s.sectionID(r.Context(), r.PathValue("versionID"), in.Section)
-	if err != nil {
-		s.fault(w, r, "UPDATE_FAILED", "섹션을 만들지 못했습니다.", err)
+	if blankedOut(in.ItemCode) || blankedOut(in.Title) || blankedOut(in.Question) {
+		problem(w, 422, "VALIDATION_FAILED", "항목 코드, 제목 및 질문은 비울 수 없습니다.", nil)
 		return
 	}
-	rule, _ := json.Marshal(in.ApplicabilityRule)
-	opts, _ := json.Marshal(in.Options)
+	var secID string
+	if in.Section != nil {
+		var err error
+		if secID, err = s.sectionID(r.Context(), r.PathValue("versionID"), *in.Section); err != nil {
+			s.fault(w, r, "UPDATE_FAILED", "섹션을 만들지 못했습니다.", err)
+			return
+		}
+	}
+	var rule, opts []byte
+	if in.ApplicabilityRule != nil {
+		rule, _ = json.Marshal(in.ApplicabilityRule)
+	}
+	if in.Options != nil {
+		opts, _ = json.Marshal(in.Options)
+	}
 	tx, err := s.Store.Pool.Begin(r.Context())
 	if err != nil {
 		s.fault(w, r, "UPDATE_FAILED", "항목을 저장하지 못했습니다.", err)
@@ -379,7 +426,8 @@ func (s *Server) updateTemplateItem(w http.ResponseWriter, r *http.Request) {
 	defer tx.Rollback(r.Context())
 	var before []byte
 	_ = tx.QueryRow(r.Context(), `SELECT to_jsonb(i) FROM checklist_items i JOIN checklist_versions v ON v.id=i.version_id WHERE i.id=$1 AND i.version_id=$2 AND v.template_id=$3 AND v.status='DRAFT' FOR UPDATE`, r.PathValue("itemID"), r.PathValue("versionID"), r.PathValue("id")).Scan(&before)
-	tag, err := tx.Exec(r.Context(), `UPDATE checklist_items i SET section_id=NULLIF($4,''),item_code=$5,category=$6,title=$7,question=$8,guide=$9,legal_basis=$10,example=$11,severity=$12,required=$13,answer_type=$14,evidence_required=$15,applicability_rule=$16,options_json=$17,sort_order=$18,control_id=NULLIF($19,'') FROM checklist_versions v WHERE i.id=$1 AND i.version_id=$2 AND v.id=i.version_id AND v.template_id=$3 AND v.status='DRAFT'`, r.PathValue("itemID"), r.PathValue("versionID"), r.PathValue("id"), secID, in.ItemCode, in.Category, in.Title, in.Question, in.Guide, in.LegalBasis, in.Example, valueDefault(in.Severity, "MEDIUM"), in.Required, valueDefault(in.AnswerType, "YNNA"), in.EvidenceRequired, rule, opts, in.SortOrder, in.ControlID)
+	tag, err := tx.Exec(r.Context(), `UPDATE checklist_items i SET section_id=CASE WHEN $4::bool THEN NULLIF($5::text,'') ELSE i.section_id END,item_code=COALESCE($6::text,i.item_code),category=COALESCE($7::text,i.category),title=COALESCE($8::text,i.title),question=COALESCE($9::text,i.question),guide=COALESCE($10::text,i.guide),legal_basis=COALESCE($11::text,i.legal_basis),example=COALESCE($12::text,i.example),severity=COALESCE($13::text,i.severity),required=COALESCE($14::bool,i.required),answer_type=COALESCE($15::text,i.answer_type),evidence_required=COALESCE($16::bool,i.evidence_required),applicability_rule=COALESCE($17::jsonb,i.applicability_rule),options_json=COALESCE($18::jsonb,i.options_json),sort_order=COALESCE($19::int,i.sort_order),control_id=CASE WHEN $20::bool THEN NULLIF($21::text,'') ELSE i.control_id END FROM checklist_versions v WHERE i.id=$1 AND i.version_id=$2 AND v.id=i.version_id AND v.template_id=$3 AND v.status='DRAFT'`,
+		r.PathValue("itemID"), r.PathValue("versionID"), r.PathValue("id"), in.Section != nil, secID, in.ItemCode, in.Category, in.Title, in.Question, in.Guide, in.LegalBasis, in.Example, patchedValue(in.Severity, "MEDIUM"), in.Required, patchedValue(in.AnswerType, "YNNA"), in.EvidenceRequired, rule, opts, in.SortOrder, in.ControlID != nil, in.ControlID)
 	if err != nil || tag.RowsAffected() == 0 {
 		problem(w, 409, "IMMUTABLE_VERSION", "게시된 버전은 수정할 수 없습니다.", nil)
 		return
@@ -389,7 +437,7 @@ func (s *Server) updateTemplateItem(w http.ResponseWriter, r *http.Request) {
 		s.fault(w, r, "UPDATE_FAILED", "항목 변경 이력을 저장하지 못했습니다.", err)
 		return
 	}
-	_ = s.Store.Audit(r.Context(), auditFrom(r, "UPDATE_TEMPLATE", "CHECKLIST_ITEM", r.PathValue("itemID"), nil, in))
+	_ = s.Store.Audit(r.Context(), auditFrom(r, "UPDATE_CHECKLIST_ITEM", "CHECKLIST_ITEM", r.PathValue("itemID"), nil, in))
 	w.WriteHeader(204)
 }
 func (s *Server) deleteTemplateItem(w http.ResponseWriter, r *http.Request) {
@@ -412,7 +460,7 @@ func (s *Server) deleteTemplateItem(w http.ResponseWriter, r *http.Request) {
 		s.fault(w, r, "DELETE_FAILED", "항목 변경 이력을 저장하지 못했습니다.", err)
 		return
 	}
-	_ = s.Store.Audit(r.Context(), auditFrom(r, "UPDATE_TEMPLATE", "CHECKLIST_ITEM", r.PathValue("itemID"), nil, map[string]bool{"deleted": true}))
+	_ = s.Store.Audit(r.Context(), auditFrom(r, "DELETE_CHECKLIST_ITEM", "CHECKLIST_ITEM", r.PathValue("itemID"), map[string]any{"item_code": code}, nil))
 	w.WriteHeader(204)
 }
 func (s *Server) sectionID(ctx context.Context, version, name string) (string, error) {

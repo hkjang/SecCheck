@@ -200,3 +200,23 @@ func TestEveryMigrationIsListedInTheOperationsManual(t *testing.T) {
 		}
 	}
 }
+
+// A pinned action's comment names the upstream release the digest belongs to.
+// Bumping the product version with a blanket replace across the workflow files
+// rewrote those comments too, so the pins claimed a version their upstream had
+// never released -- and anyone auditing the digest read a lie.
+func TestPinnedActionsDoNotClaimTheProductVersion(t *testing.T) {
+	version := strings.TrimSpace(repoFile(t, "VERSION"))
+	pin := regexp.MustCompile(`uses: ([^\s@]+)@[0-9a-f]{40} # (v[^\s]+)`)
+	files, err := filepath.Glob(filepath.Join("..", "..", ".github", "workflows", "*.yml"))
+	if err != nil || len(files) == 0 {
+		t.Fatalf("no workflow files: %v", err)
+	}
+	for _, file := range files {
+		for _, m := range pin.FindAllStringSubmatch(repoFile(t, filepath.Join(".github", "workflows", filepath.Base(file))), -1) {
+			if strings.TrimPrefix(m[2], "v") == version {
+				t.Errorf("%s pins %s as %s, which is SecCheck's own version -- the comment was overwritten by a version bump", filepath.Base(file), m[1], m[2])
+			}
+		}
+	}
+}

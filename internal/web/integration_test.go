@@ -2765,3 +2765,70 @@ func TestAuditEntriesSurviveWhatTheyDescribe(t *testing.T) {
 		t.Errorf("the reset does not name whose account it was: %s", recorded)
 	}
 }
+
+// Adding, changing and removing a checklist item all went into the audit log
+// as one event, so a reader could not tell which had happened -- while every
+// other part of the log distinguishes them.
+func TestChecklistItemEditsAreRecordedByWhatTheyDid(t *testing.T) {
+	h := newHarness(t)
+	admin := h.login(adminOf(h))
+	ctx := context.Background()
+
+	created := admin.do(http.MethodPost, "/api/v1/templates", map[string]any{"name": "감사 확인 템플릿", "category": "DEVELOPMENT", "description": "", "version": "V1"})
+	if created.status != http.StatusCreated {
+		t.Fatalf("creating a template: %d %s", created.status, created.body)
+	}
+	templateID, _ := created.json()["id"].(string)
+	var versionID string
+	if err := h.db.Pool.QueryRow(ctx, `SELECT id FROM checklist_versions WHERE template_id=$1`, templateID).Scan(&versionID); err != nil {
+		t.Fatal(err)
+	}
+	base := fmt.Sprintf("/api/v1/templates/%s/versions/%s/items", templateID, versionID)
+	item := admin.do(http.MethodPost, base, map[string]any{"item_code": "A-1", "title": "보안요건", "question": "질문", "category": "DEVELOPMENT", "severity": "MEDIUM", "answer_type": "YNNA", "required": true, "sort_order": 1})
+	if item.status != http.StatusCreated {
+		t.Fatalf("adding an item: %d %s", item.status, item.body)
+	}
+	itemID, _ := item.json()["id"].(string)
+	if res := admin.do(http.MethodPatch, base+"/"+itemID, map[string]any{"title": "보안요건 (수정)"}); res.status >= 300 {
+		t.Fatalf("editing the item: %d %s", res.status, res.body)
+	}
+	var code, title, severity, answer string
+	var required bool
+	if err := h.db.Pool.QueryRow(ctx, `SELECT item_code,title,severity,answer_type,required FROM checklist_items WHERE id=$1`, itemID).Scan(&code, &title, &severity, &answer, &required); err != nil {
+		t.Fatal(err)
+	}
+	if title != "보안요건 (수정)" {
+		t.Errorf("the edit did not take: title=%q", title)
+	}
+	if code != "A-1" || severity != "MEDIUM" || answer != "YNNA" || !required {
+		t.Errorf("editing the title erased the rest of the item: code=%q severity=%q answer=%q required=%v", code, severity, answer, required)
+	}
+	if res := admin.do(http.MethodPatch, base+"/"+itemID, map[string]any{"item_code": "  "}); res.status != http.StatusUnprocessableEntity {
+		t.Errorf("blanking the item code was accepted: %d %s", res.status, res.body)
+	}
+
+	if res := admin.do(http.MethodDelete, base+"/"+itemID, nil); res.status != http.StatusNoContent {
+		t.Fatalf("removing the item: %d %s", res.status, res.body)
+	}
+
+	count := func(event string) int {
+		t.Helper()
+		var n int
+		if err := h.db.Pool.QueryRow(ctx, `SELECT count(*) FROM audit_logs WHERE event_type=$1 AND target_id=$2`, event, itemID).Scan(&n); err != nil {
+			t.Fatal(err)
+		}
+		return n
+	}
+	for event, want := range map[string]int{"CREATE_CHECKLIST_ITEM": 1, "UPDATE_CHECKLIST_ITEM": 1, "DELETE_CHECKLIST_ITEM": 1} {
+		if got := count(event); got != want {
+			t.Errorf("%s was recorded %d times, want %d", event, got, want)
+		}
+	}
+	var removed string
+	if err := h.db.Pool.QueryRow(ctx, `SELECT COALESCE(before_value::text,'') FROM audit_logs WHERE event_type='DELETE_CHECKLIST_ITEM' AND target_id=$1`, itemID).Scan(&removed); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(removed, "A-1") {
+		t.Errorf("the removal does not name the item: %s", removed)
+	}
+}
