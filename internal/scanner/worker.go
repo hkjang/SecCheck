@@ -162,9 +162,8 @@ func (w *Worker) quarantine(ctx context.Context, evidenceID, filename, detail st
 	// The file is already gone from the checklist, so this cannot be retried
 	// without quarantining twice; but somebody whose upload was found to carry
 	// malware has to be told, and losing that quietly is not acceptable.
-	if _, err := w.Store.Pool.Exec(ctx, `INSERT INTO notifications(id,recipient_id,event_type,title,body) VALUES($1,$2,'EVIDENCE_INFECTED',$3,$4)`,
-		store.NewID(), uploader, "증적 악성코드 탐지",
-		fmt.Sprintf("첨부하신 증적 %s에서 악성코드가 탐지되어 삭제되었습니다. 파일을 확인한 뒤 다시 업로드하세요.", filename)); err != nil {
+	if err := w.Store.Notify(ctx, uploader, "EVIDENCE_INFECTED", "증적 악성코드 탐지",
+		fmt.Sprintf("첨부하신 증적 %s에서 악성코드가 탐지되어 삭제되었습니다. 파일을 확인한 뒤 다시 업로드하세요.", filename), "EVIDENCE", evidenceID); err != nil {
 		w.Store.Log(ctx, "ERROR", "", "scanner", "증적 격리는 완료했으나 업로더에게 알리지 못했습니다.", map[string]any{"evidence_id": evidenceID, "uploader": uploader, "error": truncate(err.Error(), 300)})
 	}
 	w.Store.Log(ctx, "ERROR", "", "scanner", "evidence quarantined", map[string]any{"evidence_id": evidenceID, "filename": filename, "detail": detail})

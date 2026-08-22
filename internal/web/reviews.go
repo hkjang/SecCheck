@@ -1746,51 +1746,11 @@ func (s *Server) addTargetedNotification(ctx context.Context, recipient, event, 
 	if recipient == "" {
 		return
 	}
-	id := store.NewID()
-	tx, err := s.Store.Pool.Begin(ctx)
-	if err != nil {
-		return
-	}
-	defer tx.Rollback(ctx)
-	_, err = tx.Exec(ctx, `INSERT INTO notifications(id,recipient_id,event_type,title,body,target_type,target_id) VALUES($1,$2,$3,$4,$5,$6,$7)`, id, recipient, event, title, body, targetType, targetID)
-	if err == nil && s.emailWanted(ctx, tx, recipient, event) {
-		_, err = tx.Exec(ctx, `INSERT INTO jobs(id,type,payload) VALUES($1,'SEND_EMAIL',jsonb_build_object('notification_id',$2::text))`, store.NewID(), id)
-		if err == nil {
-			_, err = tx.Exec(ctx, `UPDATE notifications SET emailed_at=now() WHERE id=$1`, id)
-		}
-	}
 	// A swallowed failure here used to roll the whole notification away in
 	// silence, so the error is recorded even though delivery is best-effort.
-	if err == nil {
-		err = tx.Commit(ctx)
-	}
-	if err != nil {
+	if err := s.Store.Notify(ctx, recipient, event, title, body, targetType, targetID); err != nil {
 		s.Store.Log(ctx, "ERROR", "", "notification", "notification could not be recorded", map[string]any{"error": err.Error(), "event": event, "recipient": recipient})
 	}
-}
-
-// emailWanted answers whether this event should be queued for immediate
-// e-mail. A daily-digest recipient is left alone here; the digest worker picks
-// the notification up later because emailed_at stays null.
-func (s *Server) emailWanted(ctx context.Context, tx pgx.Tx, recipient, event string) bool {
-	var cfg struct {
-		EmailEnabled bool `json:"email_enabled"`
-	}
-	if _, err := s.Store.Setting(ctx, "notification", &cfg); err != nil || !cfg.EmailEnabled {
-		return false
-	}
-	var enabled bool
-	var digest string
-	var muted []string
-	err := tx.QueryRow(ctx, `SELECT email_enabled,digest,muted_events FROM notification_preferences WHERE user_id=$1`, recipient).Scan(&enabled, &digest, &muted)
-	if errors.Is(err, pgx.ErrNoRows) {
-		// No preference recorded means the default: everything, immediately.
-		return true
-	}
-	if err != nil || !enabled || contains(muted, event) {
-		return false
-	}
-	return digest != "DAILY"
 }
 
 func (s *Server) notifyReviewer(ctx context.Context, id, event, body string) {

@@ -468,3 +468,82 @@ func TestAdministratorsAreAlertedWhenJobsRunOutOfRetries(t *testing.T) {
 		t.Errorf("an old failure nobody can act on raised %d alerts", n)
 	}
 }
+
+// A deadline reminder exists to reach somebody who is not looking at the
+// screen. The workers used to write the notification row and stop, so the mail
+// was only ever sent to readers on the daily digest -- everyone else, which is
+// the default, had to open the service to find out.
+func TestADeadlineReminderIsMailedToWhoeverWantsMailNow(t *testing.T) {
+	db := testdb.New(t)
+	ctx := context.Background()
+	reviewer := testdb.Bootstrap(t, db, "reminder-reviewer")
+	worker := maintenance.New(db, nil)
+	exec := func(sql string, args ...any) {
+		t.Helper()
+		if _, err := db.Pool.Exec(ctx, sql, args...); err != nil {
+			t.Fatalf("%s: %v", sql, err)
+		}
+	}
+	exec(`UPDATE settings SET value_json = value_json || '{"email_enabled":true,"smtp_host":"smtp.internal","smtp_port":25,"smtp_from":"seccheck@example.internal"}'::jsonb WHERE key='notification'`)
+	exec(`UPDATE users SET email='reviewer@example.internal' WHERE id=$1`, reviewer)
+	itemID := seedChangeRequest(t, db, reviewer)
+
+	mailJobs := func() int {
+		t.Helper()
+		var n int
+		if err := db.Pool.QueryRow(ctx, `SELECT count(*) FROM jobs WHERE type='SEND_EMAIL'`).Scan(&n); err != nil {
+			t.Fatal(err)
+		}
+		return n
+	}
+	worker.Sweep(ctx)
+	var notified int
+	if err := db.Pool.QueryRow(ctx, `SELECT count(*) FROM notifications WHERE event_type='CHANGE_REQUEST_DUE'`).Scan(&notified); err != nil {
+		t.Fatal(err)
+	}
+	if notified != 1 {
+		t.Fatalf("the reminder was not recorded: %d notifications", notified)
+	}
+	if got := mailJobs(); got != 1 {
+		t.Errorf("%d e-mails were queued for a reader on immediate delivery, want 1", got)
+	}
+
+	// A reader on the daily digest is left to the digest, and a muted event is
+	// not mailed at all.
+	exec(`DELETE FROM jobs WHERE type='SEND_EMAIL'`)
+	exec(`UPDATE change_requests SET reminded_at=NULL WHERE submission_item_id=$1`, itemID)
+	exec(`INSERT INTO notification_preferences(user_id,email_enabled,digest) VALUES($1,true,'DAILY') ON CONFLICT(user_id) DO UPDATE SET digest='DAILY',email_enabled=true,muted_events='{}'`, reviewer)
+	worker.Sweep(ctx)
+	if got := mailJobs(); got != 0 {
+		t.Errorf("%d e-mails were queued for a digest reader, want 0", got)
+	}
+	exec(`UPDATE change_requests SET reminded_at=NULL WHERE submission_item_id=$1`, itemID)
+	exec(`UPDATE notification_preferences SET digest='IMMEDIATE',muted_events=ARRAY['CHANGE_REQUEST_DUE'] WHERE user_id=$1`, reviewer)
+	worker.Sweep(ctx)
+	if got := mailJobs(); got != 0 {
+		t.Errorf("%d e-mails were queued for a muted event, want 0", got)
+	}
+}
+
+// seedChangeRequest builds the smallest review that can carry an open change
+// request due tomorrow, and returns the submission item it hangs off.
+func seedChangeRequest(t *testing.T, db *store.Store, owner string) string {
+	t.Helper()
+	ctx := context.Background()
+	templateID, versionID, itemID := store.NewID(), store.NewID(), store.NewID()
+	reviewID, submissionID, submissionItemID := store.NewID(), store.NewID(), store.NewID()
+	exec := func(sql string, args ...any) {
+		t.Helper()
+		if _, err := db.Pool.Exec(ctx, sql, args...); err != nil {
+			t.Fatalf("%s: %v", sql, err)
+		}
+	}
+	exec(`INSERT INTO checklist_templates(id,name,category,created_by) VALUES($1,$2,'DEVELOPMENT',$3)`, templateID, "due-"+templateID[:8], owner)
+	exec(`INSERT INTO checklist_versions(id,template_id,version,created_by) VALUES($1,$2,'V1',$3)`, versionID, templateID, owner)
+	exec(`INSERT INTO checklist_items(id,version_id,item_code,category,title,question) VALUES($1,$2,$3,'DEVELOPMENT','t','q')`, itemID, versionID, "DUE-"+itemID[:8])
+	exec(`INSERT INTO review_requests(id,review_number,service_name,description,service_type,change_type,builder_id,developer_id,department,requester_id,exposure,status) VALUES($1,$2,'s','d','WEB','NEW',$3,$3,'보안팀',$3,'INTERNAL','CHANGE_REQUESTED')`, reviewID, "DUE-"+reviewID[:8], owner)
+	exec(`INSERT INTO submissions(id,review_request_id) VALUES($1,$2)`, submissionID, reviewID)
+	exec(`INSERT INTO submission_items(id,submission_id,source_item_id,template_name,template_version,item_code,section,category,title,question,severity,answer_type,required,evidence_required,sort_order) VALUES($1,$2,$3,'t','V1',$4,'','DEVELOPMENT','t','q','MEDIUM','YNNA',true,false,1)`, submissionItemID, submissionID, itemID, "DUE-"+itemID[:8])
+	exec(`INSERT INTO change_requests(id,review_request_id,submission_item_id,reason,requester_id,assignee_id,due_date) VALUES($1,$2,$3,'보완하세요',$4,$4,display_today()+1)`, store.NewID(), reviewID, submissionItemID, owner)
+	return submissionItemID
+}

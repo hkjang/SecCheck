@@ -108,6 +108,9 @@ func (w *Worker) alertFailedJobs(ctx context.Context) int64 {
 	body := fmt.Sprintf("재시도를 모두 소진한 작업이 %d건 있습니다(예: %s). 마지막 오류: %s. 알림 메일이나 증적 검사가 조용히 멈춰 있을 수 있으니 관리자 > 작업 큐에서 확인하세요.", failed, jobType, shorten(lastError, 200))
 	var sent int64
 	for _, admin := range admins {
+		// Deliberately not routed through Store.Notify: an alert about the
+		// queue must not depend on the queue, and the mail it would send is
+		// exactly what may be failing. The in-app bell carries these two.
 		if _, err := w.Store.Pool.Exec(ctx, `INSERT INTO notifications(id,recipient_id,event_type,title,body) VALUES($1,$2,'JOB_FAILED',$3,$4)`,
 			store.NewID(), admin, "작업이 재시도를 모두 소진했습니다", body); err == nil {
 			sent++
@@ -242,13 +245,13 @@ func (w *Worker) remindDueFollowUps(ctx context.Context) int64 {
 	var sent int64
 	today := time.Now().Truncate(24 * time.Hour)
 	for _, item := range pending {
-		var number, service, requester, code string
+		var reviewID, number, service, requester, code string
 		var reviewer *string
-		if err = w.Store.Pool.QueryRow(ctx, `SELECT r.review_number,r.service_name,r.requester_id,r.reviewer_id,si.item_code
+		if err = w.Store.Pool.QueryRow(ctx, `SELECT r.id,r.review_number,r.service_name,r.requester_id,r.reviewer_id,si.item_code
                         FROM submission_items si
                         JOIN submissions sub ON sub.id=si.submission_id
                         JOIN review_requests r ON r.id=sub.review_request_id
-                        WHERE si.id=$1`, item.itemID).Scan(&number, &service, &requester, &reviewer, &code); err != nil {
+                        WHERE si.id=$1`, item.itemID).Scan(&reviewID, &number, &service, &requester, &reviewer, &code); err != nil {
 			continue
 		}
 		title := "후속조치 기한 임박"
@@ -271,9 +274,7 @@ func (w *Worker) remindDueFollowUps(ctx context.Context) int64 {
 		if reassigned {
 			body += " (원 담당자 계정이 비활성 상태여서 검토자에게 전달합니다. 담당자를 다시 지정하세요.)"
 		}
-		requester = recipient
-		if _, err = w.Store.Pool.Exec(ctx, `INSERT INTO notifications(id,recipient_id,event_type,title,body,target_type,target_id) VALUES($1,$2,'FOLLOW_UP_DUE',$3,$4,'REVIEW_REQUEST',(SELECT sub.review_request_id FROM submission_items si JOIN submissions sub ON sub.id=si.submission_id WHERE si.id=$5))`,
-			store.NewID(), requester, title, body, item.itemID); err == nil {
+		if err = w.Store.Notify(ctx, recipient, "FOLLOW_UP_DUE", title, body, "REVIEW_REQUEST", reviewID); err == nil {
 			sent++
 		}
 	}
@@ -408,7 +409,7 @@ func (w *Worker) remindDueChangeRequests(ctx context.Context) int64 {
 		if reassigned {
 			body += " (원 담당자 계정이 비활성 상태입니다. 담당자를 다시 지정하세요.)"
 		}
-		if _, err = w.Store.Pool.Exec(ctx, `INSERT INTO notifications(id,recipient_id,event_type,title,body) VALUES($1,$2,'CHANGE_REQUEST_DUE',$3,$4)`, store.NewID(), recipient, title, body); err == nil {
+		if err = w.Store.Notify(ctx, recipient, "CHANGE_REQUEST_DUE", title, body, "REVIEW_REQUEST", item.reviewID); err == nil {
 			sent++
 		}
 	}

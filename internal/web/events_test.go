@@ -56,6 +56,10 @@ func emittedNotificationCodes(t *testing.T) []string {
 		`(?s)addNotification\(.{0,160}?"([A-Z_]{3,})"`,
 		`(?s)notifyReviewer\(.{0,160}?"([A-Z_]{3,})"`,
 		`(?s)INSERT INTO notifications\(.{0,200}?'([A-Z_]{3,})'`,
+		// The event is the third argument, so the scan stops there rather
+		// than wandering into the error handling that follows the call.
+		`\.Notify\(ctx, [A-Za-z0-9_.]+, "([A-Z_]{3,})"`,
+		`\.NotifyTx\(ctx, [A-Za-z0-9_.]+, [A-Za-z0-9_.]+, "([A-Z_]{3,})"`,
 	)
 	// Approve and reject pass the decision through as the event type.
 	return append(codes, "APPROVED", "REJECTED")
