@@ -28,12 +28,17 @@ func (s *Server) revokeSession(w http.ResponseWriter, r *http.Request) {
 		problem(w, 422, "CURRENT_SESSION", "현재 사용 중인 세션은 로그아웃으로 종료하세요.", nil)
 		return
 	}
+	// A session identifier means nothing once the row is deleted, so the
+	// device and address it belonged to are captured while they still exist.
+	var agent, ip string
+	var seen *time.Time
+	_ = s.Store.Pool.QueryRow(r.Context(), `SELECT user_agent,source_ip,last_seen_at FROM sessions WHERE id=$1 AND user_id=$2`, id, sess.User.ID).Scan(&agent, &ip, &seen)
 	tag, err := s.Store.Pool.Exec(r.Context(), `DELETE FROM sessions WHERE id=$1 AND user_id=$2`, id, sess.User.ID)
 	if err != nil || tag.RowsAffected() == 0 {
 		problem(w, 404, "NOT_FOUND", "세션을 찾을 수 없습니다.", nil)
 		return
 	}
-	_ = s.Store.Audit(r.Context(), auditFrom(r, "REVOKE_SESSION", "SESSION", id, nil, nil))
+	_ = s.Store.Audit(r.Context(), auditFrom(r, "REVOKE_SESSION", "SESSION", id, map[string]any{"user_agent": agent, "source_ip": ip, "last_seen_at": seen}, nil))
 	w.WriteHeader(204)
 }
 

@@ -543,7 +543,11 @@ func (s *Server) revokeAPIKey(w http.ResponseWriter, r *http.Request) {
 		problem(w, 404, "NOT_FOUND", "API 키를 찾을 수 없습니다.", nil)
 		return
 	}
-	_ = s.Store.Audit(r.Context(), auditFrom(r, "REVOKE_API_KEY", "API_KEY", r.PathValue("id"), nil, nil))
+	// Which credential was withdrawn is the whole question when access is
+	// reviewed, and an identifier alone does not answer it.
+	var name, prefix string
+	_ = s.Store.Pool.QueryRow(r.Context(), `SELECT name,prefix FROM api_keys WHERE id=$1`, r.PathValue("id")).Scan(&name, &prefix)
+	_ = s.Store.Audit(r.Context(), auditFrom(r, "REVOKE_API_KEY", "API_KEY", r.PathValue("id"), map[string]any{"name": name, "prefix": prefix}, nil))
 	w.WriteHeader(204)
 }
 func (s *Server) rotateDataKey(w http.ResponseWriter, r *http.Request) {

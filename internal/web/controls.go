@@ -99,12 +99,17 @@ func (s *Server) deleteControl(w http.ResponseWriter, r *http.Request) {
 		problem(w, 409, "CONTROL_IN_USE", "체크리스트 항목 연결을 먼저 해제하세요.", map[string]int{"mapped_items": mapped})
 		return
 	}
+	// The row is about to be gone, so what it was has to be captured now: an
+	// audit entry naming only an identifier that no longer resolves cannot be
+	// read back, which defeats the point of recording the deletion.
+	var code, title string
+	_ = s.Store.Pool.QueryRow(r.Context(), `SELECT code,title FROM security_controls WHERE id=$1`, r.PathValue("id")).Scan(&code, &title)
 	tag, err := s.Store.Pool.Exec(r.Context(), `DELETE FROM security_controls WHERE id=$1`, r.PathValue("id"))
 	if err != nil || tag.RowsAffected() == 0 {
 		problem(w, 404, "NOT_FOUND", "Control을 찾을 수 없습니다.", nil)
 		return
 	}
-	_ = s.Store.Audit(r.Context(), auditFrom(r, "DELETE_CONTROL", "SECURITY_CONTROL", r.PathValue("id"), nil, nil))
+	_ = s.Store.Audit(r.Context(), auditFrom(r, "DELETE_CONTROL", "SECURITY_CONTROL", r.PathValue("id"), map[string]any{"code": code, "title": title}, nil))
 	w.WriteHeader(http.StatusNoContent)
 }
 

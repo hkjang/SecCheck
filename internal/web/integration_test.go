@@ -2713,3 +2713,55 @@ func TestIssuingAndRotatingAnAPIKeyAreRecordedApart(t *testing.T) {
 		t.Errorf("the rotation does not name the key it replaced: %s", before)
 	}
 }
+
+// An audit entry that names only an identifier of something since deleted
+// cannot be read back, which defeats the point of recording the deletion.
+func TestAuditEntriesSurviveWhatTheyDescribe(t *testing.T) {
+	h := newHarness(t)
+	admin := h.login(adminOf(h))
+	ctx := context.Background()
+
+	// A control is removed outright, so its code and title exist nowhere else.
+	created := admin.do(http.MethodPost, "/api/v1/security-controls", map[string]any{"code": "AC-99", "title": "삭제될 통제", "description": "감사 기록 확인용"})
+	if created.status != http.StatusCreated {
+		t.Fatalf("creating a control: %d %s", created.status, created.body)
+	}
+	controlID, _ := created.json()["id"].(string)
+	if res := admin.do(http.MethodDelete, "/api/v1/security-controls/"+controlID, nil); res.status != http.StatusNoContent {
+		t.Fatalf("deleting the control: %d %s", res.status, res.body)
+	}
+	var recorded string
+	if err := h.db.Pool.QueryRow(ctx, `SELECT COALESCE(before_value::text,'') FROM audit_logs WHERE event_type='DELETE_CONTROL' AND target_id=$1`, controlID).Scan(&recorded); err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"AC-99", "삭제될 통제"} {
+		if !strings.Contains(recorded, want) {
+			t.Errorf("the deletion does not record %q: %s", want, recorded)
+		}
+	}
+
+	// Revoking a key: the identifier is not the question, which key is.
+	key := admin.do(http.MethodPost, "/api/v1/me/api-keys", map[string]any{"name": "폐기할 키", "scopes": []string{"read"}})
+	keyID, _ := key.json()["id"].(string)
+	if res := admin.do(http.MethodDelete, "/api/v1/me/api-keys/"+keyID, nil); res.status != http.StatusNoContent {
+		t.Fatalf("revoking: %d %s", res.status, res.body)
+	}
+	if err := h.db.Pool.QueryRow(ctx, `SELECT COALESCE(before_value::text,'') FROM audit_logs WHERE event_type='REVOKE_API_KEY' AND target_id=$1`, keyID).Scan(&recorded); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(recorded, "폐기할 키") {
+		t.Errorf("the revocation does not name the key: %s", recorded)
+	}
+
+	// An administrator acting on somebody else's account names them.
+	target := h.user("reset-target", "REQUESTER")
+	if res := admin.do(http.MethodPost, "/api/v1/admin/users/"+target+"/password", map[string]string{"password": "TempPassword!99"}); res.status != http.StatusNoContent {
+		t.Fatalf("resetting: %d %s", res.status, res.body)
+	}
+	if err := h.db.Pool.QueryRow(ctx, `SELECT COALESCE(after_value::text,'') FROM audit_logs WHERE event_type='RESET_PASSWORD' AND target_id=$1`, target).Scan(&recorded); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(recorded, "reset-target") {
+		t.Errorf("the reset does not name whose account it was: %s", recorded)
+	}
+}

@@ -1,6 +1,7 @@
 package web
 
 import (
+	"context"
 	"crypto/sha256"
 	"encoding/csv"
 	"encoding/hex"
@@ -161,8 +162,17 @@ func (s *Server) resetUserPassword(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	_, _ = s.Store.Pool.Exec(r.Context(), `DELETE FROM sessions WHERE user_id=$1`, id)
-	_ = s.Store.Audit(r.Context(), auditFrom(r, "RESET_PASSWORD", "USER", id, nil, nil))
+	_ = s.Store.Audit(r.Context(), auditFrom(r, "RESET_PASSWORD", "USER", id, nil, map[string]any{"username": s.usernameOf(r.Context(), id)}))
 	w.WriteHeader(204)
+}
+
+// usernameOf names the person an administrator acted on. The event already
+// records who did it; without this the audit log says an account was reset or
+// unlocked but leaves the reader to resolve an identifier to find out whose.
+func (s *Server) usernameOf(ctx context.Context, id string) string {
+	var username string
+	_ = s.Store.Pool.QueryRow(ctx, `SELECT username FROM users WHERE id=$1`, id).Scan(&username)
+	return username
 }
 
 func (s *Server) unlockUser(w http.ResponseWriter, r *http.Request) {
@@ -171,7 +181,7 @@ func (s *Server) unlockUser(w http.ResponseWriter, r *http.Request) {
 		problem(w, 404, "NOT_FOUND", "사용자를 찾을 수 없습니다.", nil)
 		return
 	}
-	_ = s.Store.Audit(r.Context(), auditFrom(r, "UNLOCK_USER", "USER", id, nil, nil))
+	_ = s.Store.Audit(r.Context(), auditFrom(r, "UNLOCK_USER", "USER", id, nil, map[string]any{"username": s.usernameOf(r.Context(), id)}))
 	w.WriteHeader(204)
 }
 
