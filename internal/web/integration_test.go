@@ -3043,3 +3043,58 @@ func TestAPeriodStartsWhereTheDayStarts(t *testing.T) {
 		t.Errorf("the period report does not count the review filed that morning: %s", res.body)
 	}
 }
+
+// Every audit row names its target, and the table on the screen shows it, but
+// there was no way to ask for one: "what happened to this Control" could only
+// be answered by reading the whole log.
+func TestTheAuditLogCanBeFilteredByItsTarget(t *testing.T) {
+	h := newHarness(t)
+	admin := h.login(adminOf(h))
+
+	first := admin.do(http.MethodPost, "/api/v1/security-controls", map[string]any{"code": "AU-1", "title": "감사 대상", "description": "설명"})
+	if first.status != http.StatusCreated {
+		t.Fatalf("creating a Control: %d %s", first.status, first.body)
+	}
+	controlID, _ := first.json()["id"].(string)
+	if res := admin.do(http.MethodPatch, "/api/v1/security-controls/"+controlID, map[string]any{"title": "감사 대상 (개정)"}); res.status != http.StatusNoContent {
+		t.Fatalf("editing the Control: %d %s", res.status, res.body)
+	}
+	other := admin.do(http.MethodPost, "/api/v1/security-controls", map[string]any{"code": "AU-2", "title": "다른 통제", "description": ""})
+	if other.status != http.StatusCreated {
+		t.Fatalf("creating a second Control: %d %s", other.status, other.body)
+	}
+	otherID, _ := other.json()["id"].(string)
+
+	rows := func(query string) []map[string]any {
+		t.Helper()
+		res := admin.do(http.MethodGet, "/api/v1/admin/audit?"+query, nil)
+		if res.status != http.StatusOK {
+			t.Fatalf("reading the audit log with %s: %d %s", query, res.status, res.body)
+		}
+		var out []map[string]any
+		for _, raw := range res.json()["items"].([]any) {
+			row, _ := raw.(map[string]any)
+			out = append(out, row)
+		}
+		return out
+	}
+
+	scoped := rows("target=" + controlID)
+	if len(scoped) != 2 {
+		t.Fatalf("the Control's own history has %d events, want the creation and the edit", len(scoped))
+	}
+	for _, row := range scoped {
+		if row["target_id"] != controlID {
+			t.Errorf("an event about %v came back under the filter for %s", row["target_id"], controlID)
+		}
+	}
+	if got := rows("target=" + otherID); len(got) != 1 {
+		t.Errorf("the other Control's history has %d events, want 1", len(got))
+	}
+	if got := rows("target=" + controlID + "&target_type=REVIEW_REQUEST"); len(got) != 0 {
+		t.Errorf("a mismatched target type still returned %d events", len(got))
+	}
+	if got := rows("target=" + controlID + "&target_type=security_control"); len(got) != 2 {
+		t.Errorf("the target type filter is case sensitive: %d events", len(got))
+	}
+}

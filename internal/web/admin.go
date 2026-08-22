@@ -416,6 +416,18 @@ func (s *Server) listAudit(w http.ResponseWriter, r *http.Request) {
 		args = append(args, "%"+user+"%")
 		where += ` AND (user_name ILIKE $` + intString(len(args)) + ` OR source_ip ILIKE $` + intString(len(args)) + `)`
 	}
+	// "What happened to this Control?" was a question the log could answer and
+	// the screen could not ask: the target is shown on every row but there was
+	// no way to filter by it. Exact match, which is what the target index on
+	// audit_logs is for.
+	if target := strings.TrimSpace(query.Get("target")); target != "" {
+		args = append(args, target)
+		where += ` AND target_id=$` + intString(len(args))
+	}
+	if targetType := strings.TrimSpace(query.Get("target_type")); targetType != "" {
+		args = append(args, strings.ToUpper(targetType))
+		where += ` AND target_type=$` + intString(len(args))
+	}
 	if from := strings.TrimSpace(query.Get("from")); from != "" {
 		args = append(args, from)
 		where += ` AND timestamp >= display_day_start($` + intString(len(args)) + `::date)`
