@@ -2067,3 +2067,37 @@ func TestReviewersCanJudgeItemsInBulk(t *testing.T) {
 		t.Errorf("a reviewer who is not assigned judged the items: %d", res.status)
 	}
 }
+
+// One requirement is usually evidenced by several files. Each becomes its own
+// record, so the server takes them one at a time -- this checks the sequence
+// the console now performs on the reader's behalf, including a rejected file
+// in the middle leaving the accepted ones in place.
+func TestSeveralEvidenceFilesAttachToOneItem(t *testing.T) {
+	h := newHarness(t)
+	h.user("multi-uploader", "REQUESTER")
+	uploader := h.login("multi-uploader")
+	reviewID := uploader.createReview("증적 여러 건")
+	items := []map[string]any{}
+	if err := json.Unmarshal([]byte(uploader.do(http.MethodGet, "/api/v1/review-requests/"+reviewID+"/items", nil).body), &items); err != nil {
+		t.Fatal(err)
+	}
+	itemID := items[0]["id"].(string)
+	path := fmt.Sprintf("/api/v1/review-requests/%s/items/%s/evidences", reviewID, itemID)
+
+	for i, name := range []string{"화면1.txt", "화면2.txt", "화면3.txt"} {
+		if res := uploader.upload(path, name, fmt.Sprintf("증적 본문 %d", i)); res.status != http.StatusCreated {
+			t.Fatalf("%s returned %d %s", name, res.status, res.body)
+		}
+	}
+	// An extension the policy does not allow must not undo the rest.
+	if res := uploader.upload(path, "악성.exe", "MZ"); res.status == http.StatusCreated {
+		t.Error("an executable was accepted as evidence")
+	}
+	var stored int
+	if err := h.db.Pool.QueryRow(context.Background(), `SELECT count(*) FROM evidences WHERE submission_item_id=$1 AND deleted_at IS NULL`, itemID).Scan(&stored); err != nil {
+		t.Fatal(err)
+	}
+	if stored != 3 {
+		t.Errorf("the item carries %d evidence files, want 3", stored)
+	}
+}
