@@ -487,11 +487,11 @@ func csvValue(v any) string {
 	case nil:
 		return ""
 	case string:
-		return value
+		return csvText(value)
 	case time.Time:
 		return value.Format(time.RFC3339)
 	case []byte:
-		return string(value)
+		return csvText(string(value))
 	default:
 		encoded, err := json.Marshal(value)
 		if err != nil {
@@ -499,6 +499,21 @@ func csvValue(v any) string {
 		}
 		return strings.Trim(string(encoded), `"`)
 	}
+}
+
+// Excel and LibreOffice read a cell that opens with =, +, -, @ or a control
+// character as a formula, so text somebody else chose -- a review title, a
+// display name, an audit payload -- runs on the desktop of whoever opens the
+// export. The leading apostrophe marks the cell as text and is not displayed.
+func csvText(v string) string {
+	if v == "" {
+		return v
+	}
+	switch v[0] {
+	case '=', '+', '-', '@', '\t', '\r', '\n':
+		return "'" + v
+	}
+	return v
 }
 
 // verifyAudit proves the hash chain. A full pass re-reads and re-hashes every

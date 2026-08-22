@@ -220,3 +220,23 @@ func TestPinnedActionsDoNotClaimTheProductVersion(t *testing.T) {
 		}
 	}
 }
+
+// The release version lives in five files that are bumped by hand. A bump that
+// misses one ships an image tagged as the previous release, or a README that
+// tells an operator to pull a tag that was never built.
+func TestReleaseVersionIsTheSameEverywhere(t *testing.T) {
+	version := strings.TrimSpace(repoFile(t, "VERSION"))
+	for _, file := range []string{"compose.yaml", "README.md", filepath.Join(".github", "workflows", "ci.yml"), filepath.Join("web", "package.json")} {
+		body := repoFile(t, file)
+		found := false
+		for _, m := range regexp.MustCompile(`(?:seccheck:v|Release-v|VERSION=|"version": ")(\d+\.\d+\.\d+)`).FindAllStringSubmatch(body, -1) {
+			found = true
+			if m[1] != version {
+				t.Errorf("%s names version %s but VERSION says %s", file, m[1], version)
+			}
+		}
+		if !found {
+			t.Errorf("%s no longer carries the release version -- the guard cannot see a missed bump", file)
+		}
+	}
+}

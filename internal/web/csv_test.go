@@ -39,6 +39,27 @@ func TestWriteCSVIsExcelReadable(t *testing.T) {
 	}
 }
 
+// A review can be named anything its requester types, and the admin who
+// exports the list opens the file in Excel.
+func TestWriteCSVDoesNotHandExcelAFormula(t *testing.T) {
+	rec := httptest.NewRecorder()
+	writeCSV(rec, "seccheck-reviews", []string{"title", "owner", "score", "note"}, []map[string]any{
+		{"title": `=cmd|'/c calc'!A0`, "owner": "@메일", "score": -4, "note": "정상 문구"},
+	})
+	row := strings.Split(strings.TrimSpace(strings.TrimPrefix(rec.Body.String(), "\ufeff")), "\n")[1]
+	for _, want := range []string{`'=cmd`, `'@메일`} {
+		if !strings.Contains(row, want) {
+			t.Errorf("a formula cell was exported unescaped, expected %s in: %s", want, row)
+		}
+	}
+	if !strings.Contains(row, ",-4,") {
+		t.Errorf("a negative number must stay a number: %s", row)
+	}
+	if !strings.Contains(row, "정상 문구") || strings.Contains(row, "'정상") {
+		t.Errorf("ordinary text must not be touched: %s", row)
+	}
+}
+
 func TestCapExportMarksOnlyTheOverflow(t *testing.T) {
 	full := make([]map[string]any, exportRowCap+1)
 	rec := httptest.NewRecorder()
