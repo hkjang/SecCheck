@@ -8,6 +8,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"strings"
 	"time"
 
 	"github.com/hkjang/SecCheck/internal/store"
@@ -125,6 +126,27 @@ func (w *Worker) alertStalledQueue(ctx context.Context) int64 {
 	return sent
 }
 
+// activeRecipient returns the first candidate who can still act. A reminder
+// addressed to somebody who has left the organisation is worse than none: the
+// item looks chased and nobody is chasing it. These dates fall months after
+// the review closed, which is exactly when the person who owned it is most
+// likely gone.
+func (w *Worker) activeRecipient(ctx context.Context, candidates ...string) (string, bool) {
+	for i, id := range candidates {
+		if strings.TrimSpace(id) == "" {
+			continue
+		}
+		var active bool
+		if err := w.Store.Pool.QueryRow(ctx, `SELECT active FROM users WHERE id=$1`, id).Scan(&active); err != nil {
+			continue
+		}
+		if active {
+			return id, i > 0
+		}
+	}
+	return "", false
+}
+
 // remindDueFollowUps tells the service owner when an action promised at
 // review time is nearly due or already late. The register shows the same
 // thing, but nobody opens a report in the months between reviews -- which is
@@ -165,11 +187,12 @@ func (w *Worker) remindDueFollowUps(ctx context.Context) int64 {
 	today := time.Now().Truncate(24 * time.Hour)
 	for _, item := range pending {
 		var number, service, requester, code string
-		if err = w.Store.Pool.QueryRow(ctx, `SELECT r.review_number,r.service_name,r.requester_id,si.item_code
+		var reviewer *string
+		if err = w.Store.Pool.QueryRow(ctx, `SELECT r.review_number,r.service_name,r.requester_id,r.reviewer_id,si.item_code
                         FROM submission_items si
                         JOIN submissions sub ON sub.id=si.submission_id
                         JOIN review_requests r ON r.id=sub.review_request_id
-                        WHERE si.id=$1`, item.itemID).Scan(&number, &service, &requester, &code); err != nil {
+                        WHERE si.id=$1`, item.itemID).Scan(&number, &service, &requester, &reviewer, &code); err != nil {
 			continue
 		}
 		title := "후속조치 기한 임박"
@@ -177,6 +200,22 @@ func (w *Worker) remindDueFollowUps(ctx context.Context) int64 {
 			title = "후속조치 기한 초과"
 		}
 		body := fmt.Sprintf("%s(%s) %s 항목의 후속조치 기한이 %s입니다: %s", number, service, code, item.due.Format("2006-01-02"), shorten(item.action, 200))
+		// The requester owns the remediation, but if they have left the
+		// reviewer is told instead, and told why -- somebody has to know the
+		// action has no owner.
+		fallback := ""
+		if reviewer != nil {
+			fallback = *reviewer
+		}
+		recipient, reassigned := w.activeRecipient(ctx, requester, fallback)
+		if recipient == "" {
+			w.Store.Log(ctx, "WARN", "", "maintenance", "후속조치 기한이 되었으나 알릴 활성 사용자가 없습니다.", map[string]any{"review_number": number, "item_code": code})
+			continue
+		}
+		if reassigned {
+			body += " (원 담당자 계정이 비활성 상태여서 검토자에게 전달합니다. 담당자를 다시 지정하세요.)"
+		}
+		requester = recipient
 		if _, err = w.Store.Pool.Exec(ctx, `INSERT INTO notifications(id,recipient_id,event_type,title,body,target_type,target_id) VALUES($1,$2,'FOLLOW_UP_DUE',$3,$4,'REVIEW_REQUEST',(SELECT sub.review_request_id FROM submission_items si JOIN submissions sub ON sub.id=si.submission_id WHERE si.id=$5))`,
 			store.NewID(), requester, title, body, item.itemID); err == nil {
 			sent++
@@ -289,7 +328,19 @@ func (w *Worker) remindDueChangeRequests(ctx context.Context) int64 {
 			title = "보완 조치 기한 초과"
 			body = fmt.Sprintf("%s(%s)의 보완 요청이 %s 기한을 넘겼습니다.", number, service, item.due.Format("2006-01-02"))
 		}
-		if _, err = w.Store.Pool.Exec(ctx, `INSERT INTO notifications(id,recipient_id,event_type,title,body) VALUES($1,$2,'CHANGE_REQUEST_DUE',$3,$4)`, store.NewID(), item.recipient, title, body); err == nil {
+		// An open change request blocks resubmission, so a reminder that lands
+		// on a departed assignee leaves the review stuck with nobody told.
+		var owner, reviewer string
+		_ = w.Store.Pool.QueryRow(ctx, `SELECT requester_id,COALESCE(reviewer_id,'') FROM review_requests WHERE id=$1`, item.reviewID).Scan(&owner, &reviewer)
+		recipient, reassigned := w.activeRecipient(ctx, item.recipient, owner, reviewer)
+		if recipient == "" {
+			w.Store.Log(ctx, "WARN", "", "maintenance", "보완 요청 기한이 되었으나 알릴 활성 사용자가 없습니다.", map[string]any{"review_number": number})
+			continue
+		}
+		if reassigned {
+			body += " (원 담당자 계정이 비활성 상태입니다. 담당자를 다시 지정하세요.)"
+		}
+		if _, err = w.Store.Pool.Exec(ctx, `INSERT INTO notifications(id,recipient_id,event_type,title,body) VALUES($1,$2,'CHANGE_REQUEST_DUE',$3,$4)`, store.NewID(), recipient, title, body); err == nil {
 			sent++
 		}
 	}

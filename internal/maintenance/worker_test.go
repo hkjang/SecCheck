@@ -326,3 +326,58 @@ func TestFollowUpsAreRemindedWhenTheirDateApproaches(t *testing.T) {
 		t.Errorf("a second sweep raised the reminder count to %d", notices)
 	}
 }
+
+// These dates fall months after a review closes, which is exactly when the
+// person who owned the work is most likely to have left. A reminder sent to a
+// deactivated account is worse than none: the item looks chased and is not.
+func TestRemindersFindSomebodyWhoCanStillAct(t *testing.T) {
+	db := testdb.New(t)
+	ctx := context.Background()
+	departed := testdb.Bootstrap(t, db, "departed-owner")
+	reviewer := testdb.Bootstrap(t, db, "standing-reviewer")
+	worker := maintenance.New(db, nil)
+	exec := func(sql string, args ...any) {
+		t.Helper()
+		if _, err := db.Pool.Exec(ctx, sql, args...); err != nil {
+			t.Fatalf("%s: %v", sql, err)
+		}
+	}
+
+	templateID, versionID, sourceID := store.NewID(), store.NewID(), store.NewID()
+	exec(`INSERT INTO checklist_templates(id,name,category,created_by) VALUES($1,'템플릿','DEVELOPMENT',$2)`, templateID, reviewer)
+	exec(`INSERT INTO checklist_versions(id,template_id,version,status,created_by) VALUES($1,$2,'V1','PUBLISHED',$3)`, versionID, templateID, reviewer)
+	exec(`INSERT INTO checklist_items(id,version_id,item_code,category,title,question,severity,required,answer_type,evidence_required,sort_order)
+                VALUES($1,$2,'X-1','DEVELOPMENT','보안요건','질문','MEDIUM',true,'YNNA',false,1)`, sourceID, versionID)
+
+	reviewID, submissionID, itemID := store.NewID(), store.NewID(), store.NewID()
+	exec(`INSERT INTO review_requests(id,review_number,service_name,description,service_type,change_type,builder_id,developer_id,department,requester_id,reviewer_id,exposure,status)
+                VALUES($1,'SC-2026-000901','퇴사자 서비스','설명','WEB','NEW',$2,$2,'보안팀',$2,$3,'INTERNAL','APPROVED')`, reviewID, departed, reviewer)
+	exec(`INSERT INTO submissions(id,review_request_id,revision,status) VALUES($1,$2,1,'APPROVED')`, submissionID, reviewID)
+	exec(`INSERT INTO submission_items(id,submission_id,source_item_id,template_name,template_version,item_code,section,category,title,question,severity,required,answer_type,evidence_required,sort_order)
+                VALUES($1,$2,$3,'템플릿','V1','X-1','구분','DEVELOPMENT','보안요건','질문','MEDIUM',true,'YNNA',false,1)`, itemID, submissionID, sourceID)
+	exec(`INSERT INTO review_results(id,submission_item_id,reviewer_id,result,follow_up,follow_up_due_date)
+                VALUES($1,$2,$3,'CONDITIONAL','계정 분리',current_date-1)`, store.NewID(), itemID, reviewer)
+
+	// The person who owned the service has left.
+	exec(`UPDATE users SET active=false WHERE id=$1`, departed)
+	worker.Sweep(ctx)
+
+	var toDeparted, toReviewer int
+	if err := db.Pool.QueryRow(ctx, `SELECT count(*) FILTER(WHERE recipient_id=$1), count(*) FILTER(WHERE recipient_id=$2)
+                FROM notifications WHERE event_type='FOLLOW_UP_DUE'`, departed, reviewer).Scan(&toDeparted, &toReviewer); err != nil {
+		t.Fatal(err)
+	}
+	if toDeparted != 0 {
+		t.Errorf("%d reminders went to a deactivated account", toDeparted)
+	}
+	if toReviewer != 1 {
+		t.Fatalf("the reviewer received %d reminders, want 1", toReviewer)
+	}
+	var body string
+	if err := db.Pool.QueryRow(ctx, `SELECT body FROM notifications WHERE recipient_id=$1 AND event_type='FOLLOW_UP_DUE'`, reviewer).Scan(&body); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(body, "비활성") {
+		t.Errorf("the reminder does not say why it was redirected: %s", body)
+	}
+}
