@@ -2972,3 +2972,48 @@ func TestOverdueIsDecidedInTheDisplayTimezone(t *testing.T) {
 		t.Error("an action whose date has passed where the installation lives was reported as on time")
 	}
 }
+
+// A period runs from the start of a day where the installation lives. The
+// filters compared a timestamptz against a bare date, which begins at midnight
+// UTC -- so with the default Seoul zone the first nine hours of every day were
+// counted on the day before, and a report for the first of the month left them
+// out entirely.
+func TestAPeriodStartsWhereTheDayStarts(t *testing.T) {
+	h := newHarness(t)
+	admin := h.login(adminOf(h))
+	ctx := context.Background()
+	requester := h.user("period-requester", "REQUESTER")
+	if _, err := h.db.Pool.Exec(ctx, `UPDATE settings SET value_json = jsonb_set(value_json,'{timezone}','"Asia/Seoul"') WHERE key='general'`); err != nil {
+		t.Fatal(err)
+	}
+	id := store.NewID()
+	// Half past midnight in Seoul on the fifth, which is still the fourth in UTC.
+	if _, err := h.db.Pool.Exec(ctx, `INSERT INTO review_requests(id,review_number,service_name,description,service_type,change_type,builder_id,developer_id,department,requester_id,exposure,status,created_at)
+                VALUES($1,'SR-EARLY-1','새벽 신청 서비스','설명','WEB','NEW',$2,$2,'보안팀',$2,'INTERNAL','SUBMITTED','2026-03-05 00:30'::timestamp AT TIME ZONE 'Asia/Seoul')`, id, requester); err != nil {
+		t.Fatal(err)
+	}
+
+	listed := func(from, to string) bool {
+		t.Helper()
+		res := admin.do(http.MethodGet, "/api/v1/review-requests?from="+from+"&to="+to+"&q=SR-EARLY-1", nil)
+		if res.status != http.StatusOK {
+			t.Fatalf("listing %s..%s: %d %s", from, to, res.status, res.body)
+		}
+		items, _ := res.json()["items"].([]any)
+		return len(items) == 1
+	}
+	if !listed("2026-03-05", "2026-03-05") {
+		t.Error("a review filed just after midnight is missing from that day")
+	}
+	if listed("2026-03-04", "2026-03-04") {
+		t.Error("a review filed on the fifth was counted on the fourth")
+	}
+
+	res := admin.do(http.MethodGet, "/api/v1/reports/reviews?from=2026-03-05&to=2026-03-05", nil)
+	if res.status != http.StatusOK {
+		t.Fatalf("reading the period report: %d %s", res.status, res.body)
+	}
+	if !strings.Contains(res.body, "SUBMITTED") {
+		t.Errorf("the period report does not count the review filed that morning: %s", res.body)
+	}
+}

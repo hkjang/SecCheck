@@ -3,6 +3,7 @@ package store_test
 import (
 	"context"
 	"testing"
+	"time"
 
 	"github.com/hkjang/SecCheck/internal/testdb"
 )
@@ -48,6 +49,51 @@ func TestTodayFollowsTheDisplayTimezone(t *testing.T) {
 	setZone("Mars/Olympus")
 	var fallsBackToUTC bool
 	if err := db.Pool.QueryRow(ctx, `SELECT display_today() = (now() AT TIME ZONE 'UTC')::date`).Scan(&fallsBackToUTC); err != nil {
+		t.Fatalf("an unparseable zone broke the query: %v", err)
+	}
+	if !fallsBackToUTC {
+		t.Error("an unparseable zone should fall back to UTC")
+	}
+}
+
+// A period filter starts where the day starts for the reader. Comparing a
+// timestamptz against a bare date starts it at midnight UTC instead, which
+// shifts every boundary in every report by the zone's offset.
+func TestDayStartFollowsTheDisplayTimezone(t *testing.T) {
+	db := testdb.New(t)
+	ctx := context.Background()
+	setZone := func(zone string) {
+		t.Helper()
+		if _, err := db.Pool.Exec(ctx, `UPDATE settings SET value_json = jsonb_set(value_json,'{timezone}',to_jsonb($1::text)) WHERE key='general'`, zone); err != nil {
+			t.Fatal(err)
+		}
+	}
+	start := func(zone, day string) time.Time {
+		t.Helper()
+		setZone(zone)
+		var at time.Time
+		if err := db.Pool.QueryRow(ctx, `SELECT display_day_start($1::date)`, day).Scan(&at); err != nil {
+			t.Fatalf("display_day_start in %s: %v", zone, err)
+		}
+		return at
+	}
+
+	seoul := start("Asia/Seoul", "2026-03-05")
+	utc := start("UTC", "2026-03-05")
+	if diff := utc.Sub(seoul); diff != 9*time.Hour {
+		t.Errorf("the Seoul day starts %v before the UTC day, want 9h", diff)
+	}
+	// A zone with daylight saving moves the boundary with the calendar, which
+	// is why the day is resolved per date rather than by a fixed offset.
+	winter := start("America/New_York", "2026-01-15")
+	summer := start("America/New_York", "2026-07-15")
+	if winter.UTC().Hour() != 5 || summer.UTC().Hour() != 4 {
+		t.Errorf("daylight saving was not applied: winter=%s summer=%s", winter.UTC(), summer.UTC())
+	}
+
+	setZone("Mars/Olympus")
+	var fallsBackToUTC bool
+	if err := db.Pool.QueryRow(ctx, `SELECT display_day_start('2026-03-05'::date) = '2026-03-05 00:00+00'::timestamptz`).Scan(&fallsBackToUTC); err != nil {
 		t.Fatalf("an unparseable zone broke the query: %v", err)
 	}
 	if !fallsBackToUTC {

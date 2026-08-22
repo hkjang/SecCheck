@@ -90,10 +90,10 @@ func (s *Server) reviewFilter(r *http.Request) (string, []any) {
 		add("review_requests.reviewer_id=$%d", v)
 	}
 	if v := strings.TrimSpace(query.Get("from")); v != "" {
-		add("review_requests.created_at >= $%d::date", v)
+		add("review_requests.created_at >= display_day_start($%d::date)", v)
 	}
 	if v := strings.TrimSpace(query.Get("to")); v != "" {
-		add("review_requests.created_at < $%d::date + 1", v)
+		add("review_requests.created_at < display_day_start($%d::date + 1)", v)
 	}
 	if strings.TrimSpace(query.Get("overdue")) == "1" {
 		where += " AND EXISTS(SELECT 1 FROM change_requests oc WHERE oc.review_request_id=review_requests.id AND oc.status<>'VERIFIED' AND oc.due_date < display_today())"

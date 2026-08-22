@@ -418,11 +418,11 @@ func (s *Server) listAudit(w http.ResponseWriter, r *http.Request) {
 	}
 	if from := strings.TrimSpace(query.Get("from")); from != "" {
 		args = append(args, from)
-		where += ` AND timestamp >= $` + intString(len(args)) + `::date`
+		where += ` AND timestamp >= display_day_start($` + intString(len(args)) + `::date)`
 	}
 	if to := strings.TrimSpace(query.Get("to")); to != "" {
 		args = append(args, to)
-		where += ` AND timestamp < $` + intString(len(args)) + `::date + 1`
+		where += ` AND timestamp < display_day_start($` + intString(len(args)) + `::date + 1)`
 	}
 	// One row past the cap tells us the export was cut short without a second
 	// count query over a table that is only ever appended to.

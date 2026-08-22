@@ -30,12 +30,12 @@ func reportFilter(r *http.Request) reportScope {
 	query := r.URL.Query()
 	if from := strings.TrimSpace(query.Get("from")); from != "" {
 		scope.args = append(scope.args, from)
-		scope.where += fmt.Sprintf(" AND r.created_at >= $%d::date", len(scope.args))
+		scope.where += fmt.Sprintf(" AND r.created_at >= display_day_start($%d::date)", len(scope.args))
 		scope.from = from
 	}
 	if to := strings.TrimSpace(query.Get("to")); to != "" {
 		scope.args = append(scope.args, to)
-		scope.where += fmt.Sprintf(" AND r.created_at < $%d::date + 1", len(scope.args))
+		scope.where += fmt.Sprintf(" AND r.created_at < display_day_start($%d::date + 1)", len(scope.args))
 		scope.to = to
 	}
 	scope.includeDone = query.Get("include_done") == "1"
