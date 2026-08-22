@@ -7,10 +7,19 @@ import (
 	"time"
 )
 
+func seoul(t *testing.T) *time.Location {
+	t.Helper()
+	zone, err := time.LoadLocation("Asia/Seoul")
+	if err != nil {
+		t.Skipf("no timezone database on this host: %v", err)
+	}
+	return zone
+}
+
 func TestWriteCSVIsExcelReadable(t *testing.T) {
 	rec := httptest.NewRecorder()
 	stamp := time.Date(2026, 8, 21, 9, 30, 0, 0, time.UTC)
-	writeCSV(rec, "seccheck-audit", []string{"timestamp", "event_type", "user_name", "after_value"}, []map[string]any{
+	writeCSV(rec, "seccheck-audit", seoul(t), []string{"timestamp", "event_type", "user_name", "after_value"}, []map[string]any{
 		{"timestamp": stamp, "event_type": "LOGIN_LOCKED", "user_name": "김보안, 팀장", "after_value": map[string]any{"locked_until": "2026-08-21T09:45:00Z"}},
 		{"timestamp": nil, "event_type": "LOGIN", "user_name": nil, "after_value": nil},
 	})
@@ -28,8 +37,8 @@ func TestWriteCSVIsExcelReadable(t *testing.T) {
 	if !strings.Contains(lines[1], `"김보안, 팀장"`) {
 		t.Errorf("a value containing a comma must stay quoted: %s", lines[1])
 	}
-	if !strings.Contains(lines[1], "2026-08-21T09:30:00Z") {
-		t.Errorf("timestamp was not rendered as RFC3339: %s", lines[1])
+	if !strings.Contains(lines[1], "2026-08-21 18:30:00") {
+		t.Errorf("the timestamp was not rendered in the display timezone: %s", lines[1])
 	}
 	if !strings.Contains(lines[1], "locked_until") {
 		t.Errorf("structured payload was dropped: %s", lines[1])
@@ -43,7 +52,7 @@ func TestWriteCSVIsExcelReadable(t *testing.T) {
 // exports the list opens the file in Excel.
 func TestWriteCSVDoesNotHandExcelAFormula(t *testing.T) {
 	rec := httptest.NewRecorder()
-	writeCSV(rec, "seccheck-reviews", []string{"title", "owner", "score", "note"}, []map[string]any{
+	writeCSV(rec, "seccheck-reviews", time.UTC, []string{"title", "owner", "score", "note"}, []map[string]any{
 		{"title": `=cmd|'/c calc'!A0`, "owner": "@메일", "score": -4, "note": "정상 문구"},
 	})
 	row := strings.Split(strings.TrimSpace(strings.TrimPrefix(rec.Body.String(), "\ufeff")), "\n")[1]

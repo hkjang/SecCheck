@@ -444,7 +444,7 @@ func (s *Server) listAudit(w http.ResponseWriter, r *http.Request) {
 	if query.Get("format") == "csv" {
 		records, truncated := capExport(w, records)
 		_ = s.Store.Audit(r.Context(), auditFrom(r, "EXPORT_AUDIT", "AUDIT_LOG", "", nil, map[string]any{"rows": len(records), "truncated": truncated}))
-		writeCSV(w, "seccheck-audit", auditCSVColumns, records)
+		writeCSV(w, "seccheck-audit", s.Store.Location(r.Context()), auditCSVColumns, records)
 		return
 	}
 	jsonResponse(w, 200, map[string]any{"items": records, "events": auditEventCatalogue()})
@@ -466,7 +466,7 @@ func capExport(w http.ResponseWriter, records []map[string]any) ([]map[string]an
 
 // writeCSV emits a UTF-8 BOM so that Excel on a Korean Windows desktop opens
 // the download without mangling the text.
-func writeCSV(w http.ResponseWriter, name string, columns []string, records []map[string]any) {
+func writeCSV(w http.ResponseWriter, name string, zone *time.Location, columns []string, records []map[string]any) {
 	w.Header().Set("Content-Type", "text/csv; charset=utf-8")
 	w.Header().Set("Content-Disposition", `attachment; filename="`+name+`.csv"`)
 	_, _ = w.Write([]byte("\ufeff"))
@@ -476,20 +476,23 @@ func writeCSV(w http.ResponseWriter, name string, columns []string, records []ma
 	row := make([]string, len(columns))
 	for _, record := range records {
 		for i, column := range columns {
-			row[i] = csvValue(record[column])
+			row[i] = csvValue(record[column], zone)
 		}
 		_ = out.Write(row)
 	}
 }
 
-func csvValue(v any) string {
+func csvValue(v any, zone *time.Location) string {
 	switch value := v.(type) {
 	case nil:
 		return ""
 	case string:
 		return csvText(value)
 	case time.Time:
-		return value.Format(time.RFC3339)
+		// The screen shows the display timezone, so the download has to as
+		// well: an auditor comparing the two must not have to add nine hours
+		// in their head. The format is one a spreadsheet reads as a datetime.
+		return value.In(zone).Format("2006-01-02 15:04:05")
 	case []byte:
 		return csvText(string(value))
 	default:

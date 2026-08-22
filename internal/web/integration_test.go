@@ -2971,6 +2971,32 @@ func TestOverdueIsDecidedInTheDisplayTimezone(t *testing.T) {
 	if !overdue("Pacific/Kiritimati") {
 		t.Error("an action whose date has passed where the installation lives was reported as on time")
 	}
+
+	// The day an action was confirmed is rendered from a timestamp, which
+	// to_char() formats in the session's zone unless it is told otherwise.
+	if _, err := h.db.Pool.Exec(ctx, `UPDATE review_results SET follow_up_done_at=now(),follow_up_done_by=$1 WHERE follow_up_due_date=$2::date`, adminID, due); err != nil {
+		t.Fatal(err)
+	}
+	doneOn := func(zone string) string {
+		t.Helper()
+		if _, err := h.db.Pool.Exec(ctx, `UPDATE settings SET value_json = jsonb_set(value_json,'{timezone}',to_jsonb($1::text)) WHERE key='general'`, zone); err != nil {
+			t.Fatal(err)
+		}
+		res := admin.do(http.MethodGet, "/api/v1/reports/reviews?from=2000-01-01&to=2099-12-31&include_done=1", nil)
+		rows, _ := res.json()["follow_ups"].([]any)
+		for _, raw := range rows {
+			row, _ := raw.(map[string]any)
+			if row != nil && row["due_on"] == due {
+				day, _ := row["done_on"].(string)
+				return day
+			}
+		}
+		t.Fatalf("the confirmed action is missing from the register in %s: %s", zone, res.body)
+		return ""
+	}
+	if east, west := doneOn("Pacific/Kiritimati"), doneOn("Pacific/Midway"); east == west {
+		t.Errorf("both sides of the date line report the same completion day (%s)", east)
+	}
 }
 
 // A period runs from the start of a day where the installation lives. The

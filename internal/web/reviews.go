@@ -126,7 +126,7 @@ func (s *Server) listReviewRequests(w http.ResponseWriter, r *http.Request) {
 		}
 		records, truncated := capExport(w, scanDynamic(rows, reviewColumns))
 		_ = s.Store.Audit(r.Context(), auditFrom(r, "EXPORT_REVIEW_LIST", "REVIEW_REQUEST", "", nil, map[string]any{"rows": len(records), "truncated": truncated}))
-		writeCSV(w, "seccheck-reviews", reviewColumns, records)
+		writeCSV(w, "seccheck-reviews", s.Store.Location(r.Context()), reviewColumns, records)
 		return
 	}
 

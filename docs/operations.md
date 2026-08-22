@@ -277,6 +277,7 @@ docker compose exec seccheck /app/seccheck selftest --username admin --password 
 | 009~012 | 후속조치 이행·기한·알림·보고 |
 | 013 | 기한 판정 기준일 함수 `display_today()` (표시 시간대 기준) |
 | 014 | 기간 필터 시작 시각 함수 `display_day_start()` (표시 시간대 기준) |
+| 015 | 표시 날짜 변환 함수 `display_date()` (표시 시간대 기준) |
 
 ## 업그레이드와 롤백
 

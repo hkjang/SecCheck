@@ -100,3 +100,49 @@ func TestDayStartFollowsTheDisplayTimezone(t *testing.T) {
 		t.Error("an unparseable zone should fall back to UTC")
 	}
 }
+
+// A timestamp shown as a day has to be turned into that day where the reader
+// lives; to_char() on a timestamptz uses the session's zone instead.
+func TestDisplayDateFollowsTheDisplayTimezone(t *testing.T) {
+	db := testdb.New(t)
+	ctx := context.Background()
+	setZone := func(zone string) {
+		t.Helper()
+		if _, err := db.Pool.Exec(ctx, `UPDATE settings SET value_json = jsonb_set(value_json,'{timezone}',to_jsonb($1::text)) WHERE key='general'`, zone); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// Half past three in the afternoon in UTC is already the next day in Seoul.
+	at := time.Date(2026, 3, 4, 15, 30, 0, 0, time.UTC)
+	day := func(zone string) string {
+		t.Helper()
+		setZone(zone)
+		var out string
+		if err := db.Pool.QueryRow(ctx, `SELECT display_date($1::timestamptz)::text`, at).Scan(&out); err != nil {
+			t.Fatalf("display_date in %s: %v", zone, err)
+		}
+		return out
+	}
+	if got := day("Asia/Seoul"); got != "2026-03-05" {
+		t.Errorf("display_date in Seoul = %s, want 2026-03-05", got)
+	}
+	if got := day("UTC"); got != "2026-03-04" {
+		t.Errorf("display_date in UTC = %s, want 2026-03-04", got)
+	}
+
+	setZone("Mars/Olympus")
+	var fellBack string
+	if err := db.Pool.QueryRow(ctx, `SELECT display_date($1::timestamptz)::text`, at).Scan(&fellBack); err != nil {
+		t.Fatalf("an unparseable zone broke the query: %v", err)
+	}
+	if fellBack != "2026-03-04" {
+		t.Errorf("an unparseable zone should fall back to UTC, got %s", fellBack)
+	}
+	var missing *string
+	if err := db.Pool.QueryRow(ctx, `SELECT display_date(NULL)::text`).Scan(&missing); err != nil {
+		t.Fatal(err)
+	}
+	if missing != nil {
+		t.Errorf("a missing timestamp became a day: %v", *missing)
+	}
+}
