@@ -34,7 +34,7 @@ var requestPayloads = map[string][]payloadField{
 	"POST /api/v1/review-requests/{id}/participants":                   {{"user_id", "string"}, {"role", "string"}},
 	"POST /api/v1/review-requests/{id}/reject":                         {{"comment", "string"}},
 	"POST /api/v1/review-requests/{id}/responses/bulk":                 {{"item_ids", "[]string"}, {"applicability", "string"}, {"self_assessment", "string"}, {"na_reason", "string"}, {"current_state", "string"}, {"action_plan", "string"}, {"assigned_to", "string"}, {"overwrite", "bool"}, {"assign_only", "bool"}},
-	"POST /api/v1/review-results/{id}/follow-up":                       {{"done", "bool"}, {"note", "string"}},
+	"POST /api/v1/review-results/{id}/follow-up":                       {{"action", "string"}, {"done", "bool"}, {"note", "string"}},
 	"POST /api/v1/review-requests/{id}/review-results/bulk":            {{"item_ids", "[]string"}, {"result", "string"}, {"final_applicability", "string"}, {"evidence_adequacy", "string"}, {"opinion", "string"}, {"overwrite", "bool"}},
 	"POST /api/v1/review-requests/{id}/rule-overrides":                 {{"action", "string"}, {"item_id", "string"}, {"source_item_id", "string"}, {"reason", "string"}},
 	"POST /api/v1/security-controls":                                   {{"code", "string"}, {"title", "string"}, {"description", "string"}, {"owner_id", "string"}},
@@ -61,6 +61,7 @@ var requestPayloads = map[string][]payloadField{
 //
 // TestObjectScopedRoutesMatchTheHandlers re-derives this from the handlers.
 var objectScopedRoutes = map[string]bool{
+	"POST /api/v1/review-results/{id}/follow-up":                 true,
 	"POST /api/v1/review-requests/{id}/review-results/bulk":      true,
 	"DELETE /api/v1/evidences/{id}":                              true,
 	"GET /api/v1/evidences/{id}/download":                        true,

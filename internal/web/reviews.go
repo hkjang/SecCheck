@@ -1046,8 +1046,11 @@ func (s *Server) bulkSaveReviewResults(w http.ResponseWriter, r *http.Request) {
 func (s *Server) markFollowUp(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 	var in struct {
-		Done bool   `json:"done"`
-		Note string `json:"note"`
+		// Action is "report" for the team that did the work, "confirm" for the
+		// security side accepting it, and "reopen" to undo either.
+		Action string `json:"action"`
+		Done   bool   `json:"done"`
+		Note   string `json:"note"`
 	}
 	if !decodeJSON(w, r, &in) {
 		return
@@ -1056,15 +1059,54 @@ func (s *Server) markFollowUp(w http.ResponseWriter, r *http.Request) {
 		problem(w, 422, "VALIDATION_FAILED", "조치 결과는 2000자 이내여야 합니다.", nil)
 		return
 	}
-	sess := session(r)
-	var reviewID, action string
-	query := `UPDATE review_results SET follow_up_done_at=NULL,follow_up_done_by=NULL,follow_up_note='' WHERE id=$1 AND btrim(follow_up)<>''`
-	if in.Done {
-		query = `UPDATE review_results SET follow_up_done_at=now(),follow_up_done_by=$2,follow_up_note=$3 WHERE id=$1 AND btrim(follow_up)<>''`
+	// done:true was the whole vocabulary before reporting existed; it still
+	// means what it did, so an existing integration keeps working.
+	if in.Action == "" {
+		in.Action = "reopen"
+		if in.Done {
+			in.Action = "confirm"
+		}
 	}
-	args := []any{id}
-	if in.Done {
-		args = append(args, sess.User.ID, strings.TrimSpace(in.Note))
+	sess := session(r)
+	reviewID, err := s.reviewOfResult(r.Context(), id)
+	if err != nil {
+		problem(w, 404, "NOT_FOUND", "조치 사항이 기록된 검토 결과를 찾을 수 없습니다.", nil)
+		return
+	}
+	reviewer := containsRole(sess.User, "SECURITY_REVIEWER")
+	var query string
+	var args []any
+	var action string
+	switch in.Action {
+	case "report":
+		// The people who carried the work out say so; the register still shows
+		// the entry until the security side accepts it.
+		if !reviewer && !s.canAccessReview(r.Context(), sess, reviewID) {
+			problem(w, 403, "FORBIDDEN", "이 심의의 조치를 보고할 수 없습니다.", nil)
+			return
+		}
+		query = `UPDATE review_results SET follow_up_reported_at=now(),follow_up_reported_by=$2,follow_up_note=$3 WHERE id=$1 AND btrim(follow_up)<>'' AND follow_up_done_at IS NULL`
+		args = []any{id, sess.User.ID, strings.TrimSpace(in.Note)}
+		action = "FOLLOW_UP_REPORTED"
+	case "confirm":
+		if !reviewer {
+			problem(w, 403, "FORBIDDEN", "이행 확인은 보안 담당자만 할 수 있습니다.", nil)
+			return
+		}
+		query = `UPDATE review_results SET follow_up_done_at=now(),follow_up_done_by=$2,follow_up_note=COALESCE(NULLIF($3,''),follow_up_note) WHERE id=$1 AND btrim(follow_up)<>''`
+		args = []any{id, sess.User.ID, strings.TrimSpace(in.Note)}
+		action = "FOLLOW_UP_DONE"
+	case "reopen":
+		if !reviewer {
+			problem(w, 403, "FORBIDDEN", "이행 완료 해제는 보안 담당자만 할 수 있습니다.", nil)
+			return
+		}
+		query = `UPDATE review_results SET follow_up_done_at=NULL,follow_up_done_by=NULL,follow_up_reported_at=NULL,follow_up_reported_by=NULL,follow_up_note='' WHERE id=$1 AND btrim(follow_up)<>''`
+		args = []any{id}
+		action = "FOLLOW_UP_REOPENED"
+	default:
+		problem(w, 422, "VALIDATION_FAILED", "작업은 report, confirm 또는 reopen이어야 합니다.", nil)
+		return
 	}
 	tag, err := s.Store.Pool.Exec(r.Context(), query, args...)
 	if err != nil {
@@ -1075,15 +1117,18 @@ func (s *Server) markFollowUp(w http.ResponseWriter, r *http.Request) {
 		problem(w, 404, "NOT_FOUND", "조치 사항이 기록된 검토 결과를 찾을 수 없습니다.", nil)
 		return
 	}
-	_ = s.Store.Pool.QueryRow(r.Context(), `SELECT sub.review_request_id FROM review_results rr
-                JOIN submission_items si ON si.id=rr.submission_item_id
-                JOIN submissions sub ON sub.id=si.submission_id WHERE rr.id=$1`, id).Scan(&reviewID)
-	action = "FOLLOW_UP_REOPENED"
-	if in.Done {
-		action = "FOLLOW_UP_DONE"
-	}
 	_ = s.Store.Audit(r.Context(), auditFrom(r, action, "REVIEW_REQUEST", reviewID, nil, map[string]any{"review_result_id": id, "note": in.Note}))
-	jsonResponse(w, 200, map[string]any{"id": id, "done": in.Done})
+	jsonResponse(w, 200, map[string]any{"id": id, "action": in.Action})
+}
+
+// reviewOfResult finds the review a verdict belongs to, which decides who may
+// report against it.
+func (s *Server) reviewOfResult(ctx context.Context, resultID string) (string, error) {
+	var reviewID string
+	err := s.Store.Pool.QueryRow(ctx, `SELECT sub.review_request_id FROM review_results rr
+                JOIN submission_items si ON si.id=rr.submission_item_id
+                JOIN submissions sub ON sub.id=si.submission_id WHERE rr.id=$1 AND btrim(rr.follow_up)<>''`, resultID).Scan(&reviewID)
+	return reviewID, err
 }
 
 func (s *Server) saveReviewResult(w http.ResponseWriter, r *http.Request) {

@@ -86,8 +86,8 @@ function FollowUpTable({ rows, includeDone, onToggleScope, onChanged }: { rows: 
   const mark = async (row: Row, done: boolean, result = '') => {
     setBusy(String(row.id))
     try {
-      await post(`/api/v1/review-results/${row.id}/follow-up`, { done, note: result })
-      toast.push(done ? '조치 완료로 표시했습니다.' : '이행 완료를 해제했습니다.')
+      await post(`/api/v1/review-results/${row.id}/follow-up`, { action: done ? 'confirm' : 'reopen', note: result })
+      toast.push(done ? '이행 확인 처리했습니다.' : '이행 완료를 해제했습니다.')
       setClosing(undefined); setNote('')
       await onChanged()
     } catch (e) { toast.push(errorMessage(e), 'error') } finally { setBusy('') }
@@ -102,16 +102,21 @@ function FollowUpTable({ rows, includeDone, onToggleScope, onChanged }: { rows: 
         <td>{String(row.item_code)}<div className="subtle">{String(row.title)}</div></td>
         <td>{resultLabel[String(row.result)] || String(row.result)}</td>
         <td>{String(row.follow_up)}<div className="subtle">{String(row.decided_on)} 판정{row.due_on ? ` · 기한 ${row.due_on}` : ''}</div></td>
-        <td>{row.done_on ? <><Badge tone="green">이행 완료</Badge><div className="subtle">{String(row.done_on)} · {String(row.done_by)}</div>{row.follow_up_note ? <div className="subtle">{String(row.follow_up_note)}</div> : null}</> : row.overdue ? <><Badge tone="red">기한 초과</Badge><div className="subtle">{String(row.due_on)}까지</div></> : <Badge tone="amber">미조치</Badge>}</td>
+        <td>{row.done_on
+          ? <><Badge tone="green">이행 확인</Badge><div className="subtle">{String(row.done_on)} · {String(row.done_by)}</div>{row.follow_up_note ? <div className="subtle">{String(row.follow_up_note)}</div> : null}</>
+          : row.reported_on
+            ? <><Badge tone="blue">조치 보고됨</Badge><div className="subtle">{String(row.reported_on)} · {String(row.reported_by)}</div>{row.follow_up_note ? <div className="subtle">{String(row.follow_up_note)}</div> : null}</>
+            : row.overdue ? <><Badge tone="red">기한 초과</Badge><div className="subtle">{String(row.due_on)}까지</div></> : <Badge tone="amber">미조치</Badge>}</td>
         <td>{row.done_on
           ? <Button small disabled={busy === String(row.id)} onClick={() => mark(row, false)}>해제</Button>
-          : <Button small variant="primary" disabled={busy === String(row.id)} onClick={() => { setClosing(row); setNote('') }}><Check size={13} /> 조치 완료</Button>}</td>
+          : <Button small variant="primary" disabled={busy === String(row.id)} onClick={() => { setClosing(row); setNote('') }}><Check size={13} /> {row.reported_on ? '이행 확인' : '이행 확인'}</Button>}</td>
       </tr>)}</tbody></table></div>
       : <Empty title={includeDone ? '조치 사항이 기록된 항목이 없습니다.' : '미조치 항목이 없습니다.'} description="검토자가 판정과 함께 남긴 조치 사항이 여기 모입니다." />}
-    {closing && <Modal title="조치 완료 처리" onClose={() => setClosing(undefined)}
-      footer={<><Button onClick={() => setClosing(undefined)}>취소</Button><Button variant="primary" disabled={busy !== ''} onClick={() => mark(closing, true, note)}>완료로 표시</Button></>}>
+    {closing && <Modal title={closing.reported_on ? '보고된 조치 확인' : '이행 확인 처리'} onClose={() => setClosing(undefined)}
+      footer={<><Button onClick={() => setClosing(undefined)}>취소</Button><Button variant="primary" disabled={busy !== ''} onClick={() => mark(closing, true, note)}>이행 확인</Button></>}>
       <div className="guide-block">{String(closing.review_number)} · {String(closing.item_code)}<br />{String(closing.follow_up)}</div>
-      <Field label="이행 결과" help="무엇을 했는지 남겨 두면 다음 심의에서 근거가 됩니다."><textarea className="textarea" value={note} onChange={e => setNote(e.target.value)} /></Field>
+      {closing.reported_on ? <div className="guide-block">{String(closing.reported_by)}이(가) {String(closing.reported_on)}에 보고했습니다{closing.follow_up_note ? `: ${closing.follow_up_note}` : ''}</div> : null}
+      <Field label="이행 결과" help="비우면 보고된 내용을 그대로 유지합니다."><textarea className="textarea" value={note} onChange={e => setNote(e.target.value)} /></Field>
     </Modal>}
   </section>
 }

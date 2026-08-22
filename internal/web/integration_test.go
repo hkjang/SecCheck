@@ -2376,7 +2376,27 @@ func TestTheReportCollectsOutstandingFollowUps(t *testing.T) {
 	if resultID == "" {
 		t.Fatal("the register entry has no identifier to close it by")
 	}
-	if res := admin.do(http.MethodPost, "/api/v1/review-results/"+resultID+"/follow-up", map[string]any{"done": true, "note": "규칙 배포 완료"}); res.status != http.StatusOK {
+	// The team that did the work reports it; the entry stays outstanding
+	// until the security side accepts it.
+	h.user("remediation-owner", "REQUESTER", "CONTRIBUTOR")
+	if _, err := h.db.Pool.Exec(ctx, `INSERT INTO review_participants(review_request_id,user_id,participant_role) VALUES($1,(SELECT id FROM users WHERE username='remediation-owner'),'CONTRIBUTOR') ON CONFLICT DO NOTHING`, reviewID); err != nil {
+		t.Fatal(err)
+	}
+	if res := h.login("remediation-owner").do(http.MethodPost, "/api/v1/review-results/"+resultID+"/follow-up", map[string]any{"action": "report", "note": "규칙 배포함"}); res.status != http.StatusOK {
+		t.Fatalf("reporting the action: %d %s", res.status, res.body)
+	}
+	stillOpen, _ := admin.do(http.MethodGet, "/api/v1/reports/reviews", nil).json()["follow_ups"].([]any)
+	if len(stillOpen) != 1 {
+		t.Fatalf("a reported action left the register before it was accepted: %d", len(stillOpen))
+	}
+	if reported, _ := stillOpen[0].(map[string]any)["reported_by"].(string); reported != "remediation-owner" {
+		t.Errorf("the register does not say who reported it: %q", reported)
+	}
+	// Reporting is not accepting: the requester cannot discharge it.
+	if res := h.login("remediation-owner").do(http.MethodPost, "/api/v1/review-results/"+resultID+"/follow-up", map[string]any{"action": "confirm", "note": ""}); res.status != http.StatusForbidden {
+		t.Errorf("a requester confirmed their own action: %d %s", res.status, res.body)
+	}
+	if res := admin.do(http.MethodPost, "/api/v1/review-results/"+resultID+"/follow-up", map[string]any{"action": "confirm", "note": "규칙 배포 완료"}); res.status != http.StatusOK {
 		t.Fatalf("closing the action: %d %s", res.status, res.body)
 	}
 	outstanding, _ := admin.do(http.MethodGet, "/api/v1/reports/reviews", nil).json()["follow_ups"].([]any)
@@ -2403,7 +2423,7 @@ func TestTheReportCollectsOutstandingFollowUps(t *testing.T) {
 	}
 
 	// Reopening puts it back, so a premature closure is recoverable.
-	if res := admin.do(http.MethodPost, "/api/v1/review-results/"+resultID+"/follow-up", map[string]any{"done": false, "note": ""}); res.status != http.StatusOK {
+	if res := admin.do(http.MethodPost, "/api/v1/review-results/"+resultID+"/follow-up", map[string]any{"action": "reopen", "note": ""}); res.status != http.StatusOK {
 		t.Fatalf("reopening: %d %s", res.status, res.body)
 	}
 	reopened, _ := admin.do(http.MethodGet, "/api/v1/reports/reviews", nil).json()["follow_ups"].([]any)
@@ -2416,7 +2436,7 @@ func TestTheReportCollectsOutstandingFollowUps(t *testing.T) {
 	if err := h.db.Pool.QueryRow(ctx, `SELECT rr.id FROM review_results rr WHERE btrim(rr.follow_up)='' LIMIT 1`).Scan(&plain); err != nil {
 		t.Fatal(err)
 	}
-	if res := admin.do(http.MethodPost, "/api/v1/review-results/"+plain+"/follow-up", map[string]any{"done": true, "note": ""}); res.status != http.StatusNotFound {
+	if res := admin.do(http.MethodPost, "/api/v1/review-results/"+plain+"/follow-up", map[string]any{"action": "confirm", "note": ""}); res.status != http.StatusNotFound {
 		t.Errorf("a verdict without an action was closed: %d %s", res.status, res.body)
 	}
 }
