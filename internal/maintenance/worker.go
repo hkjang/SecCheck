@@ -28,6 +28,9 @@ const (
 	// this long is not queued behind work, it is not being picked up at all.
 	stalledAfter  = 15 * time.Minute
 	stallReminder = 6 * time.Hour
+	// A review that has not moved in this long is waiting on a person, not on
+	// work in progress, and the same person is not told again for this long.
+	stalledReviewDays = 3
 )
 
 type Worker struct {
@@ -69,6 +72,7 @@ func (w *Worker) Sweep(ctx context.Context) map[string]int64 {
 	}
 	removed["due_reminders"] = w.remindDueChangeRequests(ctx)
 	removed["follow_up_reminders"] = w.remindDueFollowUps(ctx)
+	removed["stalled_reviews"] = w.remindStalledReviews(ctx)
 	removed["stall_alerts"] = w.alertStalledQueue(ctx)
 	removed["failure_alerts"] = w.alertFailedJobs(ctx)
 	removed["purged_evidence_files"] = w.purgeDeletedEvidence(ctx)
@@ -279,6 +283,92 @@ func (w *Worker) remindDueFollowUps(ctx context.Context) int64 {
 		}
 	}
 	return sent
+}
+
+// remindStalledReviews tells whoever the review is waiting on. Reminders were
+// only ever aimed at the requester side -- change request due, follow-up due --
+// so a review submitted and never picked up, started and left, or sitting for a
+// signature simply aged, with the requester able to see no movement and unable
+// to do anything about it.
+func (w *Worker) remindStalledReviews(ctx context.Context) int64 {
+	rows, err := w.Store.Pool.Query(ctx, `
+                UPDATE review_requests SET stalled_reminded_at=now()
+                WHERE id IN (
+                  SELECT r.id FROM review_requests r
+                  WHERE r.status IN ('SUBMITTED','RESUBMITTED','REVIEWING','APPROVAL_PENDING')
+                    AND r.updated_at < now()-make_interval(days=>$1)
+                    AND (r.stalled_reminded_at IS NULL OR r.stalled_reminded_at < now()-make_interval(days=>$1))
+                  LIMIT 200)
+                RETURNING id,review_number,service_name,status,COALESCE(reviewer_id,''),COALESCE(approver_id,''),updated_at`, stalledReviewDays)
+	if err != nil {
+		w.Store.Log(ctx, "ERROR", "", "maintenance", "stalled review query failed", map[string]any{"error": err.Error()})
+		return 0
+	}
+	type stalled struct {
+		id, number, service, status, reviewer, approver string
+		since                                           time.Time
+	}
+	var pending []stalled
+	for rows.Next() {
+		var item stalled
+		if rows.Scan(&item.id, &item.number, &item.service, &item.status, &item.reviewer, &item.approver, &item.since) == nil {
+			pending = append(pending, item)
+		}
+	}
+	rows.Close()
+
+	var sent int64
+	for _, item := range pending {
+		days := int(time.Since(item.since).Hours() / 24)
+		waiting := map[string]string{
+			"SUBMITTED":        "검토 시작을 기다리고 있습니다",
+			"RESUBMITTED":      "재검토를 기다리고 있습니다",
+			"REVIEWING":        "검토가 진행 중인 상태로 멈춰 있습니다",
+			"APPROVAL_PENDING": "최종 승인을 기다리고 있습니다",
+		}[item.status]
+		body := fmt.Sprintf("%s(%s)가 %d일째 %s. 담당하신 건을 확인해 주세요.", item.number, item.service, days, waiting)
+		// Whoever the state says owns it. An unassigned queue item belongs to
+		// the reviewers as a group, which is who would otherwise never hear.
+		var recipients []string
+		if item.status == "APPROVAL_PENDING" {
+			if approver, _ := w.activeRecipient(ctx, item.approver, item.reviewer); approver != "" {
+				recipients = []string{approver}
+			}
+		} else if reviewer, _ := w.activeRecipient(ctx, item.reviewer); reviewer != "" {
+			recipients = []string{reviewer}
+		} else {
+			recipients = w.securityReviewers(ctx)
+		}
+		if len(recipients) == 0 {
+			w.Store.Log(ctx, "WARN", "", "maintenance", "정체된 심의를 알릴 활성 담당자가 없습니다.", map[string]any{"review_number": item.number, "status": item.status})
+			continue
+		}
+		for _, recipient := range recipients {
+			if err = w.Store.Notify(ctx, recipient, "REVIEW_STALLED", "심의가 멈춰 있습니다", body, "REVIEW_REQUEST", item.id); err == nil {
+				sent++
+			}
+		}
+	}
+	return sent
+}
+
+// securityReviewers lists the active accounts that own the review queue, for
+// the reviews nobody has taken yet.
+func (w *Worker) securityReviewers(ctx context.Context) []string {
+	rows, err := w.Store.Pool.Query(ctx, `SELECT ur.user_id FROM user_roles ur JOIN users u ON u.id=ur.user_id
+                WHERE ur.role_code='SECURITY_REVIEWER' AND u.active LIMIT 20`)
+	if err != nil {
+		return nil
+	}
+	defer rows.Close()
+	var reviewers []string
+	for rows.Next() {
+		var id string
+		if rows.Scan(&id) == nil {
+			reviewers = append(reviewers, id)
+		}
+	}
+	return reviewers
 }
 
 // purgeDeletedEvidence reclaims the encrypted blobs behind evidence that was

@@ -281,6 +281,7 @@ docker compose exec seccheck /app/seccheck selftest --username admin --password 
 | 014 | 기간 필터 시작 시각 함수 `display_day_start()` (표시 시간대 기준) |
 | 015 | 표시 날짜 변환 함수 `display_date()` (표시 시간대 기준) |
 | 016 | 증적 버전별 원본 파일명 보관. 현재 버전은 기존 값으로 채워지고, 이전 버전은 기록이 없어 빈 값입니다 |
+| 017 | 정체된 심의 알림 발송 시각(`review_requests.stalled_reminded_at`) |
 
 ## 업그레이드와 롤백
 

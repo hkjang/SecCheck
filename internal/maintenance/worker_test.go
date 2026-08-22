@@ -547,3 +547,83 @@ func seedChangeRequest(t *testing.T, db *store.Store, owner string) string {
 	exec(`INSERT INTO change_requests(id,review_request_id,submission_item_id,reason,requester_id,assignee_id,due_date) VALUES($1,$2,$3,'보완하세요',$4,$4,display_today()+1)`, store.NewID(), reviewID, submissionItemID, owner)
 	return submissionItemID
 }
+
+// Reminders only ever pushed the requester side. A review submitted and never
+// picked up, or started and left, simply aged: the requester could see no
+// movement and had no way to push, and nobody was told they were the holdup.
+func TestTheSideHoldingAReviewIsReminded(t *testing.T) {
+	db := testdb.New(t)
+	ctx := context.Background()
+	requester := testdb.Bootstrap(t, db, "stall-requester")
+	worker := maintenance.New(db, nil)
+	exec := func(sql string, args ...any) {
+		t.Helper()
+		if _, err := db.Pool.Exec(ctx, sql, args...); err != nil {
+			t.Fatalf("%s: %v", sql, err)
+		}
+	}
+	reviewer := store.NewID()
+	exec(`INSERT INTO users(id,username,display_name,auth_source,active) VALUES($1,'stall-reviewer','검토자','local',true)`, reviewer)
+	exec(`INSERT INTO user_roles(user_id,role_code) VALUES($1,'SECURITY_REVIEWER')`, reviewer)
+	review := func(number, status, reviewerID string, ageDays int) string {
+		t.Helper()
+		id := store.NewID()
+		exec(`INSERT INTO review_requests(id,review_number,service_name,description,service_type,change_type,builder_id,developer_id,department,requester_id,exposure,status,reviewer_id,updated_at)
+                      VALUES($1,$2,'s','d','WEB','NEW',$3,$3,'보안팀',$3,'INTERNAL',$4,NULLIF($5,''),now()-make_interval(days=>$6))`, id, number, requester, status, reviewerID, ageDays)
+		return id
+	}
+	notices := func(recipient string) []string {
+		t.Helper()
+		rows, err := db.Pool.Query(ctx, `SELECT body FROM notifications WHERE recipient_id=$1 AND event_type='REVIEW_STALLED' ORDER BY created_at`, recipient)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer rows.Close()
+		var out []string
+		for rows.Next() {
+			var body string
+			if rows.Scan(&body) == nil {
+				out = append(out, body)
+			}
+		}
+		return out
+	}
+
+	fresh := review("SR-FRESH", "REVIEWING", reviewer, 1)
+	assigned := review("SR-STUCK", "REVIEWING", reviewer, 5)
+	unclaimed := review("SR-QUEUE", "SUBMITTED", "", 4)
+	done := review("SR-DONE", "APPROVED", reviewer, 30)
+	_, _ = fresh, done
+
+	worker.Sweep(ctx)
+	got := notices(reviewer)
+	if len(got) != 2 {
+		t.Fatalf("the reviewer was told about %d reviews, want the stuck one and the unclaimed one: %v", len(got), got)
+	}
+	joined := strings.Join(got, "\n")
+	if !strings.Contains(joined, "SR-STUCK") || !strings.Contains(joined, "SR-QUEUE") {
+		t.Errorf("the reminders name the wrong reviews: %v", got)
+	}
+	if strings.Contains(joined, "SR-FRESH") {
+		t.Error("a review that moved yesterday was reported as stalled")
+	}
+	if strings.Contains(joined, "SR-DONE") {
+		t.Error("a finished review was reported as stalled")
+	}
+	if !strings.Contains(joined, "5일째") {
+		t.Errorf("the reminder does not say how long it has been waiting: %v", got)
+	}
+
+	// The same holdup must not be reported again on the next sweep.
+	worker.Sweep(ctx)
+	if again := notices(reviewer); len(again) != 2 {
+		t.Errorf("a second sweep raised the count to %d", len(again))
+	}
+	// Once it moves on, it stops being reported.
+	exec(`UPDATE review_requests SET status='APPROVED',stalled_reminded_at=NULL WHERE id=$1`, assigned)
+	exec(`UPDATE review_requests SET status='APPROVED',stalled_reminded_at=NULL WHERE id=$1`, unclaimed)
+	worker.Sweep(ctx)
+	if again := notices(reviewer); len(again) != 2 {
+		t.Errorf("a review that has moved on was reported again: %d notices", len(again))
+	}
+}
