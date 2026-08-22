@@ -2396,8 +2396,26 @@ func TestTheReportCollectsOutstandingFollowUps(t *testing.T) {
 	if res := h.login("remediation-owner").do(http.MethodPost, "/api/v1/review-results/"+resultID+"/follow-up", map[string]any{"action": "confirm", "note": ""}); res.status != http.StatusForbidden {
 		t.Errorf("a requester confirmed their own action: %d %s", res.status, res.body)
 	}
+	// The reviewer has to learn a report is waiting, or it sits unconfirmed
+	// until somebody opens the register.
+	var toReviewer int
+	if err := h.db.Pool.QueryRow(ctx, `SELECT count(*) FROM notifications n JOIN users u ON u.id=n.recipient_id
+                WHERE n.event_type='FOLLOW_UP_REPORTED' AND u.username='integration-admin'`).Scan(&toReviewer); err != nil {
+		t.Fatal(err)
+	}
+	if toReviewer != 1 {
+		t.Errorf("the reviewer received %d reports, want 1", toReviewer)
+	}
 	if res := admin.do(http.MethodPost, "/api/v1/review-results/"+resultID+"/follow-up", map[string]any{"action": "confirm", "note": "규칙 배포 완료"}); res.status != http.StatusOK {
 		t.Fatalf("closing the action: %d %s", res.status, res.body)
+	}
+	var toReporter int
+	if err := h.db.Pool.QueryRow(ctx, `SELECT count(*) FROM notifications n JOIN users u ON u.id=n.recipient_id
+                WHERE n.event_type='FOLLOW_UP_DONE' AND u.username='remediation-owner'`).Scan(&toReporter); err != nil {
+		t.Fatal(err)
+	}
+	if toReporter != 1 {
+		t.Errorf("the person who reported it was told %d times that it was accepted, want 1", toReporter)
 	}
 	outstanding, _ := admin.do(http.MethodGet, "/api/v1/reports/reviews", nil).json()["follow_ups"].([]any)
 	if len(outstanding) != 0 {

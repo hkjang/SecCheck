@@ -265,6 +265,8 @@ var notificationEvents = []map[string]string{
 	{"code": "EVIDENCE_INFECTED", "label": "증적 악성코드 탐지", "description": "업로드한 증적에서 악성코드가 발견되었을 때"},
 	{"code": "AUDIT_CHAIN_BROKEN", "label": "감사로그 무결성 실패", "description": "해시 체인 검증이 실패했을 때 (시스템 관리자)"},
 	{"code": "FOLLOW_UP_DUE", "label": "후속조치 기한", "description": "판정과 함께 약속한 후속조치의 기한이 임박하거나 지났을 때"},
+	{"code": "FOLLOW_UP_REPORTED", "label": "후속조치 이행 보고", "description": "담당 팀이 후속조치를 완료했다고 보고했을 때 (보안 담당자)"},
+	{"code": "FOLLOW_UP_DONE", "label": "후속조치 이행 확인", "description": "보고한 후속조치가 확인되어 종료되었을 때"},
 	{"code": "JOB_QUEUE_STALLED", "label": "작업 큐 정체", "description": "알림·검사 작업이 처리되지 않고 쌓일 때 (시스템 관리자)"},
 }
 

@@ -1118,7 +1118,31 @@ func (s *Server) markFollowUp(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	_ = s.Store.Audit(r.Context(), auditFrom(r, action, "REVIEW_REQUEST", reviewID, nil, map[string]any{"review_result_id": id, "note": in.Note}))
+	// Each step tells the person waiting on it. Without this a report sits
+	// unconfirmed until somebody happens to open the register, which is the
+	// same silence the due-date reminders were added to break.
+	s.notifyFollowUpStep(r.Context(), in.Action, id, reviewID, strings.TrimSpace(in.Note))
 	jsonResponse(w, 200, map[string]any{"id": id, "action": in.Action})
+}
+
+func (s *Server) notifyFollowUpStep(ctx context.Context, action, resultID, reviewID, note string) {
+	var number, service, reviewer, reported string
+	if err := s.Store.Pool.QueryRow(ctx, `SELECT r.review_number,r.service_name,COALESCE(r.reviewer_id,''),COALESCE(rr.follow_up_reported_by,'')
+                FROM review_results rr
+                JOIN submission_items si ON si.id=rr.submission_item_id
+                JOIN submissions sub ON sub.id=si.submission_id
+                JOIN review_requests r ON r.id=sub.review_request_id
+                WHERE rr.id=$1`, resultID).Scan(&number, &service, &reviewer, &reported); err != nil {
+		return
+	}
+	switch action {
+	case "report":
+		s.addTargetedNotification(ctx, reviewer, "FOLLOW_UP_REPORTED", "후속조치 이행 보고",
+			fmt.Sprintf("%s(%s)의 후속조치가 완료 보고되었습니다. 확인 후 이행 완료 처리하세요. %s", number, service, note), "REVIEW_REQUEST", reviewID)
+	case "confirm":
+		s.addTargetedNotification(ctx, reported, "FOLLOW_UP_DONE", "후속조치 이행 확인",
+			fmt.Sprintf("%s(%s)에 보고한 후속조치가 확인되어 종료되었습니다.", number, service), "REVIEW_REQUEST", reviewID)
+	}
 }
 
 // reviewOfResult finds the review a verdict belongs to, which decides who may
