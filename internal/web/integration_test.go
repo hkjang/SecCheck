@@ -3184,3 +3184,61 @@ func TestEvidenceKeepsAReadableVersionHistory(t *testing.T) {
 		t.Errorf("a purged version disappeared from the history: %v", listed)
 	}
 }
+
+// Every assignee selector reads the directory, and an installation that syncs
+// its staff from an IdP has thousands of accounts in it.
+func TestTheUserDirectoryCanBeNarrowed(t *testing.T) {
+	h := newHarness(t)
+	admin := h.login(adminOf(h))
+	ctx := context.Background()
+	h.user("directory-one", "REQUESTER")
+	h.user("directory-two", "REQUESTER")
+	if _, err := h.db.Pool.Exec(ctx, `UPDATE users SET display_name='박보안',department='정보보호팀' WHERE username='directory-one'`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := h.db.Pool.Exec(ctx, `UPDATE users SET display_name='최개발',department='플랫폼팀' WHERE username='directory-two'`); err != nil {
+		t.Fatal(err)
+	}
+
+	names := func(query string) []string {
+		t.Helper()
+		res := admin.do(http.MethodGet, "/api/v1/users/directory"+query, nil)
+		if res.status != http.StatusOK {
+			t.Fatalf("reading the directory%s: %d %s", query, res.status, res.body)
+		}
+		var rows []map[string]any
+		if err := json.Unmarshal([]byte(res.body), &rows); err != nil {
+			t.Fatal(err)
+		}
+		var out []string
+		for _, row := range rows {
+			name, _ := row["display_name"].(string)
+			out = append(out, name)
+		}
+		return out
+	}
+
+	if got := names("?q=박보안"); len(got) != 1 || got[0] != "박보안" {
+		t.Errorf("a search by name returned %v", got)
+	}
+	if got := names("?q=플랫폼"); len(got) != 1 || got[0] != "최개발" {
+		t.Errorf("a search by department returned %v", got)
+	}
+	if got := names("?q=directory-one"); len(got) != 1 {
+		t.Errorf("a search by account name returned %v", got)
+	}
+	if got := names("?q=없는사람"); len(got) != 0 {
+		t.Errorf("a search that matches nobody returned %v", got)
+	}
+	if got := names(""); len(got) < 3 {
+		t.Errorf("the unfiltered directory lost people: %v", got)
+	}
+
+	// A disabled account is not somebody work can be assigned to.
+	if _, err := h.db.Pool.Exec(ctx, `UPDATE users SET active=false WHERE username='directory-two'`); err != nil {
+		t.Fatal(err)
+	}
+	if got := names("?q=최개발"); len(got) != 0 {
+		t.Errorf("a disabled account is still offered as an assignee: %v", got)
+	}
+}

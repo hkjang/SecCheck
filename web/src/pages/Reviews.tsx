@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from 'react'
 import { Link } from 'react-router-dom'
 import { AlertTriangle, ChevronLeft, ChevronRight, Download, Filter, Plus, RotateCcw, Search, ShieldCheck } from 'lucide-react'
-import { get } from '../lib/api'
+import { directory, get } from '../lib/api'
 import { DirectoryUser, Page, Review } from '../lib/types'
 import { Badge, Button, Empty, Field, Loading, StatusBadge, formatDate, useDownload } from '../components/ui'
 
@@ -21,7 +21,7 @@ export default function Reviews({ security = false }: { security?: boolean }) {
     Object.entries(filter).forEach(([k, v]) => { if (v) qs.set(k, v) })
     return qs
   }, [filter, sort, limit, offset])
-  useEffect(() => { get<DirectoryUser[]>('/api/v1/users/directory').then(setPeople).catch(() => undefined) }, [])
+  useEffect(() => { directory<DirectoryUser>().then(setPeople).catch(() => undefined) }, [])
   useEffect(() => { setPage(undefined); const timer = window.setTimeout(() => { get<Page<Review>>(`/api/v1/review-requests?${params}`).then(setPage) }, 180); return () => clearTimeout(timer) }, [params])
   const set = (key: keyof typeof filter, value: string) => { setOffset(0); setFilter(v => ({ ...v, [key]: value })) }
   const dirty = Object.entries(filter).some(([k, v]) => v !== (emptyFilter as Record<string, string>)[k])

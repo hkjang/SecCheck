@@ -1,7 +1,7 @@
 import { FormEvent, useEffect, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { ArrowLeft, ArrowRight, Info, ListChecks } from 'lucide-react'
-import { get, post, errorMessage, ApiError } from '../lib/api'
+import { directory, get, post, errorMessage, ApiError } from '../lib/api'
 import { DirectoryUser } from '../lib/types'
 import { Badge, Button, Field, Toggle, useToast } from '../components/ui'
 import { useAuth } from '../main'
@@ -13,7 +13,7 @@ export default function NewReview() {
   const [users, setUsers] = useState<DirectoryUser[]>([])
   const [errors, setErrors] = useState<Record<string, string>>({})
   const [busy, setBusy] = useState(false)
-  useEffect(() => { get<DirectoryUser[]>('/api/v1/users/directory').then(list => { setUsers(list); setForm(v => ({ ...v, builder_id: user.id, developer_id: user.id, department: user.department })) }) }, [user])
+  useEffect(() => { directory<DirectoryUser>().then(list => { setUsers(list); setForm(v => ({ ...v, builder_id: user.id, developer_id: user.id, department: user.department })) }) }, [user])
   const set = <K extends keyof typeof form>(key: K, value: typeof form[K]) => setForm(v => ({ ...v, [key]: value }))
   const submit = async (e: FormEvent) => { e.preventDefault(); setBusy(true); setErrors({}); try { const out = await post<{ id: string; assigned_items: number }>('/api/v1/review-requests', form); toast.push(`${out.assigned_items}개 체크리스트 항목이 배정되었습니다.`); navigate(`/reviews/${out.id}`) } catch (e) { if (e instanceof ApiError && e.details) setErrors(e.details as Record<string, string>); toast.push(errorMessage(e), 'error') } finally { setBusy(false) } }
   // Nine characteristic toggles decide the whole checklist, and until now

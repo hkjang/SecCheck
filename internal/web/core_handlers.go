@@ -427,8 +427,17 @@ func (s *Server) notifications(w http.ResponseWriter, r *http.Request) {
 	jsonResponse(w, 200, map[string]any{"items": items, "total": total, "limit": limit, "offset": offset, "has_more": int64(offset+len(items)) < total})
 }
 
+// userDirectory backs every assignee selector. An installation that syncs a
+// whole staff directory from its IdP has thousands of active accounts, so the
+// list can be narrowed by name, account or department instead of being handed
+// over whole.
 func (s *Server) userDirectory(w http.ResponseWriter, r *http.Request) {
-	rows, err := s.Store.Pool.Query(r.Context(), `SELECT id,username,display_name,department FROM users WHERE active ORDER BY display_name`)
+	where, args := "active", []any{}
+	if q := strings.TrimSpace(r.URL.Query().Get("q")); q != "" {
+		args = append(args, "%"+q+"%")
+		where += ` AND (display_name ILIKE $1 OR username ILIKE $1 OR department ILIKE $1)`
+	}
+	rows, err := s.Store.Pool.Query(r.Context(), `SELECT id,username,display_name,department FROM users WHERE `+where+` ORDER BY display_name`, args...)
 	if err != nil {
 		s.fault(w, r, "QUERY_FAILED", "사용자 목록을 불러오지 못했습니다.", err)
 		return

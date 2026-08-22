@@ -101,3 +101,16 @@ function filenameOf(header: string | null) {
 export function errorMessage(error: unknown) {
   return error instanceof Error ? error.message : '요청을 처리하지 못했습니다.'
 }
+
+// Every assignee selector reads the same directory, and a review can render a
+// hundred of them at once. Each one used to fetch the whole list for itself,
+// so opening a large review meant a hundred identical requests for the same
+// few hundred rows. One request per page load is shared by all of them.
+let directoryRequest: Promise<unknown[]> | undefined
+export function directory<T>(): Promise<T[]> {
+  if (!directoryRequest) directoryRequest = get<unknown[]>('/api/v1/users/directory').catch(e => { directoryRequest = undefined; throw e })
+  return directoryRequest as Promise<T[]>
+}
+// A newly created account has to show up without a reload, so the pages that
+// add people clear the shared copy.
+export function forgetDirectory() { directoryRequest = undefined }
