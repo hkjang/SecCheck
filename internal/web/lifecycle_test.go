@@ -5,10 +5,14 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"strings"
 	"testing"
+	"time"
+
+	"github.com/hkjang/SecCheck/internal/store"
 )
 
 // The whole point of the service, driven once from end to end by four
@@ -305,4 +309,60 @@ func workbookText(t *testing.T, body string) string {
 		out.Write(content)
 	}
 	return out.String()
+}
+
+// The hash chain is the product's central claim and the only thing whose cost
+// grows with the whole history, which is why day-to-day verification is
+// incremental. This measures both against a real chain so the numbers in the
+// operations guide are measured rather than hoped for.
+func TestChainVerificationCostAtScale(t *testing.T) {
+	if testing.Short() {
+		t.Skip("writes several thousand chained events")
+	}
+	h := newHarness(t)
+	admin := h.login(adminOf(h))
+	ctx := context.Background()
+	var uid string
+	if err := h.db.Pool.QueryRow(ctx, `SELECT id FROM users WHERE username='integration-admin'`).Scan(&uid); err != nil {
+		t.Fatal(err)
+	}
+
+	const events = 3000
+	start := time.Now()
+	for i := 0; i < events; i++ {
+		if err := h.db.Audit(ctx, store.AuditEvent{UserID: uid, UserName: "scale", EventType: "LOGIN", TargetType: "USER", TargetID: fmt.Sprintf("t%d", i)}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	writeRate := float64(events) / time.Since(start).Seconds()
+	t.Logf("appended %d events at %.0f/s", events, writeRate)
+
+	start = time.Now()
+	full := admin.do(http.MethodGet, "/api/v1/admin/audit/verify?full=1", nil).json()
+	fullTime := time.Since(start)
+	if valid, _ := full["valid"].(bool); !valid {
+		t.Fatalf("a chain the service wrote itself does not verify: %v", full)
+	}
+	checked, _ := full["checked"].(float64)
+	t.Logf("full verification checked %.0f events in %v", checked, fullTime)
+	if int(checked) < events {
+		t.Errorf("full verification checked %.0f events, fewer than the %d written", checked, events)
+	}
+
+	// The incremental pass is what an operator runs daily; having just
+	// verified everything it must have almost nothing left to do.
+	start = time.Now()
+	incremental := admin.do(http.MethodGet, "/api/v1/admin/audit/verify", nil).json()
+	incrementalTime := time.Since(start)
+	if valid, _ := incremental["valid"].(bool); !valid {
+		t.Fatalf("the incremental pass failed: %v", incremental)
+	}
+	again, _ := incremental["checked"].(float64)
+	t.Logf("incremental re-check covered %.0f events in %v", again, incrementalTime)
+	if again > checked/2 {
+		t.Errorf("the incremental pass re-checked %.0f of %.0f events; the checkpoint is not being used", again, checked)
+	}
+	if incrementalTime > fullTime {
+		t.Errorf("the incremental pass (%v) was slower than the full one (%v)", incrementalTime, fullTime)
+	}
 }
