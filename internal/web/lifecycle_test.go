@@ -430,6 +430,16 @@ func TestCompletingAReviewCatchesVerdictsTheAuthorEditedAway(t *testing.T) {
 	step(requester, http.MethodPost, "/api/v1/review-requests/"+reviewID+"/submit", map[string]any{}, http.StatusOK, "resubmit")
 	step(reviewer, http.MethodPost, "/api/v1/review-requests/"+reviewID+"/begin-review", map[string]any{}, http.StatusOK, "begin review again")
 
+	// The reviewer is told a checklist came back, not that a new one arrived,
+	// and the count is what sends them to the right items.
+	var title, body string
+	if err := h.db.Pool.QueryRow(ctx, `SELECT title,body FROM notifications WHERE recipient_id=$1 AND event_type='REVIEW_SUBMITTED' ORDER BY created_at DESC LIMIT 1`, reviewerID).Scan(&title, &body); err != nil {
+		t.Fatal(err)
+	}
+	if title != "심의 재제출" || !strings.Contains(body, "바뀐 항목 2건") {
+		t.Errorf("the resubmission notice reads %q / %q", title, body)
+	}
+
 	// The screen has to say so before the reviewer presses the button.
 	summary, _ := reviewer.do(http.MethodGet, "/api/v1/review-requests/"+reviewID, nil).json()["result_summary"].(map[string]any)
 	if got, _ := summary["stale_verdicts"].(float64); got != 2 {

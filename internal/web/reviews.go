@@ -640,6 +640,14 @@ func (s *Server) reviewHistory(w http.ResponseWriter, r *http.Request) {
 // all read staleness the same way.
 const staleVerdictSQL = `COALESCE(rr.result,'')<>'' AND GREATEST(resp.updated_at,COALESCE(evidence_touched_at(si.id),resp.updated_at)) > rr.updated_at`
 
+// staleVerdicts counts the items of a review whose verdict predates the answer
+// or evidence it judged.
+func (s *Server) staleVerdicts(ctx context.Context, id string) (int, error) {
+	var count int
+	err := s.Store.Pool.QueryRow(ctx, `SELECT count(*) FROM submissions sub JOIN submission_items si ON si.submission_id=sub.id JOIN review_results rr ON rr.submission_item_id=si.id JOIN responses resp ON resp.submission_item_id=si.id WHERE sub.review_request_id=$1 AND sub.revision=(SELECT max(revision) FROM submissions WHERE review_request_id=$1) AND `+staleVerdictSQL, id).Scan(&count)
+	return count, err
+}
+
 func (s *Server) listSubmissionItems(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 	if !s.canAccessReview(r.Context(), session(r), id) {
@@ -877,7 +885,18 @@ func (s *Server) submitReview(w http.ResponseWriter, r *http.Request) {
 		s.fault(w, r, "SUBMIT_FAILED", "심의를 제출하지 못했습니다.", err)
 		return
 	}
-	s.notifyReviewer(r.Context(), id, "REVIEW_SUBMITTED", "")
+	// Coming back from a change request, the reviewer already judged this
+	// checklist. What they need is not "start reviewing" but which of their own
+	// verdicts no longer describes what is on the screen.
+	if next == "RESUBMITTED" {
+		notice := "심의가 재제출되었습니다. 검토를 이어서 진행하세요."
+		if stale, err := s.staleVerdicts(r.Context(), id); err == nil && stale > 0 {
+			notice = fmt.Sprintf("심의가 재제출되었습니다. 판정 이후 답변·증적이 바뀐 항목 %d건을 다시 확인하세요.", stale)
+		}
+		s.notifyReviewer(r.Context(), id, "REVIEW_SUBMITTED", "심의 재제출", notice)
+	} else {
+		s.notifyReviewer(r.Context(), id, "REVIEW_SUBMITTED", "", "")
+	}
 	_ = s.Store.Audit(r.Context(), auditFrom(r, event, "REVIEW_REQUEST", id, map[string]any{"status": current}, map[string]any{"status": next}))
 	jsonResponse(w, 200, map[string]any{"status": next})
 }
@@ -1451,7 +1470,7 @@ func (s *Server) completeReview(w http.ResponseWriter, r *http.Request) {
 		problem(w, 403, "FORBIDDEN", "이 심의를 완료할 수 없습니다.", nil)
 		return
 	}
-	var missing, open, stale int
+	var missing, open int
 	// Completing a review while items are unjudged is exactly what this guard
 	// exists to prevent, and a failed count used to read as zero.
 	if err := s.Store.Pool.QueryRow(r.Context(), `SELECT count(*) FROM submissions sub JOIN submission_items si ON si.submission_id=sub.id LEFT JOIN review_results rr ON rr.submission_item_id=si.id WHERE sub.review_request_id=$1 AND sub.revision=(SELECT max(revision) FROM submissions WHERE review_request_id=$1) AND (rr.id IS NULL OR rr.result='')`, id).Scan(&missing); err != nil {
@@ -1466,7 +1485,8 @@ func (s *Server) completeReview(w http.ResponseWriter, r *http.Request) {
 	// while it is back -- not only the one that was asked about. A verdict
 	// recorded before that edit was made against an answer that no longer
 	// exists, so counting it as reviewed is a false all-clear.
-	if err := s.Store.Pool.QueryRow(r.Context(), `SELECT count(*) FROM submissions sub JOIN submission_items si ON si.submission_id=sub.id JOIN review_results rr ON rr.submission_item_id=si.id JOIN responses resp ON resp.submission_item_id=si.id WHERE sub.review_request_id=$1 AND sub.revision=(SELECT max(revision) FROM submissions WHERE review_request_id=$1) AND `+staleVerdictSQL, id).Scan(&stale); err != nil {
+	stale, err := s.staleVerdicts(r.Context(), id)
+	if err != nil {
 		s.fault(w, r, "QUERY_FAILED", "남은 항목을 확인하지 못해 검토 완료를 중단했습니다.", err)
 		return
 	}
@@ -1938,18 +1958,25 @@ func (s *Server) addTargetedNotification(ctx context.Context, recipient, event, 
 	}
 }
 
-func (s *Server) notifyReviewer(ctx context.Context, id, event, body string) {
+// notifyReviewer tells the assigned reviewer that a review is on their desk.
+// An empty title and notice describe a first submission; a resubmission is not
+// a new review, and saying so is what tells the reviewer to look for what moved
+// rather than to start over.
+func (s *Server) notifyReviewer(ctx context.Context, id, event, title, notice string) {
 	var recipient, number, service string
 	_ = s.Store.Pool.QueryRow(ctx, `SELECT COALESCE(reviewer_id,''),review_number,service_name FROM review_requests WHERE id=$1`, id).Scan(&recipient, &number, &service)
 	if recipient == "" {
 		return
 	}
-	if body == "" {
-		// The message used to quote the internal UUID, which means nothing to
-		// the person reading it.
-		body = fmt.Sprintf("%s(%s) 심의가 제출되었습니다. 검토를 시작하세요.", number, service)
+	if title == "" {
+		title = "새 심의 제출"
 	}
-	s.addTargetedNotification(ctx, recipient, event, "새 심의 제출", body, "REVIEW_REQUEST", id)
+	if notice == "" {
+		notice = "심의가 제출되었습니다. 검토를 시작하세요."
+	}
+	// The message used to quote the internal UUID, which means nothing to the
+	// person reading it.
+	s.addTargetedNotification(ctx, recipient, event, title, fmt.Sprintf("%s(%s) %s", number, service, notice), "REVIEW_REQUEST", id)
 }
 
 var _ = errors.Is
