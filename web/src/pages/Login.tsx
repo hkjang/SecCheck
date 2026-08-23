@@ -4,6 +4,18 @@ import { post, setCSRF, errorMessage, ApiError } from '../lib/api'
 import { User } from '../lib/types'
 import { Button, Field } from '../components/ui'
 
+// The identity provider decides most of these codes, so the ones we know are
+// named and anything else is shown as it arrived -- an operator reading a
+// screenshot can still look it up.
+function ssoMessage(code: string) {
+  switch (code) {
+    case 'oidc_unavailable': return 'SSO 서버에 연결하지 못했습니다. 잠시 후 다시 시도하고, 계속되면 관리자에게 알려 주세요.'
+    case 'oidc': return 'SSO 로그인을 마치지 못했습니다. 다시 시도하거나 아이디와 비밀번호로 로그인하세요.'
+    case 'access_denied': return 'SSO에서 로그인이 거부되었습니다. 계정 권한을 관리자에게 확인하세요.'
+    default: return `SSO 로그인에 실패했습니다 (${code}). 관리자에게 이 코드를 알려 주세요.`
+  }
+}
+
 export default function Login({ config, expired, onLogin }: { config: { service_name: string; version: string; oidc_enabled: boolean }; expired?: boolean; onLogin: (user: User, csrf: string) => void }) {
   const [username, setUsername] = useState('')
   const [password, setPassword] = useState('')
@@ -11,6 +23,16 @@ export default function Login({ config, expired, onLogin }: { config: { service_
   const [needsTotp, setNeedsTotp] = useState(false)
   const [error, setError] = useState('')
   const [busy, setBusy] = useState(false)
+  // The SSO round trip comes back to this page with a reason in the address
+  // bar, and nothing read it: a failed sign-in returned a blank form, so the
+  // only thing to do was press the button again and get the same nothing.
+  const [ssoError, setSsoError] = useState(() => new URLSearchParams(window.location.search).get('error') || '')
+  useEffect(() => {
+    if (!ssoError) return
+    const url = new URL(window.location.href)
+    url.searchParams.delete('error')
+    window.history.replaceState({}, '', url.toString())
+  }, [ssoError])
   const totpRef = useRef<HTMLInputElement>(null)
   useEffect(() => { if (needsTotp) totpRef.current?.focus() }, [needsTotp])
   const submit = async (e: FormEvent) => {
@@ -26,6 +48,7 @@ export default function Login({ config, expired, onLogin }: { config: { service_
     } finally { setBusy(false) }
   }
   return <div className="login-page"><section className="login-panel"><div className="login-box"><div className="login-brand"><div className="brand-mark"><Shield size={20} /></div><div><strong data-sx="sx-019">SecCheck</strong><div className="subtle">SECURITY REVIEW PLATFORM</div></div></div><h1 className="login-title">안전한 서비스의 시작</h1><p className="login-copy">보안성 심의 체크리스트와 증적, 검토·승인 이력을 하나의 흐름으로 관리합니다.</p>
+    {ssoError && <div className="guide-block" role="alert">{ssoMessage(ssoError)}</div>}
     {expired && <div className="guide-block">세션이 종료되어 로그아웃되었습니다. 유휴 시간 초과, 비밀번호 변경 또는 관리자의 세션 종료 때문일 수 있습니다. 다시 로그인하세요.</div>}
     <form className="login-form" onSubmit={submit}>
       <Field label="아이디" required><input className="input" autoComplete="username" value={username} onChange={e => setUsername(e.target.value)} /></Field>

@@ -3920,3 +3920,33 @@ func TestGuardsFailClosedWhenTheirQueryCannotRun(t *testing.T) {
 		t.Errorf("a mapped Control was deletable: %d %s", blocked.status, blocked.body)
 	}
 }
+
+// The SSO button is a link, so a failure to start the round trip navigates the
+// browser wherever the server sends it. It used to send a JSON problem
+// document, which lands the person on machine output outside the service.
+func TestAFailedSSOStartReturnsToTheSignInScreen(t *testing.T) {
+	h := newHarness(t)
+	client := &http.Client{CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
+	res, err := client.Get(h.server.URL + "/api/v1/auth/oidc/start")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer res.Body.Close()
+	if res.StatusCode != http.StatusFound {
+		body, _ := io.ReadAll(res.Body)
+		t.Fatalf("starting SSO with no provider configured returned %d %s", res.StatusCode, body)
+	}
+	target := res.Header.Get("Location")
+	if !strings.HasPrefix(target, "/login?") || !strings.Contains(target, "error=") {
+		t.Errorf("the browser was sent to %q, which does not carry a reason back to the sign-in screen", target)
+	}
+	// And the attempt is on the record, because a provider nobody can reach is
+	// an operational fact rather than a user error.
+	var failures int
+	if err := h.db.Pool.QueryRow(context.Background(), `SELECT count(*) FROM audit_logs WHERE event_type='LOGIN_FAIL' AND target_type='OIDC'`).Scan(&failures); err != nil {
+		t.Fatal(err)
+	}
+	if failures != 1 {
+		t.Errorf("the failed start was recorded %d times", failures)
+	}
+}

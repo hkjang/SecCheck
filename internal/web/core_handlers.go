@@ -145,7 +145,13 @@ func (s *Server) logout(w http.ResponseWriter, r *http.Request) {
 func (s *Server) oidcStart(w http.ResponseWriter, r *http.Request) {
 	destination, err := s.Auth.BeginOIDC(r.Context(), r.URL.Query().Get("return_to"))
 	if err != nil {
-		problem(w, 400, "OIDC_UNAVAILABLE", err.Error(), nil)
+		// The sign-in button is a link, so the browser navigates here. A JSON
+		// problem document left the person staring at machine output on a page
+		// that is not the service. They go back to the sign-in screen with
+		// something to read, and the reason is recorded for the operator.
+		s.Store.Log(r.Context(), "ERROR", requestID(r), "auth", "OIDC 인증을 시작하지 못했습니다.", map[string]any{"error": err.Error()})
+		_ = s.Store.Audit(r.Context(), store.AuditEvent{SourceIP: clientIP(r), EventType: "LOGIN_FAIL", TargetType: "OIDC", RequestID: requestID(r), Result: "FAILURE", After: map[string]any{"stage": "start", "error": err.Error()}})
+		http.Redirect(w, r, "/login?error=oidc_unavailable", http.StatusFound)
 		return
 	}
 	http.Redirect(w, r, destination, http.StatusFound)
