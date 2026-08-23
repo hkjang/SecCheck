@@ -240,3 +240,34 @@ func TestReleaseVersionIsTheSameEverywhere(t *testing.T) {
 		}
 	}
 }
+
+// A release that changes how an installation behaves carries a 주의 section in
+// the changelog. Those are exactly the entries an operator upgrading across
+// many versions has to find, and the place they look is the upgrade table --
+// which the notes had drifted a dozen releases behind.
+func TestEveryWarnedReleaseIsInTheUpgradeTable(t *testing.T) {
+	changelog := repoFile(t, "CHANGELOG.md")
+	guide := repoFile(t, filepath.Join("docs", "operations.md"))
+	table := guide[strings.Index(guide, "## 여러 버전을 건너뛰어 올라올 때"):]
+	if !strings.Contains(guide, "## 여러 버전을 건너뛰어 올라올 때") {
+		t.Fatal("the operations guide has no upgrade table")
+	}
+	version := ""
+	warned := []string{}
+	for _, line := range strings.Split(changelog, "\n") {
+		if strings.HasPrefix(line, "## v") {
+			version = strings.TrimSpace(strings.TrimPrefix(line, "## "))
+		}
+		if strings.HasPrefix(line, "### 주의") && version != "" {
+			warned = append(warned, version)
+		}
+	}
+	if len(warned) < 3 {
+		t.Fatalf("only %d warned releases found; the changelog must have changed shape", len(warned))
+	}
+	for _, release := range warned {
+		if !strings.Contains(table, "| "+release+" ") && !strings.Contains(table, "| "+release+"~") {
+			t.Errorf("%s carries a 주의 note but is not in the upgrade table, so an operator skipping versions will not see it", release)
+		}
+	}
+}
