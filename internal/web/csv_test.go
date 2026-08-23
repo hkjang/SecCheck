@@ -87,3 +87,26 @@ func TestCapExportMarksOnlyTheOverflow(t *testing.T) {
 		t.Errorf("a complete export set X-Export-Truncated to %q", got)
 	}
 }
+
+// Text stored before those limits existed can still be longer than a
+// spreadsheet cell allows, which makes the workbook unopenable rather than
+// merely ugly.
+func TestAnOverlongCellIsCutRatherThanBreakingTheWorkbook(t *testing.T) {
+	if got := spreadsheetValue("짧은 값"); got != "짧은 값" {
+		t.Errorf("an ordinary value was altered: %v", got)
+	}
+	if got := spreadsheetValue(42); got != 42 {
+		t.Errorf("a number was altered: %v", got)
+	}
+	long := strings.Repeat("나", spreadsheetCellLimit+500)
+	cut, ok := spreadsheetValue(long).(string)
+	if !ok {
+		t.Fatalf("a long string came back as %T", spreadsheetValue(long))
+	}
+	if len([]rune(cut)) > spreadsheetCellLimit {
+		t.Errorf("the cut value is still %d characters", len([]rune(cut)))
+	}
+	if !strings.HasSuffix(cut, "…(이하 생략)") {
+		t.Error("the cut value does not say that it was cut")
+	}
+}

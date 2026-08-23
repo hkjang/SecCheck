@@ -199,6 +199,10 @@ func (s *Server) bulkSaveResponses(w http.ResponseWriter, r *http.Request) {
 		problem(w, 422, "NA_REASON_REQUIRED", "N/A 일괄 적용에는 공통 사유가 필요합니다.", map[string]string{"na_reason": "필수 입력 항목입니다."})
 		return
 	}
+	if field := tooLong(map[string]string{"current_state": in.CurrentState, "action_plan": in.ActionPlan, "na_reason": in.NAReason}, longTextLimit); field != "" {
+		problem(w, 422, "VALIDATION_FAILED", fmt.Sprintf("입력이 너무 깁니다. %d자 이내로 작성하세요.", longTextLimit), map[string]string{field: fmt.Sprintf("%d자를 넘습니다.", longTextLimit)})
+		return
+	}
 	// Without overwrite, entries that already carry an answer are left alone so
 	// a bulk action cannot silently discard someone's work.
 	conflict := `ON CONFLICT(submission_item_id) DO NOTHING`

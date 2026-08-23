@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"net/netip"
 	"runtime/debug"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -406,6 +407,33 @@ func (s *Server) fault(w http.ResponseWriter, r *http.Request, code, message str
 func problem(w http.ResponseWriter, status int, code, message string, details any) {
 	jsonResponse(w, status, map[string]any{"error": map[string]any{"code": code, "message": message, "details": details}})
 }
+
+// A request body is capped at a couple of megabytes, so a single answer could
+// carry that much text in one field. Nothing rejected it: it went into the
+// database, into every export -- where a spreadsheet cell holds 32,767
+// characters and no more -- and into a textarea nobody could scroll. The
+// fields that take a paragraph are bounded like the ones that already were.
+const (
+	longTextLimit  = 4000
+	shortTextLimit = 2000
+)
+
+// tooLong reports the first field that exceeds its limit, so the message can
+// name it rather than saying something was wrong.
+func tooLong(fields map[string]string, limit int) string {
+	names := make([]string, 0, len(fields))
+	for name := range fields {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	for _, name := range names {
+		if len([]rune(fields[name])) > limit {
+			return name
+		}
+	}
+	return ""
+}
+
 func decodeJSON(w http.ResponseWriter, r *http.Request, out any) bool {
 	r.Body = http.MaxBytesReader(w, r.Body, 2<<20)
 	d := json.NewDecoder(r.Body)

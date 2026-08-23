@@ -713,6 +713,10 @@ func (s *Server) saveResponse(w http.ResponseWriter, r *http.Request) {
 		problem(w, 422, "NA_REASON_REQUIRED", "N/A 선택 시 사유가 필요합니다.", map[string]string{"na_reason": "필수 입력 항목입니다."})
 		return
 	}
+	if field := tooLong(map[string]string{"current_state": in.CurrentState, "action_plan": in.ActionPlan, "na_reason": in.NAReason}, longTextLimit); field != "" {
+		problem(w, 422, "VALIDATION_FAILED", fmt.Sprintf("입력이 너무 깁니다. %d자 이내로 작성하세요.", longTextLimit), map[string]string{field: fmt.Sprintf("%d자를 넘습니다.", longTextLimit)})
+		return
+	}
 	if conflict, ok := s.responseConflict(r, itemID, in.ExpectedUpdatedAt); ok {
 		problem(w, 409, "RESPONSE_CONFLICT", "다른 사용자가 이 항목을 먼저 저장했습니다. 최신 내용을 확인한 뒤 다시 저장하세요.", conflict)
 		return
@@ -1255,6 +1259,10 @@ func (s *Server) saveReviewResult(w http.ResponseWriter, r *http.Request) {
 	// An action with no date is chased by nothing: the reminder worker only
 	// looks at dated ones, and the register can never call it overdue. A
 	// commitment made in a verdict has to say when it is due.
+	if field := tooLong(map[string]string{"opinion": in.Opinion, "follow_up": in.FollowUp}, longTextLimit); field != "" {
+		problem(w, 422, "VALIDATION_FAILED", fmt.Sprintf("입력이 너무 깁니다. %d자 이내로 작성하세요.", longTextLimit), map[string]string{field: fmt.Sprintf("%d자를 넘습니다.", longTextLimit)})
+		return
+	}
 	if strings.TrimSpace(in.FollowUp) != "" && strings.TrimSpace(in.FollowUpDueDate) == "" {
 		problem(w, 422, "FOLLOW_UP_DUE_REQUIRED", "후속조치에는 조치 기한이 필요합니다. 기한이 없으면 알림도 지연 판정도 동작하지 않습니다.", map[string]string{"follow_up_due_date": "필수 입력 항목입니다."})
 		return
@@ -1297,6 +1305,10 @@ func (s *Server) createChangeRequest(w http.ResponseWriter, r *http.Request) {
 	// Same reason a follow-up needs one: the reminder worker only looks at
 	// dated change requests, and an undated one can never be reported as
 	// overdue. A correction asked for without a date is asked for once.
+	if field := tooLong(map[string]string{"reason": in.Reason}, longTextLimit); field != "" {
+		problem(w, 422, "VALIDATION_FAILED", fmt.Sprintf("보완 사유는 %d자 이내로 작성하세요.", longTextLimit), map[string]string{field: "너무 깁니다."})
+		return
+	}
 	if strings.TrimSpace(in.DueDate) == "" {
 		problem(w, 422, "DUE_DATE_REQUIRED", "보완 요청에는 완료 예정일이 필요합니다. 기한이 없으면 알림도 지연 판정도 동작하지 않습니다.", map[string]string{"due_date": "필수 입력 항목입니다."})
 		return

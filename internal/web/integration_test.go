@@ -3640,3 +3640,34 @@ func TestSystemInfoReportsWhoCanAct(t *testing.T) {
 		t.Errorf("a disabled reviewer still counts as able to act: %v (started from %v)", row, before)
 	}
 }
+
+// A request body can carry a couple of megabytes, and nothing stopped one
+// field of an answer from being all of it: into the database, into a
+// spreadsheet cell that holds 32,767 characters at most, and into a textarea
+// nobody could scroll.
+func TestAnAnswerCannotCarryAWholeLogFile(t *testing.T) {
+	h := newHarness(t)
+	h.login(adminOf(h))
+	h.user("verbose-author", "REQUESTER")
+	author := h.login("verbose-author")
+	reviewID := author.createReview("장문 입력 서비스")
+	items := []map[string]any{}
+	if err := json.Unmarshal([]byte(author.do(http.MethodGet, "/api/v1/review-requests/"+reviewID+"/items", nil).body), &items); err != nil {
+		t.Fatal(err)
+	}
+	itemID := items[0]["id"].(string)
+	path := "/api/v1/review-requests/" + reviewID + "/responses/" + itemID
+
+	long := strings.Repeat("가", 4001)
+	refused := author.do(http.MethodPut, path, map[string]any{"applicability": "Y", "self_assessment": "COMPLIANT", "current_state": long, "expected_updated_at": ""})
+	if refused.status != http.StatusUnprocessableEntity {
+		t.Fatalf("a 4001-character answer was accepted: %d %s", refused.status, refused.body)
+	}
+	if !strings.Contains(refused.body, "current_state") {
+		t.Errorf("the refusal does not name the field: %s", refused.body)
+	}
+	fits := author.do(http.MethodPut, path, map[string]any{"applicability": "Y", "self_assessment": "COMPLIANT", "current_state": strings.Repeat("가", 4000), "expected_updated_at": ""})
+	if fits.status != http.StatusOK {
+		t.Errorf("an answer at the limit was refused: %d %s", fits.status, fits.body)
+	}
+}

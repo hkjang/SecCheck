@@ -263,7 +263,20 @@ func writeSheetRows(f *excelize.File, sheet string, rows [][]any, start int) {
 			if err != nil {
 				continue
 			}
-			_ = f.SetCellValue(sheet, cell, value)
+			_ = f.SetCellValue(sheet, cell, spreadsheetValue(value))
 		}
 	}
+}
+
+// A spreadsheet cell holds 32,767 characters; a longer one makes the workbook
+// unopenable rather than merely ugly. Text written before the input limits
+// existed can still be longer than that, so it is cut here and says so.
+const spreadsheetCellLimit = 32767
+
+func spreadsheetValue(v any) any {
+	text, ok := v.(string)
+	if !ok || len([]rune(text)) <= spreadsheetCellLimit {
+		return v
+	}
+	return string([]rune(text)[:spreadsheetCellLimit-20]) + " …(이하 생략)"
 }

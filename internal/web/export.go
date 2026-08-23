@@ -145,7 +145,7 @@ func (s *Server) writeExcelExport(w http.ResponseWriter, r *http.Request, data e
 	for y, row := range summaryRows {
 		for x, v := range row {
 			cell, _ := excelize.CoordinatesToCellName(x+1, y+1)
-			_ = f.SetCellValue(summary, cell, v)
+			_ = f.SetCellValue(summary, cell, spreadsheetValue(v))
 		}
 	}
 	itemsSheet := "항목별 결과"
@@ -159,10 +159,10 @@ func (s *Server) writeExcelExport(w http.ResponseWriter, r *http.Request, data e
 	for y, item := range data.Items {
 		for x, k := range keys {
 			cell, _ := excelize.CoordinatesToCellName(x+1, y+2)
-			_ = f.SetCellValue(itemsSheet, cell, item[k])
+			_ = f.SetCellValue(itemsSheet, cell, spreadsheetValue(item[k]))
 		}
 		if cell, err := excelize.CoordinatesToCellName(len(keys)+1, y+2); err == nil {
-			_ = f.SetCellValue(itemsSheet, cell, evidenceSummary(item))
+			_ = f.SetCellValue(itemsSheet, cell, spreadsheetValue(evidenceSummary(item)))
 		}
 	}
 	_ = f.SetColWidth(itemsSheet, "A", "R", 20)

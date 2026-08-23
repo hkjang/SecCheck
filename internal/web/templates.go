@@ -936,7 +936,7 @@ func (s *Server) exportTemplate(w http.ResponseWriter, r *http.Request) {
 		}
 		for i, v := range vals {
 			cell, _ := excelize.CoordinatesToCellName(i+1, row)
-			_ = f.SetCellValue(sheet, cell, v)
+			_ = f.SetCellValue(sheet, cell, spreadsheetValue(v))
 		}
 		row++
 	}
