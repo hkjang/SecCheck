@@ -294,17 +294,27 @@ func (s *Store) UserRoles(ctx context.Context, id string) ([]string, error) {
 	return roles, rows.Err()
 }
 
+// UpsertBootstrap makes sure the account named by BOOTSTRAP_ADMIN exists and
+// can always administer the installation. A first run gets every role so the
+// appliance is usable out of the box; a restart restores only SYSTEM_ADMIN.
+//
+// It used to re-grant all six roles on every start, which quietly undid the
+// separation the administration guide asks for: an operator who moves the
+// reviewer role off the shared admin account -- so that account cannot review
+// what it requested -- found it back after the next restart, and nothing said
+// so.
 func (s *Store) UpsertBootstrap(ctx context.Context, id, username, passwordHash string) error {
 	return pgx.BeginFunc(ctx, s.Pool, func(tx pgx.Tx) error {
-		_, err := tx.Exec(ctx, `INSERT INTO users(id,username,display_name,password_hash,auth_source) VALUES($1,$2,$2,$3,'local') ON CONFLICT(username) DO UPDATE SET password_hash=CASE WHEN users.password_hash='' THEN EXCLUDED.password_hash ELSE users.password_hash END,active=true,updated_at=now()`, id, username, passwordHash)
-		if err != nil {
-			return err
-		}
 		var uid string
-		if err = tx.QueryRow(ctx, `SELECT id FROM users WHERE username=$1`, username).Scan(&uid); err != nil {
+		var created bool
+		if err := tx.QueryRow(ctx, `INSERT INTO users(id,username,display_name,password_hash,auth_source) VALUES($1,$2,$2,$3,'local') ON CONFLICT(username) DO UPDATE SET password_hash=CASE WHEN users.password_hash='' THEN EXCLUDED.password_hash ELSE users.password_hash END,active=true,updated_at=now() RETURNING id,(xmax=0)`, id, username, passwordHash).Scan(&uid, &created); err != nil {
 			return err
 		}
-		_, err = tx.Exec(ctx, `INSERT INTO user_roles(user_id,role_code) VALUES($1,'SYSTEM_ADMIN'),($1,'TEMPLATE_ADMIN'),($1,'SECURITY_REVIEWER'),($1,'REQUESTER'),($1,'APPROVER'),($1,'AUDITOR') ON CONFLICT DO NOTHING`, uid)
+		roles := []string{"SYSTEM_ADMIN"}
+		if created {
+			roles = append(roles, "TEMPLATE_ADMIN", "SECURITY_REVIEWER", "REQUESTER", "APPROVER", "AUDITOR")
+		}
+		_, err := tx.Exec(ctx, `INSERT INTO user_roles(user_id,role_code) SELECT $1,unnest($2::text[]) ON CONFLICT DO NOTHING`, uid, roles)
 		return err
 	})
 }
