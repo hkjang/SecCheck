@@ -60,11 +60,11 @@ func (s *Server) loadExportData(r *http.Request, id string) (exportData, error) 
 	}
 	review := map[string]any{}
 	_ = json.Unmarshal(raw, &review)
-	rows, err := s.Store.Pool.Query(r.Context(), `SELECT si.item_code,si.section,si.category,si.title,si.question,si.severity,si.template_name,si.template_version,resp.applicability,resp.self_assessment,resp.current_state,resp.na_reason,resp.action_plan,rr.result,rr.opinion,rr.evidence_adequacy,rr.na_approved,rr.follow_up,COALESCE((SELECT jsonb_agg(jsonb_build_object('id',e.id,'filename',e.original_filename,'sha256',e.sha256,'version',e.current_version)) FROM evidences e WHERE e.submission_item_id=si.id AND e.deleted_at IS NULL),'[]') FROM submissions sub JOIN submission_items si ON si.submission_id=sub.id LEFT JOIN responses resp ON resp.submission_item_id=si.id LEFT JOIN review_results rr ON rr.submission_item_id=si.id WHERE sub.review_request_id=$1 AND sub.revision=(SELECT max(revision) FROM submissions WHERE review_request_id=$1) ORDER BY si.template_name,si.sort_order`, id)
+	rows, err := s.Store.Pool.Query(r.Context(), `SELECT si.item_code,si.section,si.category,si.title,si.question,si.severity,si.template_name,si.template_version,resp.applicability,resp.self_assessment,resp.current_state,resp.na_reason,resp.action_plan,rr.result,rr.opinion,rr.evidence_adequacy,rr.na_approved,rr.follow_up,to_char(rr.follow_up_due_date,'YYYY-MM-DD') AS follow_up_due_date,to_char(display_date(rr.follow_up_reported_at),'YYYY-MM-DD') AS follow_up_reported_on,to_char(display_date(rr.follow_up_done_at),'YYYY-MM-DD') AS follow_up_done_on,COALESCE((SELECT jsonb_agg(jsonb_build_object('id',e.id,'filename',e.original_filename,'sha256',e.sha256,'version',e.current_version)) FROM evidences e WHERE e.submission_item_id=si.id AND e.deleted_at IS NULL),'[]') FROM submissions sub JOIN submission_items si ON si.submission_id=sub.id LEFT JOIN responses resp ON resp.submission_item_id=si.id LEFT JOIN review_results rr ON rr.submission_item_id=si.id WHERE sub.review_request_id=$1 AND sub.revision=(SELECT max(revision) FROM submissions WHERE review_request_id=$1) ORDER BY si.template_name,si.sort_order`, id)
 	if err != nil {
 		return exportData{}, err
 	}
-	return exportData{Review: review, Items: scanDynamic(rows, []string{"item_code", "section", "category", "title", "question", "severity", "template_name", "template_version", "applicability", "self_assessment", "current_state", "na_reason", "action_plan", "review_result", "review_opinion", "evidence_adequacy", "na_approved", "follow_up", "evidences"})}, nil
+	return exportData{Review: review, Items: scanDynamic(rows, []string{"item_code", "section", "category", "title", "question", "severity", "template_name", "template_version", "applicability", "self_assessment", "current_state", "na_reason", "action_plan", "review_result", "review_opinion", "evidence_adequacy", "na_approved", "follow_up", "follow_up_due_date", "follow_up_reported_on", "follow_up_done_on", "evidences"})}, nil
 }
 
 // localTimestamp renders a stored timestamp in the configured display zone.
@@ -150,12 +150,12 @@ func (s *Server) writeExcelExport(w http.ResponseWriter, r *http.Request, data e
 	}
 	itemsSheet := "항목별 결과"
 	_, _ = f.NewSheet(itemsSheet)
-	headers := []string{"템플릿", "버전", "항목코드", "구분", "분류", "보안요건", "점검질문", "중요도", "적용여부", "자체판단", "현황 및 증적", "N/A 사유", "조치내용", "검토결과", "검토의견", "증적 적정성", "후속조치", "첨부 증적"}
+	headers := []string{"템플릿", "버전", "항목코드", "구분", "분류", "보안요건", "점검질문", "중요도", "적용여부", "자체판단", "현황 및 증적", "N/A 사유", "조치내용", "검토결과", "검토의견", "증적 적정성", "후속조치", "조치 기한", "이행 보고일", "이행 확인일", "첨부 증적"}
 	for x, h := range headers {
 		cell, _ := excelize.CoordinatesToCellName(x+1, 1)
 		_ = f.SetCellValue(itemsSheet, cell, h)
 	}
-	keys := []string{"template_name", "template_version", "item_code", "section", "category", "title", "question", "severity", "applicability", "self_assessment", "current_state", "na_reason", "action_plan", "review_result", "review_opinion", "evidence_adequacy", "follow_up"}
+	keys := []string{"template_name", "template_version", "item_code", "section", "category", "title", "question", "severity", "applicability", "self_assessment", "current_state", "na_reason", "action_plan", "review_result", "review_opinion", "evidence_adequacy", "follow_up", "follow_up_due_date", "follow_up_reported_on", "follow_up_done_on"}
 	for y, item := range data.Items {
 		for x, k := range keys {
 			cell, _ := excelize.CoordinatesToCellName(x+1, y+2)
@@ -225,6 +225,22 @@ func (s *Server) writePDFExport(w http.ResponseWriter, r *http.Request, data exp
 		pdf.MultiCell(0, 6, title, "", "L", false)
 		pdf.SetFont("kr", "", 8)
 		detail := fmt.Sprintf("템플릿 %v %v | 적용여부 %v | 자체판단 %v | 검토결과 %v\n현황: %v\n검토의견: %v", item["template_name"], item["template_version"], item["applicability"], item["self_assessment"], item["review_result"], item["current_state"], item["review_opinion"])
+		// What the team promised to do is the part of a conditional pass that
+		// outlives the review, and the exported result did not carry it.
+		if action := fmt.Sprint(valueOr(item["follow_up"], "")); strings.TrimSpace(action) != "" {
+			detail += "\n후속조치: " + action
+			if due := fmt.Sprint(valueOr(item["follow_up_due_date"], "")); due != "" {
+				detail += " (기한 " + due
+				switch {
+				case fmt.Sprint(valueOr(item["follow_up_done_on"], "")) != "":
+					detail += ", 이행 확인 " + fmt.Sprint(item["follow_up_done_on"]) + ")"
+				case fmt.Sprint(valueOr(item["follow_up_reported_on"], "")) != "":
+					detail += ", 이행 보고 " + fmt.Sprint(item["follow_up_reported_on"]) + ")"
+				default:
+					detail += ", 미조치)"
+				}
+			}
+		}
 		if files := itemEvidence(item); len(files) > 0 {
 			for _, file := range files {
 				detail += fmt.Sprintf("\n증적: %s (v%d, SHA-256 %s)", file.Filename, file.Version, file.SHA256)
@@ -241,6 +257,15 @@ func (s *Server) writePDFExport(w http.ResponseWriter, r *http.Request, data exp
 	w.Header().Set("Content-Type", "application/pdf")
 	w.Header().Set("Content-Disposition", `attachment; filename*=UTF-8''`+urlEncode(base+".pdf"))
 	_, _ = w.Write(buf.Bytes())
+}
+
+// valueOr keeps a null column out of the rendered text, where fmt would
+// otherwise print "<nil>".
+func valueOr(v any, fallback string) any {
+	if v == nil {
+		return fallback
+	}
+	return v
 }
 
 func findKoreanFont() string {

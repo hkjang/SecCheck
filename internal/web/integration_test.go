@@ -3759,3 +3759,54 @@ func TestChecklistItemTextIsBounded(t *testing.T) {
 		t.Errorf("a 101-character display name was accepted: %d %s", res.status, res.body)
 	}
 }
+
+// A conditional pass is a decision plus a promise, and the promise is the part
+// that outlives the review. The exported result carried the action text but
+// not its deadline or whether it had been carried out, and the PDF -- the copy
+// that gets attached to a change ticket -- carried none of it.
+func TestAnExportedReviewCarriesItsCommitments(t *testing.T) {
+	h := newHarness(t)
+	admin := h.login(adminOf(h))
+	ctx := context.Background()
+	h.user("commitment-author", "REQUESTER")
+	author := h.login("commitment-author")
+	reviewID := author.createReview("약속 포함 서비스")
+	items := []map[string]any{}
+	if err := json.Unmarshal([]byte(author.do(http.MethodGet, "/api/v1/review-requests/"+reviewID+"/items", nil).body), &items); err != nil {
+		t.Fatal(err)
+	}
+	itemID := items[0]["id"].(string)
+	var reviewerID string
+	if err := h.db.Pool.QueryRow(ctx, `SELECT id FROM users WHERE username='integration-admin'`).Scan(&reviewerID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := h.db.Pool.Exec(ctx, `UPDATE review_requests SET reviewer_id=$2,status='REVIEWING' WHERE id=$1`, reviewID, reviewerID); err != nil {
+		t.Fatal(err)
+	}
+	if res := admin.do(http.MethodPut, "/api/v1/review-requests/"+reviewID+"/review-results/"+itemID,
+		map[string]any{"result": "CONDITIONAL", "opinion": "조건부 적합", "follow_up": "3개월 내 WAF 정책 보완", "follow_up_due_date": "2030-09-30", "expected_updated_at": ""}); res.status != http.StatusOK {
+		t.Fatalf("recording the verdict: %d %s", res.status, res.body)
+	}
+
+	structured := author.do(http.MethodGet, "/api/v1/review-requests/"+reviewID+"/export/json", nil)
+	for _, want := range []string{"3개월 내 WAF 정책 보완", "2030-09-30"} {
+		if !strings.Contains(structured.body, want) {
+			t.Errorf("the JSON export is missing %q", want)
+		}
+	}
+
+	req, _ := http.NewRequest(http.MethodGet, h.server.URL+"/api/v1/review-requests/"+reviewID+"/export/xlsx", nil)
+	book := author.send(req)
+	if book.status != http.StatusOK {
+		t.Fatalf("xlsx export returned %d", book.status)
+	}
+	cells, err := readXLSXStrings([]byte(book.body))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"조치 기한", "2030-09-30", "3개월 내 WAF 정책 보완"} {
+		if !strings.Contains(cells, want) {
+			t.Errorf("the workbook is missing %q", want)
+		}
+	}
+}
