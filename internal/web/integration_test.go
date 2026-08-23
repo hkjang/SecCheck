@@ -3462,3 +3462,68 @@ func TestReviewParticipantsCanBeSeenAndRemoved(t *testing.T) {
 		t.Errorf("the removal was recorded %d times", recorded)
 	}
 }
+
+// Retiring a published version is how a checklist stops being used. Nothing
+// in the screen offered it, so the only way to stop assigning a version was to
+// publish a replacement -- and the endpoint's effect was never pinned down.
+func TestARetiredVersionLeavesNewReviewsButNotOldOnes(t *testing.T) {
+	h := newHarness(t)
+	admin := h.login(adminOf(h))
+	ctx := context.Background()
+	h.user("retire-requester", "REQUESTER")
+	requester := h.login("retire-requester")
+
+	created := admin.do(http.MethodPost, "/api/v1/templates", map[string]any{"name": "폐기 대상 템플릿", "category": "DEVELOPMENT", "description": "", "version": "V1"})
+	if created.status != http.StatusCreated {
+		t.Fatalf("creating a template: %d %s", created.status, created.body)
+	}
+	templateID, _ := created.json()["id"].(string)
+	var versionID string
+	if err := h.db.Pool.QueryRow(ctx, `SELECT id FROM checklist_versions WHERE template_id=$1`, templateID).Scan(&versionID); err != nil {
+		t.Fatal(err)
+	}
+	if res := admin.do(http.MethodPost, fmt.Sprintf("/api/v1/templates/%s/versions/%s/items", templateID, versionID),
+		map[string]any{"item_code": "RETIRE-1", "title": "폐기 대상 항목", "question": "질문", "category": "DEVELOPMENT", "severity": "MEDIUM", "answer_type": "YNNA", "sort_order": 1}); res.status != http.StatusCreated {
+		t.Fatalf("adding an item: %d %s", res.status, res.body)
+	}
+	if res := admin.do(http.MethodPost, fmt.Sprintf("/api/v1/templates/%s/versions/%s/publish", templateID, versionID), nil); res.status >= 300 {
+		t.Fatalf("publishing: %d %s", res.status, res.body)
+	}
+
+	carries := func(reviewID string) bool {
+		t.Helper()
+		items := []map[string]any{}
+		if err := json.Unmarshal([]byte(requester.do(http.MethodGet, "/api/v1/review-requests/"+reviewID+"/items", nil).body), &items); err != nil {
+			t.Fatal(err)
+		}
+		for _, item := range items {
+			if item["item_code"] == "RETIRE-1" {
+				return true
+			}
+		}
+		return false
+	}
+	before := requester.createReview("폐기 전 서비스")
+	if !carries(before) {
+		t.Fatal("the published item was not assigned to a new review")
+	}
+
+	if res := admin.do(http.MethodPost, fmt.Sprintf("/api/v1/templates/%s/versions/%s/retire", templateID, versionID), nil); res.status != http.StatusNoContent {
+		t.Fatalf("retiring the version: %d %s", res.status, res.body)
+	}
+	after := requester.createReview("폐기 후 서비스")
+	if carries(after) {
+		t.Error("a retired version is still being assigned to new reviews")
+	}
+	// The snapshot a review already took is its record and does not change.
+	if !carries(before) {
+		t.Error("retiring a version changed a review that had already been created")
+	}
+	var recorded int
+	if err := h.db.Pool.QueryRow(ctx, `SELECT count(*) FROM audit_logs WHERE event_type='RETIRE_TEMPLATE' AND target_id=$1`, versionID).Scan(&recorded); err != nil {
+		t.Fatal(err)
+	}
+	if recorded != 1 {
+		t.Errorf("retiring was recorded %d times", recorded)
+	}
+}
