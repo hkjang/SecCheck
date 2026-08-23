@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"runtime"
 	"sort"
 	"strconv"
 	"strings"
@@ -46,8 +47,34 @@ type AuditEvent struct {
 	Before, After                                                                             any
 }
 
+// Open connects with a pool sized for what this service actually does. The
+// driver's default is four connections on a small container, and three
+// background workers plus one long export -- an archive or a full chain
+// verification can now hold a connection for minutes -- is enough to leave
+// every other request queuing behind them. An operator who sets pool_max_conns
+// in the DSN has said what they want and is left alone.
 func Open(ctx context.Context, dsn string) (*Store, error) {
-	pool, err := pgxpool.New(ctx, dsn)
+	cfg, err := pgxpool.ParseConfig(dsn)
+	if err != nil {
+		return nil, err
+	}
+	if !strings.Contains(dsn, "pool_max_conns") {
+		if headroom := int32(runtime.NumCPU()) * 4; headroom > cfg.MaxConns {
+			cfg.MaxConns = headroom
+		}
+		if cfg.MaxConns < 10 {
+			cfg.MaxConns = 10
+		}
+	}
+	if !strings.Contains(dsn, "pool_min_conns") {
+		// After a quiet night the first request should not pay for a fresh
+		// connection, and an idle pool of two costs nothing.
+		cfg.MinConns = 2
+	}
+	if cfg.ConnConfig.ConnectTimeout == 0 {
+		cfg.ConnConfig.ConnectTimeout = 10 * time.Second
+	}
+	pool, err := pgxpool.NewWithConfig(ctx, cfg)
 	if err != nil {
 		return nil, err
 	}

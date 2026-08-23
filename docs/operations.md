@@ -14,6 +14,8 @@ encrypted evidence volume
 
 Redis나 외부 CDN은 필요하지 않습니다. UI, 한글 PDF 글꼴, 기본 workbook과 migration이 이미지에 포함됩니다.
 
+데이터베이스 연결 풀은 CPU 수에 맞춰 잡되 최소 10개를 확보합니다. 백그라운드 워커 셋과 오래 걸리는 내보내기·체인 재검증이 동시에 연결을 잡아도 일반 요청이 대기에 걸리지 않도록 하기 위한 것입니다. DSN에 `pool_max_conns`나 `pool_min_conns`를 지정하면 그 값을 그대로 씁니다. 현재 사용량은 `/metrics`의 `seccheck_db_connections`로 확인합니다.
+
 ## 첫 구동
 
 1. PostgreSQL DB와 전용 최소권한 계정을 생성합니다.

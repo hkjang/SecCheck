@@ -146,3 +146,19 @@ func TestDisplayDateFollowsTheDisplayTimezone(t *testing.T) {
 		t.Errorf("a missing timestamp became a day: %v", *missing)
 	}
 }
+
+// The driver's default pool is four connections on a small container, which
+// three background workers and one long export can occupy between them. The
+// service asks for headroom unless the operator has said otherwise in the DSN.
+func TestThePoolHasRoomForTheWorkers(t *testing.T) {
+	db := testdb.New(t)
+	if got := db.Pool.Config().MaxConns; got < 10 {
+		t.Errorf("the pool allows %d connections, too few for three workers and a long export", got)
+	}
+	if got := db.Pool.Config().MinConns; got < 1 {
+		t.Errorf("the pool keeps %d connections warm, so the first request after an idle night pays for a new one", got)
+	}
+	if got := db.Pool.Config().ConnConfig.ConnectTimeout; got == 0 {
+		t.Error("a connection attempt has no timeout, so a database that accepts but never answers hangs the request")
+	}
+}
