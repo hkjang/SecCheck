@@ -297,3 +297,63 @@ func TestEveryMCPToolIsInTheAPIGuide(t *testing.T) {
 		}
 	}
 }
+
+// A control whose only content is an icon has no name for a screen reader, and
+// no tooltip for anyone hovering it. Most of the product already labels them;
+// five did not, so the rule is written down rather than remembered.
+func TestIconOnlyControlsHaveANameToRead(t *testing.T) {
+	pages, err := filepath.Glob(filepath.Join("..", "..", "web", "src", "**", "*.tsx"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	more, _ := filepath.Glob(filepath.Join("..", "..", "web", "src", "*", "*.tsx"))
+	pages = append(pages, more...)
+	if len(pages) < 10 {
+		t.Fatalf("only %d screens found; the layout must have changed", len(pages))
+	}
+	// The attribute list can contain => inside a handler, so the opening tag is
+	// scanned with brace awareness rather than up to the first >.
+	onlyIcons := regexp.MustCompile(`^(?:\s*<[A-Z][A-Za-z0-9]*(?:\s[^<>]*)?/>\s*)+$`)
+	opening := regexp.MustCompile(`<(Button|button)\b`)
+	for _, page := range pages {
+		body, err := os.ReadFile(page)
+		if err != nil {
+			continue
+		}
+		src := string(body)
+		for _, m := range opening.FindAllStringIndex(src, -1) {
+			i, depth := m[1], 0
+			for i < len(src) {
+				switch src[i] {
+				case '{':
+					depth++
+				case '}':
+					depth--
+				case '>':
+					if depth == 0 {
+						goto found
+					}
+				}
+				i++
+			}
+		found:
+			if i >= len(src) {
+				continue
+			}
+			tag := src[m[0]:i]
+			name := "Button"
+			if strings.HasPrefix(src[m[0]:], "<button") {
+				name = "button"
+			}
+			close := strings.Index(src[i:], "</"+name+">")
+			if close < 0 {
+				continue
+			}
+			inner := src[i+1 : i+close]
+			if !onlyIcons.MatchString(inner) || strings.Contains(tag, "aria-label") || strings.Contains(tag, "title=") {
+				continue
+			}
+			t.Errorf("%s has a control showing only %s with no aria-label or title", filepath.Base(page), strings.TrimSpace(inner))
+		}
+	}
+}

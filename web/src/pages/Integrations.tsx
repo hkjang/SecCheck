@@ -31,7 +31,7 @@ export default function Integrations() {
       </div></section>
       <section className="card"><div className="card-header"><h2>Model Context Protocol</h2><Badge tone="green">{info?.mcp_version || '—'}</Badge></div><div className="card-body">
         <p className="subtle" data-sx="sx-023">최신 Stateless Streamable HTTP를 지원하며, 구형 {(info?.mcp_compatibility || []).join(', ') || '이전'} initialize 클라이언트도 호환합니다. 개인 API 키를 Authorization 헤더에 설정하세요.</p>
-        <div className="field"><label>Endpoint</label><div data-sx="sx-004"><input className="input" readOnly value={endpoint} /><Button onClick={() => copy(endpoint)}><Copy size={14} /></Button></div></div>
+        <div className="field"><label>Endpoint</label><div data-sx="sx-004"><input className="input" readOnly value={endpoint} /><Button aria-label="MCP 엔드포인트 주소 복사" onClick={() => copy(endpoint)}><Copy size={14} /></Button></div></div>
         <div data-sx="sx-029"><strong data-sx="sx-018">제공 도구 {info ? `(${info.tools.length})` : ''}</strong>
           {!info ? <Loading /> : <div className="table-wrap"><table><caption className="sr-only">제공 중인 MCP 도구</caption><tbody>{info.tools.map(tool => <tr key={tool.name}><td><code>{tool.name}</code>{tool.read_only && <Badge tone="green">읽기 전용</Badge>}<div className="subtle">{tool.description}</div></td></tr>)}</tbody></table></div>}
         </div>
