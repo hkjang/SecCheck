@@ -125,6 +125,34 @@ func (v *Vault) EnsureUserKey(ctx context.Context, userID string) error {
 	return err
 }
 
+// VerifyMasterKey proves that ENCRYPTION_KEY is the one this database was
+// written with, before the service starts answering requests.
+//
+// Nothing used to check. Starting with the wrong key -- a restore into another
+// environment, a copy-paste error, a secret rotated in the deployment but not
+// in the vault -- came up healthy: the database pings, /ready is green, people
+// sign in. The failure showed up later and elsewhere, as evidence that would
+// not download and encrypted settings that silently read as unset, which is a
+// long way from the mistake that caused it. A key that cannot unwrap what is
+// already stored is not a service that should be serving.
+//
+// A database with nothing wrapped in it yet is a first start, and there is
+// nothing to disagree with.
+func (v *Vault) VerifyMasterKey(ctx context.Context) error {
+	var userID, encrypted string
+	var version int
+	err := v.Store.Pool.QueryRow(ctx, `SELECT user_id,version,encrypted_key FROM user_data_keys ORDER BY user_id,version LIMIT 1`).Scan(&userID, &version, &encrypted)
+	if err != nil {
+		// No wrapped key at all: a fresh installation.
+		return nil
+	}
+	if _, err = v.Box.Decrypt(encrypted, []byte(fmt.Sprintf("user-key:%s:%d", userID, version))); err != nil {
+		return fmt.Errorf("ENCRYPTION_KEY does not match this database: the stored data keys cannot be unwrapped. "+
+			"Start with the key this installation was created with -- a different one leaves every evidence file unreadable (%w)", err)
+	}
+	return nil
+}
+
 func (v *Vault) ActiveUserKey(ctx context.Context, userID string) ([]byte, int, error) {
 	if err := v.EnsureUserKey(ctx, userID); err != nil {
 		return nil, 0, err

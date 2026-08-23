@@ -3,6 +3,7 @@ package vault_test
 import (
 	"bytes"
 	"context"
+	"strings"
 	"testing"
 
 	"github.com/hkjang/SecCheck/internal/cryptox"
@@ -97,5 +98,42 @@ func TestStoredEvidenceIsBoundToItsRecord(t *testing.T) {
 	stranger, _ := cryptox.RandomBytes(32)
 	if _, _, err := v.Read(&bytes.Buffer{}, "blob.enc", stranger, vault.AAD("ev-1", 1)); err == nil {
 		t.Error("the blob opened under a key that never wrote it")
+	}
+}
+
+// Starting with the wrong ENCRYPTION_KEY used to look like a healthy service:
+// the database answers, sign-in works, and the mistake only surfaces later as
+// evidence that will not download.
+func TestTheMasterKeyIsCheckedAgainstWhatIsStored(t *testing.T) {
+	original, db := newVault(t)
+	ctx := context.Background()
+
+	// Nothing wrapped yet: a first start has nothing to disagree with.
+	if err := original.VerifyMasterKey(ctx); err != nil {
+		t.Errorf("an empty installation was rejected: %v", err)
+	}
+	userID := testdb.Bootstrap(t, db, "key-owner")
+	if err := original.EnsureUserKey(ctx, userID); err != nil {
+		t.Fatal(err)
+	}
+	if err := original.VerifyMasterKey(ctx); err != nil {
+		t.Errorf("the key that wrote the data was rejected: %v", err)
+	}
+
+	other, err := cryptox.RandomBytes(32)
+	if err != nil {
+		t.Fatal(err)
+	}
+	box, err := cryptox.New(other)
+	if err != nil {
+		t.Fatal(err)
+	}
+	stranger := vault.New(t.TempDir(), box, db)
+	err = stranger.VerifyMasterKey(ctx)
+	if err == nil {
+		t.Fatal("a database written with another key was accepted")
+	}
+	if !strings.Contains(err.Error(), "ENCRYPTION_KEY") {
+		t.Errorf("the refusal does not name what is wrong: %v", err)
 	}
 }

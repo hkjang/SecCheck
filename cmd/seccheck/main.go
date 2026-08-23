@@ -88,11 +88,15 @@ func main() {
 	if err != nil {
 		fatal(err)
 	}
-	if err = vault.New(cfg.DataDir, box, db).EnsureUserKey(ctx, bootstrap.ID); err != nil {
+	blobs := vault.New(cfg.DataDir, box, db)
+	// Before anything is served, prove the key can read what is already here.
+	if err = blobs.VerifyMasterKey(ctx); err != nil {
+		fatal(err)
+	}
+	if err = blobs.EnsureUserKey(ctx, bootstrap.ID); err != nil {
 		fatal(err)
 	}
 	authService := auth.New(db, box)
-	blobs := vault.New(cfg.DataDir, box, db)
 	go notify.New(db, box).Run(ctx)
 	go maintenance.New(db, blobs).Run(ctx)
 	go scanner.New(db, blobs).Run(ctx)
