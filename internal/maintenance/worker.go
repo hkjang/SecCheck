@@ -31,6 +31,9 @@ const (
 	// A review that has not moved in this long is waiting on a person, not on
 	// work in progress, and the same person is not told again for this long.
 	stalledReviewDays = 3
+	// How close a planned open date has to be before the people who can still
+	// finish the review are told, and how long before they are told again.
+	openDateWarningDays = 3
 	// Room below either of these is worth waking somebody for: proportionally
 	// nearly full, or absolutely close enough that a few uploads finish it.
 	lowStorageRatio = 0.10
@@ -77,6 +80,7 @@ func (w *Worker) Sweep(ctx context.Context) map[string]int64 {
 	removed["due_reminders"] = w.remindDueChangeRequests(ctx)
 	removed["follow_up_reminders"] = w.remindDueFollowUps(ctx)
 	removed["stalled_reviews"] = w.remindStalledReviews(ctx)
+	removed["open_date_reminders"] = w.remindApproachingOpenDates(ctx)
 	removed["stall_alerts"] = w.alertStalledQueue(ctx)
 	removed["failure_alerts"] = w.alertFailedJobs(ctx)
 	removed["storage_alerts"] = w.alertLowStorage(ctx)
@@ -289,7 +293,6 @@ func (w *Worker) remindDueFollowUps(ctx context.Context) int64 {
 	rows.Close()
 
 	var sent int64
-	today := time.Now().Truncate(24 * time.Hour)
 	for _, item := range pending {
 		var reviewID, number, service, requester, code string
 		var reviewer *string
@@ -301,7 +304,7 @@ func (w *Worker) remindDueFollowUps(ctx context.Context) int64 {
 			continue
 		}
 		title := "후속조치 기한 임박"
-		if item.due.Before(today) {
+		if w.pastDue(ctx, item.due) {
 			title = "후속조치 기한 초과"
 		}
 		body := fmt.Sprintf("%s(%s) %s 항목의 후속조치 기한이 %s입니다: %s", number, service, code, item.due.Format("2006-01-02"), shorten(item.action, 200))
@@ -325,6 +328,110 @@ func (w *Worker) remindDueFollowUps(ctx context.Context) int64 {
 		}
 	}
 	return sent
+}
+
+// pastDue answers whether a date has gone by where the installation lives.
+// Comparing against the container's UTC clock made the wording wrong for part
+// of every day in a zone ahead of UTC -- a deadline that ran out at midnight
+// was still described as "임박" until nine in the morning.
+func (w *Worker) pastDue(ctx context.Context, day time.Time) bool {
+	var passed bool
+	if err := w.Store.Pool.QueryRow(ctx, `SELECT $1::date < display_today()`, day).Scan(&passed); err != nil {
+		return false
+	}
+	return passed
+}
+
+// remindApproachingOpenDates warns while there is still time to act. The
+// planned open date is the date the service goes live whether or not the
+// review is finished; it was recorded and displayed and nothing ever chased
+// it, so a review could still be in progress on the morning of the launch.
+func (w *Worker) remindApproachingOpenDates(ctx context.Context) int64 {
+	rows, err := w.Store.Pool.Query(ctx, `
+                UPDATE review_requests SET open_date_reminded_at=now()
+                WHERE id IN (
+                  SELECT r.id FROM review_requests r
+                  WHERE r.status NOT IN ('APPROVED','CLOSED','CANCELLED','REJECTED')
+                    AND r.planned_open_date IS NOT NULL
+                    AND r.planned_open_date <= display_today()+$1::int
+                    AND (r.open_date_reminded_at IS NULL OR r.open_date_reminded_at < now()-make_interval(days=>$1))
+                  LIMIT 200)
+                RETURNING id,review_number,service_name,status,requester_id,COALESCE(reviewer_id,''),COALESCE(approver_id,''),planned_open_date`, openDateWarningDays)
+	if err != nil {
+		w.Store.Log(ctx, "ERROR", "", "maintenance", "open date reminder query failed", map[string]any{"error": err.Error()})
+		return 0
+	}
+	type launching struct {
+		id, number, service, status, requester, reviewer, approver string
+		openOn                                                     time.Time
+	}
+	var pending []launching
+	for rows.Next() {
+		var item launching
+		if rows.Scan(&item.id, &item.number, &item.service, &item.status, &item.requester, &item.reviewer, &item.approver, &item.openOn) == nil {
+			pending = append(pending, item)
+		}
+	}
+	rows.Close()
+
+	var sent int64
+	for _, item := range pending {
+		title := "오픈 예정일이 다가왔습니다"
+		when := fmt.Sprintf("오픈 예정일이 %s입니다", item.openOn.Format("2006-01-02"))
+		if w.pastDue(ctx, item.openOn) {
+			title = "오픈 예정일이 지났습니다"
+			when = fmt.Sprintf("오픈 예정일 %s이 지났습니다", item.openOn.Format("2006-01-02"))
+		}
+		body := fmt.Sprintf("%s(%s)의 %s. 심의는 아직 %s 상태입니다.", item.number, item.service, when, statusInKorean(item.status))
+		// Both sides need this: whoever holds the review has to finish it, and
+		// the requester is the one who has to decide whether the launch moves.
+		holder := ""
+		if item.status == "APPROVAL_PENDING" {
+			holder, _ = w.activeRecipient(ctx, item.approver, item.reviewer)
+		} else {
+			holder, _ = w.activeRecipient(ctx, item.reviewer)
+		}
+		requester, _ := w.activeRecipient(ctx, item.requester)
+		for _, recipient := range dedupe(requester, holder) {
+			if err = w.Store.Notify(ctx, recipient, "OPEN_DATE_NEAR", title, body, "REVIEW_REQUEST", item.id); err == nil {
+				sent++
+			}
+		}
+	}
+	return sent
+}
+
+// statusInKorean names a state the way the screens do, so a message about a
+// review reads the same as the review itself.
+func statusInKorean(status string) string {
+	switch status {
+	case "DRAFT":
+		return "작성 중"
+	case "SUBMITTED":
+		return "제출 완료"
+	case "RESUBMITTED":
+		return "재제출"
+	case "REVIEWING":
+		return "검토 중"
+	case "CHANGE_REQUESTED":
+		return "보완 요청"
+	case "APPROVAL_PENDING":
+		return "승인 대기"
+	}
+	return status
+}
+
+func dedupe(ids ...string) []string {
+	seen := map[string]bool{}
+	var out []string
+	for _, id := range ids {
+		if id == "" || seen[id] {
+			continue
+		}
+		seen[id] = true
+		out = append(out, id)
+	}
+	return out
 }
 
 type stalled struct {
@@ -560,7 +667,7 @@ func (w *Worker) remindDueChangeRequests(ctx context.Context) int64 {
 		}
 		title := "보완 조치 기한 임박"
 		body := fmt.Sprintf("%s(%s)의 보완 요청 기한이 %s입니다. 조치 후 재제출하세요.", number, service, item.due.Format("2006-01-02"))
-		if item.due.Before(time.Now().Truncate(24 * time.Hour)) {
+		if w.pastDue(ctx, item.due) {
 			title = "보완 조치 기한 초과"
 			body = fmt.Sprintf("%s(%s)의 보완 요청이 %s 기한을 넘겼습니다.", number, service, item.due.Format("2006-01-02"))
 		}

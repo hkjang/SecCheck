@@ -327,6 +327,7 @@ docker compose exec seccheck /app/seccheck selftest --username admin --password 
 | 016 | 증적 버전별 원본 파일명 보관. 현재 버전은 기존 값으로 채워지고, 이전 버전은 기록이 없어 빈 값입니다 |
 | 017 | 정체된 심의 알림 발송 시각(`review_requests.stalled_reminded_at`) |
 | 018 | 워크플로 설정에 `allow_self_review` 추가(기본 false). 기존 설치도 본인 심의 처리가 금지됩니다 |
+| 019 | 오픈 예정일 알림 발송 시각(`review_requests.open_date_reminded_at`) |
 
 ## 업그레이드와 롤백
 

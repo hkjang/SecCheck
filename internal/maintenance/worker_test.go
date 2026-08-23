@@ -744,3 +744,79 @@ func TestAdministratorsAreWarnedBeforeTheEvidenceVolumeFills(t *testing.T) {
 		t.Errorf("a second sweep raised the count to %d", n)
 	}
 }
+
+// The planned open date is the day the service goes live whether or not the
+// review is finished. It was recorded, sorted by and displayed, and nothing
+// ever chased it: a review could still be in progress on the launch morning.
+func TestTheOpenDateIsChasedWhileThereIsStillTime(t *testing.T) {
+	db := testdb.New(t)
+	ctx := context.Background()
+	requester := testdb.Bootstrap(t, db, "launch-requester")
+	worker := maintenance.New(db, nil)
+	exec := func(sql string, args ...any) {
+		t.Helper()
+		if _, err := db.Pool.Exec(ctx, sql, args...); err != nil {
+			t.Fatalf("%s: %v", sql, err)
+		}
+	}
+	reviewer := store.NewID()
+	exec(`INSERT INTO users(id,username,display_name,auth_source,active) VALUES($1,'launch-reviewer','검토자','local',true)`, reviewer)
+	review := func(number, status string, openIn int, withReviewer bool) string {
+		t.Helper()
+		id := store.NewID()
+		assigned := ""
+		if withReviewer {
+			assigned = reviewer
+		}
+		exec(`INSERT INTO review_requests(id,review_number,service_name,description,service_type,change_type,builder_id,developer_id,department,requester_id,exposure,status,reviewer_id,planned_open_date)
+                      VALUES($1,$2,'s','d','WEB','NEW',$3,$3,'보안팀',$3,'INTERNAL',$4,NULLIF($5,''),display_today()+$6::int)`, id, number, requester, status, assigned, openIn)
+		return id
+	}
+	notices := func(recipient string) []string {
+		t.Helper()
+		rows, err := db.Pool.Query(ctx, `SELECT body FROM notifications WHERE recipient_id=$1 AND event_type='OPEN_DATE_NEAR'`, recipient)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer rows.Close()
+		var out []string
+		for rows.Next() {
+			var body string
+			if rows.Scan(&body) == nil {
+				out = append(out, body)
+			}
+		}
+		return out
+	}
+
+	review("SR-SOON", "REVIEWING", 2, true)  // opens in two days, still under review
+	review("SR-LATE", "SUBMITTED", -1, true) // opened yesterday and never finished
+	review("SR-FAR", "REVIEWING", 30, true)  // plenty of time
+	review("SR-DONE", "APPROVED", 1, true)   // finished, nothing to chase
+
+	worker.Sweep(ctx)
+	forRequester := strings.Join(notices(requester), "\n")
+	if !strings.Contains(forRequester, "SR-SOON") || !strings.Contains(forRequester, "SR-LATE") {
+		t.Errorf("the requester was not warned about the launches at risk: %v", forRequester)
+	}
+	if strings.Contains(forRequester, "SR-FAR") {
+		t.Error("a review with a month to go was reported as urgent")
+	}
+	if strings.Contains(forRequester, "SR-DONE") {
+		t.Error("a finished review was chased about its open date")
+	}
+	if !strings.Contains(forRequester, "지났습니다") {
+		t.Errorf("a date already passed is not described as passed: %v", forRequester)
+	}
+	if !strings.Contains(forRequester, "검토 중") {
+		t.Errorf("the message does not say what state the review is in: %v", forRequester)
+	}
+	// Whoever holds the review hears about it too, and neither side is told twice.
+	if got := notices(reviewer); len(got) != 2 {
+		t.Errorf("the reviewer received %d warnings, want one per review at risk", len(got))
+	}
+	worker.Sweep(ctx)
+	if got := notices(requester); len(got) != 2 {
+		t.Errorf("a second sweep raised the requester's count to %d", len(got))
+	}
+}
