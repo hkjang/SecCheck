@@ -493,13 +493,13 @@ func (s *Server) getReviewRequest(w http.ResponseWriter, r *http.Request) {
 	}
 	var out map[string]any
 	_ = json.Unmarshal(data, &out)
-	var total, compliant, conditional, insufficient, nonCompliant, na, followUp int
-	_ = s.Store.Pool.QueryRow(r.Context(), `SELECT count(*),count(*) FILTER(WHERE rr.result='COMPLIANT'),count(*) FILTER(WHERE rr.result='CONDITIONAL'),count(*) FILTER(WHERE rr.result='INSUFFICIENT'),count(*) FILTER(WHERE rr.result='NON_COMPLIANT'),count(*) FILTER(WHERE rr.result='NA_ACCEPTED' OR resp.applicability='N/A'),count(*) FILTER(WHERE COALESCE(rr.follow_up,'')<>'') FROM submissions sub JOIN submission_items si ON si.submission_id=sub.id LEFT JOIN responses resp ON resp.submission_item_id=si.id LEFT JOIN review_results rr ON rr.submission_item_id=si.id WHERE sub.review_request_id=$1 AND sub.revision=(SELECT max(revision) FROM submissions WHERE review_request_id=$1)`, r.PathValue("id")).Scan(&total, &compliant, &conditional, &insufficient, &nonCompliant, &na, &followUp)
+	var total, compliant, conditional, insufficient, nonCompliant, na, followUp, staleVerdicts int
+	_ = s.Store.Pool.QueryRow(r.Context(), `SELECT count(*),count(*) FILTER(WHERE rr.result='COMPLIANT'),count(*) FILTER(WHERE rr.result='CONDITIONAL'),count(*) FILTER(WHERE rr.result='INSUFFICIENT'),count(*) FILTER(WHERE rr.result='NON_COMPLIANT'),count(*) FILTER(WHERE rr.result='NA_ACCEPTED' OR resp.applicability='N/A'),count(*) FILTER(WHERE COALESCE(rr.follow_up,'')<>''),count(*) FILTER(WHERE COALESCE(rr.result,'')<>'' AND resp.updated_at > rr.updated_at) FROM submissions sub JOIN submission_items si ON si.submission_id=sub.id LEFT JOIN responses resp ON resp.submission_item_id=si.id LEFT JOIN review_results rr ON rr.submission_item_id=si.id WHERE sub.review_request_id=$1 AND sub.revision=(SELECT max(revision) FROM submissions WHERE review_request_id=$1)`, r.PathValue("id")).Scan(&total, &compliant, &conditional, &insufficient, &nonCompliant, &na, &followUp, &staleVerdicts)
 	naRatio := 0.0
 	if total > 0 {
 		naRatio = float64(na) * 100 / float64(total)
 	}
-	out["result_summary"] = map[string]any{"total": total, "compliant": compliant, "conditional": conditional, "insufficient": insufficient, "non_compliant": nonCompliant, "na": na, "na_ratio": naRatio, "follow_up": followUp}
+	out["result_summary"] = map[string]any{"total": total, "compliant": compliant, "conditional": conditional, "insufficient": insufficient, "non_compliant": nonCompliant, "na": na, "na_ratio": naRatio, "follow_up": followUp, "stale_verdicts": staleVerdicts}
 	out["template_versions"] = s.snapshotTemplateVersions(r, r.PathValue("id"))
 	_ = s.Store.Audit(r.Context(), auditFrom(r, "VIEW_SUBMISSION", "REVIEW_REQUEST", r.PathValue("id"), nil, nil))
 	jsonResponse(w, 200, out)
@@ -1444,7 +1444,7 @@ func (s *Server) completeReview(w http.ResponseWriter, r *http.Request) {
 		problem(w, 403, "FORBIDDEN", "이 심의를 완료할 수 없습니다.", nil)
 		return
 	}
-	var missing, open int
+	var missing, open, stale int
 	// Completing a review while items are unjudged is exactly what this guard
 	// exists to prevent, and a failed count used to read as zero.
 	if err := s.Store.Pool.QueryRow(r.Context(), `SELECT count(*) FROM submissions sub JOIN submission_items si ON si.submission_id=sub.id LEFT JOIN review_results rr ON rr.submission_item_id=si.id WHERE sub.review_request_id=$1 AND sub.revision=(SELECT max(revision) FROM submissions WHERE review_request_id=$1) AND (rr.id IS NULL OR rr.result='')`, id).Scan(&missing); err != nil {
@@ -1455,8 +1455,27 @@ func (s *Server) completeReview(w http.ResponseWriter, r *http.Request) {
 		s.fault(w, r, "QUERY_FAILED", "남은 항목을 확인하지 못해 검토 완료를 중단했습니다.", err)
 		return
 	}
-	if missing > 0 || open > 0 {
-		problem(w, 422, "REVIEW_INCOMPLETE", "검토를 완료할 수 없습니다.", map[string]int{"unreviewed_items": missing, "unverified_changes": open})
+	// A change request sends the review back, and the author can edit any item
+	// while it is back -- not only the one that was asked about. A verdict
+	// recorded before that edit was made against an answer that no longer
+	// exists, so counting it as reviewed is a false all-clear.
+	if err := s.Store.Pool.QueryRow(r.Context(), `SELECT count(*) FROM submissions sub JOIN submission_items si ON si.submission_id=sub.id JOIN review_results rr ON rr.submission_item_id=si.id JOIN responses resp ON resp.submission_item_id=si.id WHERE sub.review_request_id=$1 AND sub.revision=(SELECT max(revision) FROM submissions WHERE review_request_id=$1) AND rr.result<>'' AND resp.updated_at > rr.updated_at`, id).Scan(&stale); err != nil {
+		s.fault(w, r, "QUERY_FAILED", "남은 항목을 확인하지 못해 검토 완료를 중단했습니다.", err)
+		return
+	}
+	if missing > 0 || open > 0 || stale > 0 {
+		// Saying only that it cannot be completed leaves the reviewer hunting
+		// through the checklist for what is left.
+		var left []string
+		for _, part := range []struct {
+			count int
+			label string
+		}{{missing, "미검토 항목"}, {open, "미검증 보완 요청"}, {stale, "검토 후 답변이 바뀐 항목"}} {
+			if part.count > 0 {
+				left = append(left, fmt.Sprintf("%s %d건", part.label, part.count))
+			}
+		}
+		problem(w, 422, "REVIEW_INCOMPLETE", strings.Join(left, ", ")+"이 남아 검토를 완료할 수 없습니다.", map[string]int{"unreviewed_items": missing, "unverified_changes": open, "stale_verdicts": stale})
 		return
 	}
 	var in struct {

@@ -369,3 +369,88 @@ func TestChainVerificationCostAtScale(t *testing.T) {
 	}
 	t.Logf("full %v over %.0f events, incremental %v over %.0f", fullTime, checked, incrementalTime, again)
 }
+
+// A change request sends the whole review back, not one item, and the author
+// can edit anything while it is there. Completing the review then counted the
+// verdicts that were recorded before those edits, so a reviewer could sign off
+// on answers nobody had read.
+func TestCompletingAReviewCatchesVerdictsTheAuthorEditedAway(t *testing.T) {
+	h := newHarness(t)
+	ctx := context.Background()
+	requesterID := h.user("stale-requester", "REQUESTER")
+	reviewerID := h.user("stale-reviewer", "SECURITY_REVIEWER")
+	requester, reviewer := h.login("stale-requester"), h.login("stale-reviewer")
+
+	reviewID := requester.createReview("판정 후 수정 서비스")
+	var items []map[string]any
+	if err := json.Unmarshal([]byte(requester.do(http.MethodGet, "/api/v1/review-requests/"+reviewID+"/items", nil).body), &items); err != nil {
+		t.Fatal(err)
+	}
+	if len(items) < 2 {
+		t.Fatalf("the template assigned %d items; the test needs two", len(items))
+	}
+	ids := make([]string, 0, len(items))
+	for _, item := range items {
+		ids = append(ids, item["id"].(string))
+	}
+	if _, err := h.db.Pool.Exec(ctx, `UPDATE review_requests SET reviewer_id=$2 WHERE id=$1`, reviewID, reviewerID); err != nil {
+		t.Fatal(err)
+	}
+	step := func(c *client, method, path string, body any, want int, what string) {
+		t.Helper()
+		if res := c.do(method, path, body); res.status != want {
+			t.Fatalf("%s: %d %s", what, res.status, res.body)
+		}
+	}
+	answer := map[string]any{"item_ids": ids, "applicability": "N/A", "na_reason": "해당 없음", "self_assessment": "N/A"}
+	step(requester, http.MethodPost, "/api/v1/review-requests/"+reviewID+"/responses/bulk", answer, http.StatusOK, "bulk answer")
+	step(requester, http.MethodPost, "/api/v1/review-requests/"+reviewID+"/submit", map[string]any{}, http.StatusOK, "submit")
+	step(reviewer, http.MethodPost, "/api/v1/review-requests/"+reviewID+"/begin-review", map[string]any{}, http.StatusOK, "begin review")
+	step(reviewer, http.MethodPost, "/api/v1/review-requests/"+reviewID+"/review-results/bulk",
+		map[string]any{"item_ids": ids, "result": "COMPLIANT", "opinion": "일괄 적합"}, http.StatusOK, "bulk judgement")
+
+	// The reviewer asks about the first item; the author also rewrites the
+	// second one, which nobody asked about and which is already judged.
+	step(reviewer, http.MethodPost, "/api/v1/review-requests/"+reviewID+"/change-requests",
+		map[string]any{"item_id": ids[0], "reason": "증적을 보완하세요", "assignee_id": requesterID, "due_date": "2030-03-31"}, http.StatusCreated, "change request")
+	step(requester, http.MethodPut, "/api/v1/review-requests/"+reviewID+"/responses/"+ids[1],
+		map[string]any{"applicability": "Y", "self_assessment": "COMPLIANT", "current_state": "판정 이후에 답을 바꿨습니다"}, http.StatusOK, "rewrite a judged item")
+
+	var changeID string
+	if err := h.db.Pool.QueryRow(ctx, `SELECT id FROM change_requests WHERE review_request_id=$1`, reviewID).Scan(&changeID); err != nil {
+		t.Fatal(err)
+	}
+	step(requester, http.MethodPatch, "/api/v1/change-requests/"+changeID, map[string]any{"answer": "보완했습니다", "status": "DONE"}, http.StatusOK, "answer the change request")
+	step(reviewer, http.MethodPatch, "/api/v1/change-requests/"+changeID, map[string]any{"answer": "", "status": "VERIFIED"}, http.StatusOK, "verify the change request")
+	step(requester, http.MethodPost, "/api/v1/review-requests/"+reviewID+"/submit", map[string]any{}, http.StatusOK, "resubmit")
+	step(reviewer, http.MethodPost, "/api/v1/review-requests/"+reviewID+"/begin-review", map[string]any{}, http.StatusOK, "begin review again")
+
+	// The screen has to say so before the reviewer presses the button.
+	summary, _ := reviewer.do(http.MethodGet, "/api/v1/review-requests/"+reviewID, nil).json()["result_summary"].(map[string]any)
+	if got, _ := summary["stale_verdicts"].(float64); got != 1 {
+		t.Errorf("the review summary reports %v edited-since-judged items, want 1", summary["stale_verdicts"])
+	}
+
+	res := reviewer.do(http.MethodPost, "/api/v1/review-requests/"+reviewID+"/complete-review",
+		map[string]any{"final_opinion": "적합", "final_result": "APPROVED"})
+	if res.status != http.StatusUnprocessableEntity {
+		t.Fatalf("completing a review over an answer edited after judgement: %d %s", res.status, res.body)
+	}
+	fault, _ := res.json()["error"].(map[string]any)
+	if !strings.Contains(fmt.Sprint(fault["message"]), "검토 후 답변이 바뀐 항목 1건") {
+		t.Errorf("the refusal does not say what is left: %v", fault["message"])
+	}
+	if details, _ := fault["details"].(map[string]any); details != nil {
+		if got, _ := details["stale_verdicts"].(float64); got != 1 {
+			t.Errorf("stale_verdicts = %v, want 1", details["stale_verdicts"])
+		}
+	} else {
+		t.Errorf("the refusal carries no counts: %v", fault)
+	}
+
+	// Re-reading the item and judging it again is the whole remedy.
+	step(reviewer, http.MethodPut, "/api/v1/review-requests/"+reviewID+"/review-results/"+ids[1],
+		map[string]any{"final_applicability": "Y", "result": "COMPLIANT", "opinion": "바뀐 답변도 적합"}, http.StatusOK, "re-judge the edited item")
+	step(reviewer, http.MethodPost, "/api/v1/review-requests/"+reviewID+"/complete-review",
+		map[string]any{"final_opinion": "적합", "final_result": "APPROVED"}, http.StatusOK, "complete review after re-judging")
+}
