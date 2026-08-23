@@ -249,6 +249,8 @@ docker compose exec seccheck /app/seccheck verify-evidence --json         # 파�
 6. Trivy 컨테이너 취약점 게이트 (CRITICAL/HIGH)
 7. 단일 자산 패키징과 provenance attestation
 
+`security-ci`에는 비밀정보 스캔(gitleaks)이 포함됩니다. 공식 image를 다이제스트로 고정해 직접 실행하므로 외부 라이선스 서비스에 의존하지 않습니다. 검사 대상은 checkout된 리포지터리이며, 유출이 하나라도 발견되면 CI가 실패하고 따라서 릴리즈도 진행되지 않습니다.
+
 5번은 테스트 스위트가 전부 통과해도 남을 수 있는 패키징 결함을 위한 것입니다. 한글 폰트가 빠지면 PDF 내보내기만 실패하는데, 그 폰트는 image 안에만 있으므로 코드 테스트로는 확인할 수 없습니다. 2번은 v0.20.0에서 CI가 실패했는데도 릴리즈가 성공한 뒤에 추가했습니다. 릴리즈 작업에는 데이터베이스가 없어 통합 테스트가 조용히 skip되었고, govulncheck·gitleaks·DAST 게이트도 릴리즈 경로에는 없었습니다.
 
 ## 배포 자체 점검 (selftest)
