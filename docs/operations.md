@@ -328,6 +328,7 @@ docker compose exec seccheck /app/seccheck selftest --username admin --password 
 | 017 | 정체된 심의 알림 발송 시각(`review_requests.stalled_reminded_at`) |
 | 018 | 워크플로 설정에 `allow_self_review` 추가(기본 false). 기존 설치도 본인 심의 처리가 금지됩니다 |
 | 019 | 오픈 예정일 알림 발송 시각(`review_requests.open_date_reminded_at`) |
+| 020 | 항목 증적이 마지막으로 바뀐 시각 함수 `evidence_touched_at()` (판정 이후 증적 변경 감지) |
 
 ## 업그레이드와 롤백
 

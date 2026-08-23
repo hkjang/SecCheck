@@ -73,6 +73,7 @@ export type ChecklistItem = {
   evidences: Evidence[]
   change_requests: ChangeRequest[]
 	comments: { id: string; author_name: string; body: string; created_at: string }[]
+  stale_verdict?: boolean
 }
 
 export type Evidence = {

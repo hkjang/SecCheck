@@ -386,8 +386,8 @@ func TestCompletingAReviewCatchesVerdictsTheAuthorEditedAway(t *testing.T) {
 	if err := json.Unmarshal([]byte(requester.do(http.MethodGet, "/api/v1/review-requests/"+reviewID+"/items", nil).body), &items); err != nil {
 		t.Fatal(err)
 	}
-	if len(items) < 2 {
-		t.Fatalf("the template assigned %d items; the test needs two", len(items))
+	if len(items) < 3 {
+		t.Fatalf("the template assigned %d items; the test needs three", len(items))
 	}
 	ids := make([]string, 0, len(items))
 	for _, item := range items {
@@ -415,6 +415,11 @@ func TestCompletingAReviewCatchesVerdictsTheAuthorEditedAway(t *testing.T) {
 		map[string]any{"item_id": ids[0], "reason": "증적을 보완하세요", "assignee_id": requesterID, "due_date": "2030-03-31"}, http.StatusCreated, "change request")
 	step(requester, http.MethodPut, "/api/v1/review-requests/"+reviewID+"/responses/"+ids[1],
 		map[string]any{"applicability": "Y", "self_assessment": "COMPLIANT", "current_state": "판정 이후에 답을 바꿨습니다"}, http.StatusOK, "rewrite a judged item")
+	// Evidence adequacy is part of the verdict too, so a file that arrives
+	// after the judgement invalidates it exactly as a rewritten answer does.
+	if res := requester.upload("/api/v1/review-requests/"+reviewID+"/items/"+ids[2]+"/evidences", "증적.txt", "판정 이후에 올린 증적"); res.status != http.StatusCreated {
+		t.Fatalf("attaching evidence to a judged item: %d %s", res.status, res.body)
+	}
 
 	var changeID string
 	if err := h.db.Pool.QueryRow(ctx, `SELECT id FROM change_requests WHERE review_request_id=$1`, reviewID).Scan(&changeID); err != nil {
@@ -427,8 +432,23 @@ func TestCompletingAReviewCatchesVerdictsTheAuthorEditedAway(t *testing.T) {
 
 	// The screen has to say so before the reviewer presses the button.
 	summary, _ := reviewer.do(http.MethodGet, "/api/v1/review-requests/"+reviewID, nil).json()["result_summary"].(map[string]any)
-	if got, _ := summary["stale_verdicts"].(float64); got != 1 {
-		t.Errorf("the review summary reports %v edited-since-judged items, want 1", summary["stale_verdicts"])
+	if got, _ := summary["stale_verdicts"].(float64); got != 2 {
+		t.Errorf("the review summary reports %v edited-since-judged items, want 2", summary["stale_verdicts"])
+	}
+	// The item list has to point at them, or the reviewer is told a number
+	// and left to find the items by hand.
+	var reread []map[string]any
+	if err := json.Unmarshal([]byte(reviewer.do(http.MethodGet, "/api/v1/review-requests/"+reviewID+"/items", nil).body), &reread); err != nil {
+		t.Fatal(err)
+	}
+	flagged := map[string]bool{}
+	for _, item := range reread {
+		if stale, _ := item["stale_verdict"].(bool); stale {
+			flagged[item["id"].(string)] = true
+		}
+	}
+	if !flagged[ids[1]] || !flagged[ids[2]] || len(flagged) != 2 {
+		t.Errorf("the item list flags %v, want the rewritten and the re-evidenced item", flagged)
 	}
 
 	res := reviewer.do(http.MethodPost, "/api/v1/review-requests/"+reviewID+"/complete-review",
@@ -437,20 +457,22 @@ func TestCompletingAReviewCatchesVerdictsTheAuthorEditedAway(t *testing.T) {
 		t.Fatalf("completing a review over an answer edited after judgement: %d %s", res.status, res.body)
 	}
 	fault, _ := res.json()["error"].(map[string]any)
-	if !strings.Contains(fmt.Sprint(fault["message"]), "검토 후 답변이 바뀐 항목 1건") {
+	if !strings.Contains(fmt.Sprint(fault["message"]), "검토 후 답변이 바뀐 항목 2건") {
 		t.Errorf("the refusal does not say what is left: %v", fault["message"])
 	}
 	if details, _ := fault["details"].(map[string]any); details != nil {
-		if got, _ := details["stale_verdicts"].(float64); got != 1 {
-			t.Errorf("stale_verdicts = %v, want 1", details["stale_verdicts"])
+		if got, _ := details["stale_verdicts"].(float64); got != 2 {
+			t.Errorf("stale_verdicts = %v, want 2", details["stale_verdicts"])
 		}
 	} else {
 		t.Errorf("the refusal carries no counts: %v", fault)
 	}
 
 	// Re-reading the item and judging it again is the whole remedy.
-	step(reviewer, http.MethodPut, "/api/v1/review-requests/"+reviewID+"/review-results/"+ids[1],
-		map[string]any{"final_applicability": "Y", "result": "COMPLIANT", "opinion": "바뀐 답변도 적합"}, http.StatusOK, "re-judge the edited item")
+	for _, itemID := range []string{ids[1], ids[2]} {
+		step(reviewer, http.MethodPut, "/api/v1/review-requests/"+reviewID+"/review-results/"+itemID,
+			map[string]any{"final_applicability": "Y", "result": "COMPLIANT", "opinion": "바뀐 내용도 적합", "evidence_adequacy": "ADEQUATE"}, http.StatusOK, "re-judge the changed item")
+	}
 	step(reviewer, http.MethodPost, "/api/v1/review-requests/"+reviewID+"/complete-review",
 		map[string]any{"final_opinion": "적합", "final_result": "APPROVED"}, http.StatusOK, "complete review after re-judging")
 }

@@ -11,8 +11,9 @@ const responseFrom = (item: ChecklistItem): ResponseDraft => ({ answer: item.res
 
 // A change request hands the review back to the author, who may edit any item
 // while it is there -- not only the one that was asked about. A verdict older
-// than the answer it judged is stale, and nothing else on this screen says so.
-const answerChangedSinceReview = (item: ChecklistItem) => { const judged = String(item.review_result?.result || ''); const answered = String(item.response?.updated_at || ''); const decided = String(item.review_result?.updated_at || ''); return Boolean(judged && answered && decided) && new Date(answered).getTime() > new Date(decided).getTime() }
+// than the answer or the evidence it judged is stale; the server decides that,
+// so the badge, the filter and the completion guard cannot drift apart.
+const answerChangedSinceReview = (item: ChecklistItem) => item.stale_verdict === true
 
 export default function ReviewDetail() {
   const save = useDownload()

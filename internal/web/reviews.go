@@ -494,7 +494,7 @@ func (s *Server) getReviewRequest(w http.ResponseWriter, r *http.Request) {
 	var out map[string]any
 	_ = json.Unmarshal(data, &out)
 	var total, compliant, conditional, insufficient, nonCompliant, na, followUp, staleVerdicts int
-	_ = s.Store.Pool.QueryRow(r.Context(), `SELECT count(*),count(*) FILTER(WHERE rr.result='COMPLIANT'),count(*) FILTER(WHERE rr.result='CONDITIONAL'),count(*) FILTER(WHERE rr.result='INSUFFICIENT'),count(*) FILTER(WHERE rr.result='NON_COMPLIANT'),count(*) FILTER(WHERE rr.result='NA_ACCEPTED' OR resp.applicability='N/A'),count(*) FILTER(WHERE COALESCE(rr.follow_up,'')<>''),count(*) FILTER(WHERE COALESCE(rr.result,'')<>'' AND resp.updated_at > rr.updated_at) FROM submissions sub JOIN submission_items si ON si.submission_id=sub.id LEFT JOIN responses resp ON resp.submission_item_id=si.id LEFT JOIN review_results rr ON rr.submission_item_id=si.id WHERE sub.review_request_id=$1 AND sub.revision=(SELECT max(revision) FROM submissions WHERE review_request_id=$1)`, r.PathValue("id")).Scan(&total, &compliant, &conditional, &insufficient, &nonCompliant, &na, &followUp, &staleVerdicts)
+	_ = s.Store.Pool.QueryRow(r.Context(), `SELECT count(*),count(*) FILTER(WHERE rr.result='COMPLIANT'),count(*) FILTER(WHERE rr.result='CONDITIONAL'),count(*) FILTER(WHERE rr.result='INSUFFICIENT'),count(*) FILTER(WHERE rr.result='NON_COMPLIANT'),count(*) FILTER(WHERE rr.result='NA_ACCEPTED' OR resp.applicability='N/A'),count(*) FILTER(WHERE COALESCE(rr.follow_up,'')<>''),count(*) FILTER(WHERE `+staleVerdictSQL+`) FROM submissions sub JOIN submission_items si ON si.submission_id=sub.id LEFT JOIN responses resp ON resp.submission_item_id=si.id LEFT JOIN review_results rr ON rr.submission_item_id=si.id WHERE sub.review_request_id=$1 AND sub.revision=(SELECT max(revision) FROM submissions WHERE review_request_id=$1)`, r.PathValue("id")).Scan(&total, &compliant, &conditional, &insufficient, &nonCompliant, &na, &followUp, &staleVerdicts)
 	naRatio := 0.0
 	if total > 0 {
 		naRatio = float64(na) * 100 / float64(total)
@@ -633,18 +633,25 @@ func (s *Server) reviewHistory(w http.ResponseWriter, r *http.Request) {
 	jsonResponse(w, 200, map[string]any{"items": items, "total": total, "limit": limit, "offset": offset, "has_more": int64(offset+len(items)) < total})
 }
 
+// A verdict describes the answer and the evidence the reviewer had in front of
+// them, and a change request hands the whole review back to the author, who can
+// move either. Judged before the last edit means judged against something that
+// is no longer there, so the completion guard, the summary and the item list
+// all read staleness the same way.
+const staleVerdictSQL = `COALESCE(rr.result,'')<>'' AND GREATEST(resp.updated_at,COALESCE(evidence_touched_at(si.id),resp.updated_at)) > rr.updated_at`
+
 func (s *Server) listSubmissionItems(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 	if !s.canAccessReview(r.Context(), session(r), id) {
 		problem(w, 404, "NOT_FOUND", "심의를 찾을 수 없습니다.", nil)
 		return
 	}
-	rows, err := s.Store.Pool.Query(r.Context(), `SELECT si.id,si.template_name,si.template_version,si.item_code,si.section,si.category,si.title,si.question,si.guide,si.legal_basis,si.example,si.severity,si.required,si.answer_type,si.evidence_required,si.options_json,si.sort_order,COALESCE(to_jsonb(resp),'{}'),COALESCE(to_jsonb(rr),'{}'),COALESCE((SELECT jsonb_agg((to_jsonb(e)-'stored_filename')||jsonb_build_object('uploaded_by_name',eu.display_name) ORDER BY e.created_at) FROM evidences e JOIN users eu ON eu.id=e.uploaded_by WHERE e.submission_item_id=si.id AND e.deleted_at IS NULL),'[]'),COALESCE((SELECT jsonb_agg(to_jsonb(cr) ORDER BY cr.created_at) FROM change_requests cr WHERE cr.submission_item_id=si.id),'[]'),COALESCE((SELECT jsonb_agg(to_jsonb(c)||jsonb_build_object('author_name',u.display_name) ORDER BY c.created_at) FROM comments c JOIN users u ON u.id=c.author_id WHERE c.submission_item_id=si.id),'[]') FROM submissions sub JOIN submission_items si ON si.submission_id=sub.id LEFT JOIN responses resp ON resp.submission_item_id=si.id LEFT JOIN review_results rr ON rr.submission_item_id=si.id WHERE sub.review_request_id=$1 AND sub.revision=(SELECT max(revision) FROM submissions WHERE review_request_id=$1) ORDER BY si.template_name,si.sort_order`, id)
+	rows, err := s.Store.Pool.Query(r.Context(), `SELECT si.id,si.template_name,si.template_version,si.item_code,si.section,si.category,si.title,si.question,si.guide,si.legal_basis,si.example,si.severity,si.required,si.answer_type,si.evidence_required,si.options_json,si.sort_order,COALESCE(to_jsonb(resp),'{}'),COALESCE(to_jsonb(rr),'{}'),COALESCE((SELECT jsonb_agg((to_jsonb(e)-'stored_filename')||jsonb_build_object('uploaded_by_name',eu.display_name) ORDER BY e.created_at) FROM evidences e JOIN users eu ON eu.id=e.uploaded_by WHERE e.submission_item_id=si.id AND e.deleted_at IS NULL),'[]'),COALESCE((SELECT jsonb_agg(to_jsonb(cr) ORDER BY cr.created_at) FROM change_requests cr WHERE cr.submission_item_id=si.id),'[]'),COALESCE((SELECT jsonb_agg(to_jsonb(c)||jsonb_build_object('author_name',u.display_name) ORDER BY c.created_at) FROM comments c JOIN users u ON u.id=c.author_id WHERE c.submission_item_id=si.id),'[]'),COALESCE(`+staleVerdictSQL+`,false) FROM submissions sub JOIN submission_items si ON si.submission_id=sub.id LEFT JOIN responses resp ON resp.submission_item_id=si.id LEFT JOIN review_results rr ON rr.submission_item_id=si.id WHERE sub.review_request_id=$1 AND sub.revision=(SELECT max(revision) FROM submissions WHERE review_request_id=$1) ORDER BY si.template_name,si.sort_order`, id)
 	if err != nil {
 		s.fault(w, r, "QUERY_FAILED", "체크리스트를 불러오지 못했습니다.", err)
 		return
 	}
-	items, err := scanDynamic(rows, []string{"id", "template_name", "template_version", "item_code", "section", "category", "title", "question", "guide", "legal_basis", "example", "severity", "required", "answer_type", "evidence_required", "options", "sort_order", "response", "review_result", "evidences", "change_requests", "comments"})
+	items, err := scanDynamic(rows, []string{"id", "template_name", "template_version", "item_code", "section", "category", "title", "question", "guide", "legal_basis", "example", "severity", "required", "answer_type", "evidence_required", "options", "sort_order", "response", "review_result", "evidences", "change_requests", "comments", "stale_verdict"})
 	if err != nil {
 		s.fault(w, r, "QUERY_FAILED", "목록을 불러오지 못했습니다.", err)
 		return
@@ -1459,7 +1466,7 @@ func (s *Server) completeReview(w http.ResponseWriter, r *http.Request) {
 	// while it is back -- not only the one that was asked about. A verdict
 	// recorded before that edit was made against an answer that no longer
 	// exists, so counting it as reviewed is a false all-clear.
-	if err := s.Store.Pool.QueryRow(r.Context(), `SELECT count(*) FROM submissions sub JOIN submission_items si ON si.submission_id=sub.id JOIN review_results rr ON rr.submission_item_id=si.id JOIN responses resp ON resp.submission_item_id=si.id WHERE sub.review_request_id=$1 AND sub.revision=(SELECT max(revision) FROM submissions WHERE review_request_id=$1) AND rr.result<>'' AND resp.updated_at > rr.updated_at`, id).Scan(&stale); err != nil {
+	if err := s.Store.Pool.QueryRow(r.Context(), `SELECT count(*) FROM submissions sub JOIN submission_items si ON si.submission_id=sub.id JOIN review_results rr ON rr.submission_item_id=si.id JOIN responses resp ON resp.submission_item_id=si.id WHERE sub.review_request_id=$1 AND sub.revision=(SELECT max(revision) FROM submissions WHERE review_request_id=$1) AND `+staleVerdictSQL, id).Scan(&stale); err != nil {
 		s.fault(w, r, "QUERY_FAILED", "남은 항목을 확인하지 못해 검토 완료를 중단했습니다.", err)
 		return
 	}
