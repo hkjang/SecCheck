@@ -11,6 +11,8 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
@@ -31,6 +33,9 @@ type harness struct {
 	t      *testing.T
 	server *httptest.Server
 	db     *store.Store
+	// dataDir is where evidence ciphertext lands, so a test can take a file
+	// away the way a partly restored volume would.
+	dataDir string
 }
 
 type client struct {
@@ -47,10 +52,11 @@ func newHarness(t *testing.T) *harness {
 	if err != nil {
 		t.Fatal(err)
 	}
-	handler := api.NewServer(api.Options{Store: db, Auth: auth.New(db, box), Box: box, Version: "test", WebDir: t.TempDir(), DataDir: t.TempDir()})
+	dataDir := t.TempDir()
+	handler := api.NewServer(api.Options{Store: db, Auth: auth.New(db, box), Box: box, Version: "test", WebDir: t.TempDir(), DataDir: dataDir})
 	server := httptest.NewServer(handler)
 	t.Cleanup(server.Close)
-	h := &harness{t: t, server: server, db: db}
+	h := &harness{t: t, server: server, db: db, dataDir: dataDir}
 	// Publish the baseline workbook so the Rule Engine has something to assign,
 	// exactly as the service does on first start.
 	owner := testdb.Bootstrap(t, db, "seed-owner")
@@ -3807,6 +3813,72 @@ func TestAnExportedReviewCarriesItsCommitments(t *testing.T) {
 	for _, want := range []string{"조치 기한", "2030-09-30", "3개월 내 WAF 정책 보완"} {
 		if !strings.Contains(cells, want) {
 			t.Errorf("the workbook is missing %q", want)
+		}
+	}
+}
+
+// One unreadable evidence file used to end the archive where it stood: a
+// well-formed ZIP missing every file after the bad one, with nothing in it to
+// say so.
+func TestAZipExportSurvivesOneUnreadableFile(t *testing.T) {
+	h := newHarness(t)
+	h.login(adminOf(h))
+	h.user("zip-author", "REQUESTER")
+	author := h.login("zip-author")
+	reviewID := author.createReview("아카이브 서비스")
+	items := []map[string]any{}
+	if err := json.Unmarshal([]byte(author.do(http.MethodGet, "/api/v1/review-requests/"+reviewID+"/items", nil).body), &items); err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+	for i := 0; i < 3; i++ {
+		itemID := items[i]["id"].(string)
+		name := fmt.Sprintf("증적-%d.txt", i+1)
+		if res := author.upload(fmt.Sprintf("/api/v1/review-requests/%s/items/%s/evidences", reviewID, itemID), name, strings.Repeat("본문", 20)); res.status != http.StatusCreated {
+			t.Fatalf("uploading %s: %d %s", name, res.status, res.body)
+		}
+	}
+	// The middle file loses its ciphertext, the way a partially restored
+	// volume would.
+	var stored string
+	if err := h.db.Pool.QueryRow(ctx, `SELECT stored_filename FROM evidences e JOIN submission_items si ON si.id=e.submission_item_id JOIN submissions sub ON sub.id=si.submission_id
+                WHERE sub.review_request_id=$1 AND e.original_filename='증적-2.txt'`, reviewID).Scan(&stored); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(filepath.Join(h.dataDir, "evidence", stored[:2], stored)); err != nil {
+		t.Skipf("cannot reach the evidence blob in this harness: %v", err)
+	}
+
+	archive := author.do(http.MethodGet, "/api/v1/review-requests/"+reviewID+"/export/zip", nil)
+	if archive.status != http.StatusOK {
+		t.Fatalf("the archive returned %d", archive.status)
+	}
+	reader, err := zip.NewReader(strings.NewReader(archive.body), int64(len(archive.body)))
+	if err != nil {
+		t.Fatalf("the export is not a valid archive: %v", err)
+	}
+	names := map[string]bool{}
+	for _, file := range reader.File {
+		names[file.Name] = true
+	}
+	if !names["evidence/증적-1.txt"] || !names["evidence/증적-3.txt"] {
+		t.Errorf("the readable files did not all reach the archive: %v", names)
+	}
+	if !names["evidence/EXCLUDED.txt"] {
+		t.Fatalf("nothing in the archive says a file was left out: %v", names)
+	}
+	for _, file := range reader.File {
+		if file.Name != "evidence/EXCLUDED.txt" {
+			continue
+		}
+		rc, err := file.Open()
+		if err != nil {
+			t.Fatal(err)
+		}
+		note, _ := io.ReadAll(rc)
+		rc.Close()
+		if !strings.Contains(string(note), "증적-2.txt") {
+			t.Errorf("the note does not name the file that could not be read: %s", note)
 		}
 	}
 }

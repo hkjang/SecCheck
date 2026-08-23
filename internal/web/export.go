@@ -331,13 +331,17 @@ func (s *Server) writeZIPExport(w http.ResponseWriter, r *http.Request, data exp
 			return
 		}
 		if _, _, readErr := s.readEvidenceStream(entry, stored, key, []byte(fmt.Sprintf("evidence:%s:%d", id, version))); readErr != nil {
+			// Returning here closed the archive where it stood: a well-formed
+			// ZIP, missing every file after the bad one, with nothing to say
+			// so. One unreadable file is reported and the rest are packed.
 			s.Store.Log(r.Context(), "ERROR", requestID(r), "export", "evidence could not be added to the archive", map[string]any{"evidence_id": id, "error": readErr.Error()})
-			return
+			skipped = append(skipped, safe+" (읽을 수 없어 내용이 불완전합니다)")
+			continue
 		}
 	}
 	if len(skipped) > 0 {
 		if note, noteErr := zw.Create("evidence/EXCLUDED.txt"); noteErr == nil {
-			_, _ = io.WriteString(note, "다음 증적은 악성코드 검사 상태 또는 키 문제로 포함되지 않았습니다.\n\n"+strings.Join(skipped, "\n")+"\n")
+			_, _ = io.WriteString(note, "다음 증적은 악성코드 검사 상태, 키 문제 또는 읽기 실패로 포함되지 않았거나 불완전합니다.\n\n"+strings.Join(skipped, "\n")+"\n")
 		}
 	}
 }
