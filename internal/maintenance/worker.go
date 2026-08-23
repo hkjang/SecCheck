@@ -235,6 +235,27 @@ func (w *Worker) alertStalledQueue(ctx context.Context) int64 {
 	return sent
 }
 
+// roleHolder returns the first candidate who is not only still with the
+// organisation but still holds the role the reminder is about. An account
+// keeps working after the role is taken away, so an "active" reviewer can be
+// somebody every review action refuses; chasing them leaves the review looking
+// owned while nobody can move it.
+func (w *Worker) roleHolder(ctx context.Context, role string, candidates ...string) string {
+	for _, id := range candidates {
+		if strings.TrimSpace(id) == "" {
+			continue
+		}
+		var ok bool
+		if err := w.Store.Pool.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM user_roles ur JOIN users u ON u.id=ur.user_id WHERE ur.user_id=$1 AND ur.role_code=$2 AND u.active)`, id, role).Scan(&ok); err != nil {
+			continue
+		}
+		if ok {
+			return id
+		}
+	}
+	return ""
+}
+
 // activeRecipient returns the first candidate who can still act. A reminder
 // addressed to somebody who has left the organisation is worse than none: the
 // item looks chased and nobody is chasing it. These dates fall months after
@@ -387,9 +408,10 @@ func (w *Worker) remindApproachingOpenDates(ctx context.Context) int64 {
 		// the requester is the one who has to decide whether the launch moves.
 		holder := ""
 		if item.status == "APPROVAL_PENDING" {
-			holder, _ = w.activeRecipient(ctx, item.approver, item.reviewer)
-		} else {
-			holder, _ = w.activeRecipient(ctx, item.reviewer)
+			holder = w.roleHolder(ctx, "APPROVER", item.approver)
+		}
+		if holder == "" {
+			holder = w.roleHolder(ctx, "SECURITY_REVIEWER", item.reviewer)
 		}
 		requester, _ := w.activeRecipient(ctx, item.requester)
 		for _, recipient := range dedupe(requester, holder) {
@@ -485,11 +507,16 @@ func (w *Worker) remindStalledReviews(ctx context.Context) int64 {
 		// flood that teaches people to ignore the alert.
 		recipient := ""
 		if item.status == "APPROVAL_PENDING" {
-			recipient, _ = w.activeRecipient(ctx, item.approver, item.reviewer)
+			recipient = w.roleHolder(ctx, "APPROVER", item.approver)
+			if recipient == "" {
+				recipient = w.roleHolder(ctx, "SECURITY_REVIEWER", item.reviewer)
+			}
 		} else {
-			recipient, _ = w.activeRecipient(ctx, item.reviewer)
+			recipient = w.roleHolder(ctx, "SECURITY_REVIEWER", item.reviewer)
 		}
 		if recipient == "" {
+			// Nobody who can act owns it, so it belongs to the group -- the
+			// same place a review with no reviewer at all goes.
 			unclaimed = append(unclaimed, item)
 			continue
 		}

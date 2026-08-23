@@ -486,3 +486,76 @@ func TestCompletingAReviewCatchesVerdictsTheAuthorEditedAway(t *testing.T) {
 	step(reviewer, http.MethodPost, "/api/v1/review-requests/"+reviewID+"/complete-review",
 		map[string]any{"final_opinion": "적합", "final_result": "APPROVED"}, http.StatusOK, "complete review after re-judging")
 }
+
+// A reviewer who loses the role -- a transfer, a leaver, a corrected mistake --
+// keeps every review they were assigned. They are refused every action on it,
+// and because the queue treats an assigned review as somebody else's business,
+// no other reviewer sees it either. Nothing fails, so nothing is noticed: the
+// review simply stops.
+func TestAReviewLeftWithAReviewerWhoCannotActGoesBackToTheQueue(t *testing.T) {
+	h := newHarness(t)
+	ctx := context.Background()
+	h.user("orphan-requester", "REQUESTER")
+	leaverID := h.user("orphan-leaver", "SECURITY_REVIEWER")
+	h.user("orphan-successor", "SECURITY_REVIEWER")
+	requester, successor := h.login("orphan-requester"), h.login("orphan-successor")
+
+	reviewID := requester.createReview("담당자 이탈 서비스")
+	var items []map[string]any
+	if err := json.Unmarshal([]byte(requester.do(http.MethodGet, "/api/v1/review-requests/"+reviewID+"/items", nil).body), &items); err != nil {
+		t.Fatal(err)
+	}
+	ids := make([]string, 0, len(items))
+	for _, item := range items {
+		ids = append(ids, item["id"].(string))
+	}
+	if _, err := h.db.Pool.Exec(ctx, `UPDATE review_requests SET reviewer_id=$2 WHERE id=$1`, reviewID, leaverID); err != nil {
+		t.Fatal(err)
+	}
+	if res := requester.do(http.MethodPost, "/api/v1/review-requests/"+reviewID+"/responses/bulk",
+		map[string]any{"item_ids": ids, "applicability": "N/A", "na_reason": "해당 없음", "self_assessment": "N/A"}); res.status != http.StatusOK {
+		t.Fatalf("bulk answer: %d %s", res.status, res.body)
+	}
+	if res := requester.do(http.MethodPost, "/api/v1/review-requests/"+reviewID+"/submit", map[string]any{}); res.status != http.StatusOK {
+		t.Fatalf("submit: %d %s", res.status, res.body)
+	}
+
+	mine := func(c *client) bool {
+		t.Helper()
+		body := c.do(http.MethodGet, "/api/v1/review-requests?mine=1&limit=100", nil).json()
+		list, _ := body["items"].([]any)
+		for _, row := range list {
+			if item, _ := row.(map[string]any); item != nil && item["id"] == reviewID {
+				return true
+			}
+		}
+		return false
+	}
+	if mine(successor) {
+		t.Fatal("a review assigned to a working reviewer is already in another reviewer's queue")
+	}
+
+	// The assignment survives the role, which is what makes this silent.
+	if _, err := h.db.Pool.Exec(ctx, `DELETE FROM user_roles WHERE user_id=$1 AND role_code='SECURITY_REVIEWER'`, leaverID); err != nil {
+		t.Fatal(err)
+	}
+	if !mine(successor) {
+		t.Error("a review whose reviewer lost the role is in nobody's queue")
+	}
+	if res := successor.do(http.MethodPost, "/api/v1/review-requests/"+reviewID+"/begin-review", map[string]any{}); res.status != http.StatusOK {
+		t.Fatalf("taking over a stuck review: %d %s", res.status, res.body)
+	}
+	var owner string
+	if err := h.db.Pool.QueryRow(ctx, `SELECT reviewer_id FROM review_requests WHERE id=$1`, reviewID).Scan(&owner); err != nil {
+		t.Fatal(err)
+	}
+	me, _ := successor.do(http.MethodGet, "/api/v1/me", nil).json()["user"].(map[string]any)
+	if successorID, _ := me["id"].(string); owner != successorID {
+		t.Errorf("the review is still assigned to %s after somebody else took it over", owner)
+	}
+	// And with a working owner again it is nobody else's business.
+	detail := successor.do(http.MethodGet, "/api/v1/review-requests/"+reviewID, nil).json()
+	if canAct, _ := detail["reviewer_can_act"].(bool); !canAct {
+		t.Error("the detail still reports the reviewer cannot act after the takeover")
+	}
+}

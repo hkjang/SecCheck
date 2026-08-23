@@ -161,17 +161,28 @@ func (s *Server) listReviewRequests(w http.ResponseWriter, r *http.Request) {
 	jsonResponse(w, 200, map[string]any{"items": items, "total": total, "limit": limit, "offset": offset, "has_more": int64(offset+len(items)) < total})
 }
 
+// stillHolds reports, in SQL, whether the named column points at somebody who
+// can still do the job the review is waiting on: an open account that still
+// holds the role. Losing the role -- a transfer, a leaver, a mistaken edit --
+// otherwise leaves the review pinned to a person who is refused every action on
+// it, and pinned means invisible in every other reviewer's queue. Nobody is
+// stopped, so nobody notices; the review simply stops moving.
+func stillHolds(column, role string) string {
+	return fmt.Sprintf(`EXISTS(SELECT 1 FROM user_roles ur JOIN users u ON u.id=ur.user_id WHERE ur.user_id=%s AND ur.role_code='%s' AND u.active)`, column, role)
+}
+
 // myTurnClause selects the reviews that are waiting on this specific person,
 // which is what the dashboard queue and the "내 차례" filter both mean.
 func myTurnClause(sess auth.Session, n int) string {
 	var branches []string
 	branches = append(branches, fmt.Sprintf(`(review_requests.status IN ('DRAFT','CHANGE_REQUESTED') AND (review_requests.requester_id=$%d OR review_requests.builder_id=$%d OR review_requests.developer_id=$%d OR EXISTS(SELECT 1 FROM review_participants rp WHERE rp.review_request_id=review_requests.id AND rp.user_id=$%d AND rp.participant_role='CONTRIBUTOR')))`, n, n, n, n))
 	if hasAnyRole(sess.User, "SECURITY_REVIEWER") {
-		branches = append(branches, fmt.Sprintf(`(review_requests.status IN ('SUBMITTED','RESUBMITTED') AND (review_requests.reviewer_id IS NULL OR review_requests.reviewer_id=$%d))`, n))
-		branches = append(branches, fmt.Sprintf(`(review_requests.status='REVIEWING' AND review_requests.reviewer_id=$%d)`, n))
+		orphaned := "NOT " + stillHolds("review_requests.reviewer_id", "SECURITY_REVIEWER")
+		branches = append(branches, fmt.Sprintf(`(review_requests.status IN ('SUBMITTED','RESUBMITTED') AND (review_requests.reviewer_id IS NULL OR review_requests.reviewer_id=$%d OR %s))`, n, orphaned))
+		branches = append(branches, fmt.Sprintf(`(review_requests.status='REVIEWING' AND (review_requests.reviewer_id=$%d OR %s))`, n, orphaned))
 	}
 	if hasAnyRole(sess.User, "APPROVER") {
-		branches = append(branches, fmt.Sprintf(`(review_requests.status='APPROVAL_PENDING' AND (review_requests.approver_id IS NULL OR review_requests.approver_id=$%d))`, n))
+		branches = append(branches, fmt.Sprintf(`(review_requests.status='APPROVAL_PENDING' AND (review_requests.approver_id IS NULL OR review_requests.approver_id=$%d OR NOT %s))`, n, stillHolds("review_requests.approver_id", "APPROVER")))
 	}
 	return "(" + strings.Join(branches, " OR ") + ")"
 }
@@ -500,6 +511,13 @@ func (s *Server) getReviewRequest(w http.ResponseWriter, r *http.Request) {
 		naRatio = float64(na) * 100 / float64(total)
 	}
 	out["result_summary"] = map[string]any{"total": total, "compliant": compliant, "conditional": conditional, "insufficient": insufficient, "non_compliant": nonCompliant, "na": na, "na_ratio": naRatio, "follow_up": followUp, "stale_verdicts": staleVerdicts}
+	// The screen has to be able to say that the named reviewer or approver can
+	// no longer act, because until somebody takes the review over it does not
+	// move and nothing else says so.
+	var reviewerCanAct, approverCanAct bool
+	_ = s.Store.Pool.QueryRow(r.Context(), `SELECT `+stillHolds("reviewer_id", "SECURITY_REVIEWER")+`,`+stillHolds("approver_id", "APPROVER")+` FROM review_requests WHERE id=$1`, r.PathValue("id")).Scan(&reviewerCanAct, &approverCanAct)
+	out["reviewer_can_act"] = reviewerCanAct
+	out["approver_can_act"] = approverCanAct
 	out["template_versions"] = s.snapshotTemplateVersions(r, r.PathValue("id"))
 	_ = s.Store.Audit(r.Context(), auditFrom(r, "VIEW_SUBMISSION", "REVIEW_REQUEST", r.PathValue("id"), nil, nil))
 	jsonResponse(w, 200, out)
@@ -1102,7 +1120,11 @@ func (s *Server) beginReview(w http.ResponseWriter, r *http.Request) {
 		problem(w, 403, "SELF_REVIEW_FORBIDDEN", "본인이 신청한 심의는 본인이 검토할 수 없습니다. 다른 검토자가 맡아야 합니다.", nil)
 		return
 	}
-	tag, err := s.Store.Pool.Exec(r.Context(), `UPDATE review_requests SET status='REVIEWING',reviewer_id=COALESCE(reviewer_id,$2),updated_at=now() WHERE id=$1 AND status IN ('SUBMITTED','RESUBMITTED') AND (reviewer_id IS NULL OR reviewer_id=$2)`, id, sess.User.ID)
+	// A review whose named reviewer can no longer act is free for the taking,
+	// and taking it has to move the name too -- otherwise every later step
+	// still asks the person who left.
+	orphaned := "NOT " + stillHolds("reviewer_id", "SECURITY_REVIEWER")
+	tag, err := s.Store.Pool.Exec(r.Context(), `UPDATE review_requests SET status='REVIEWING',reviewer_id=CASE WHEN reviewer_id IS NULL OR `+orphaned+` THEN $2 ELSE reviewer_id END,updated_at=now() WHERE id=$1 AND ((status IN ('SUBMITTED','RESUBMITTED') AND (reviewer_id IS NULL OR reviewer_id=$2 OR `+orphaned+`)) OR (status='REVIEWING' AND `+orphaned+`))`, id, sess.User.ID)
 	if err != nil || tag.RowsAffected() == 0 {
 		problem(w, 409, "STATE_CONFLICT", "심의를 시작할 수 없습니다.", nil)
 		return
@@ -1635,7 +1657,7 @@ func (s *Server) decideApproval(w http.ResponseWriter, r *http.Request, decision
 		return
 	}
 	defer tx.Rollback(r.Context())
-	tag, err := tx.Exec(r.Context(), `UPDATE review_requests SET status=$2,approver_id=COALESCE(approver_id,$3),final_result=CASE WHEN $2='REJECTED' THEN 'REJECTED' ELSE final_result END,approved_at=CASE WHEN $2='APPROVED' THEN now() ELSE approved_at END,updated_at=now() WHERE id=$1 AND status='APPROVAL_PENDING' AND (approver_id=$3 OR (approver_id IS NULL AND $4))`, id, decision, sess.User.ID, anyApprover)
+	tag, err := tx.Exec(r.Context(), `UPDATE review_requests SET status=$2,approver_id=CASE WHEN approver_id IS NULL OR NOT `+stillHolds("approver_id", "APPROVER")+` THEN $3 ELSE approver_id END,final_result=CASE WHEN $2='REJECTED' THEN 'REJECTED' ELSE final_result END,approved_at=CASE WHEN $2='APPROVED' THEN now() ELSE approved_at END,updated_at=now() WHERE id=$1 AND status='APPROVAL_PENDING' AND (approver_id=$3 OR ((approver_id IS NULL OR NOT `+stillHolds("approver_id", "APPROVER")+`) AND $4))`, id, decision, sess.User.ID, anyApprover)
 	if err != nil || tag.RowsAffected() == 0 {
 		problem(w, 409, "STATE_CONFLICT", "승인 처리할 수 없습니다.", nil)
 		return

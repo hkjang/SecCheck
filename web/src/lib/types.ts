@@ -31,6 +31,8 @@ export type Review = {
   approver_id?: string
   requester_name?: string
   reviewer_name?: string
+  reviewer_can_act?: boolean
+  approver_can_act?: boolean
   approver_name?: string
   final_result?: string
   final_opinion?: string

@@ -761,6 +761,9 @@ func TestTheOpenDateIsChasedWhileThereIsStillTime(t *testing.T) {
 	}
 	reviewer := store.NewID()
 	exec(`INSERT INTO users(id,username,display_name,auth_source,active) VALUES($1,'launch-reviewer','검토자','local',true)`, reviewer)
+	// Holding the review means holding the role: the warning goes to whoever
+	// can actually finish it.
+	exec(`INSERT INTO user_roles(user_id,role_code) VALUES($1,'SECURITY_REVIEWER')`, reviewer)
 	review := func(number, status string, openIn int, withReviewer bool) string {
 		t.Helper()
 		id := store.NewID()
@@ -818,5 +821,54 @@ func TestTheOpenDateIsChasedWhileThereIsStillTime(t *testing.T) {
 	worker.Sweep(ctx)
 	if got := notices(requester); len(got) != 2 {
 		t.Errorf("a second sweep raised the requester's count to %d", len(got))
+	}
+}
+
+// An account keeps working when the role is taken away, so "still active" is
+// not the same as "can still act". A stalled-review reminder addressed to a
+// reviewer who no longer holds the role chases somebody the service refuses,
+// and the review never reaches the reviewers who could take it.
+func TestStalledRemindersSkipAnAssigneeWhoLostTheRole(t *testing.T) {
+	db := testdb.New(t)
+	ctx := context.Background()
+	requester := testdb.Bootstrap(t, db, "role-requester")
+	worker := maintenance.New(db, nil)
+	exec := func(sql string, args ...any) {
+		t.Helper()
+		if _, err := db.Pool.Exec(ctx, sql, args...); err != nil {
+			t.Fatalf("%s: %v", sql, err)
+		}
+	}
+	leaver, successor := store.NewID(), store.NewID()
+	for _, person := range []struct{ id, name string }{{leaver, "role-leaver"}, {successor, "role-successor"}} {
+		exec(`INSERT INTO users(id,username,display_name,auth_source,active) VALUES($1,$2,$2,'local',true)`, person.id, person.name)
+		exec(`INSERT INTO user_roles(user_id,role_code) VALUES($1,'SECURITY_REVIEWER')`, person.id)
+	}
+	reviewID := store.NewID()
+	exec(`INSERT INTO review_requests(id,review_number,service_name,description,service_type,change_type,builder_id,developer_id,department,requester_id,exposure,status,reviewer_id,updated_at)
+              VALUES($1,'SR-ROLE','s','d','WEB','NEW',$2,$2,'보안팀',$2,'INTERNAL','SUBMITTED',$3,now()-make_interval(days=>7))`, reviewID, requester, leaver)
+	exec(`DELETE FROM user_roles WHERE user_id=$1 AND role_code='SECURITY_REVIEWER'`, leaver)
+
+	worker.Sweep(ctx)
+	count := func(recipient string) int {
+		t.Helper()
+		var n int
+		if err := db.Pool.QueryRow(ctx, `SELECT count(*) FROM notifications WHERE recipient_id=$1 AND event_type='REVIEW_STALLED'`, recipient).Scan(&n); err != nil {
+			t.Fatal(err)
+		}
+		return n
+	}
+	if got := count(leaver); got != 0 {
+		t.Errorf("%d reminders were sent to a reviewer who can no longer act on the review", got)
+	}
+	if got := count(successor); got != 1 {
+		t.Errorf("the reviewers who could take it over received %d reminders, want 1", got)
+	}
+	var body string
+	if err := db.Pool.QueryRow(ctx, `SELECT body FROM notifications WHERE recipient_id=$1 AND event_type='REVIEW_STALLED'`, successor).Scan(&body); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(body, "SR-ROLE") {
+		t.Errorf("the reminder does not name the stuck review: %q", body)
 	}
 }
