@@ -551,6 +551,15 @@ func csvText(v string) string {
 // since. `?full=1` forces the complete pass.
 func (s *Server) verifyAudit(w http.ResponseWriter, r *http.Request) {
 	full := r.URL.Query().Get("full") == "1"
+	if full {
+		// Re-hashing every event ever written takes minutes once an
+		// installation has run for years, and the response deadline meant for
+		// ordinary requests would cut the answer off exactly when the chain is
+		// long enough to be worth proving.
+		if rc := http.NewResponseController(w); rc != nil {
+			_ = rc.SetWriteDeadline(time.Now().Add(30 * time.Minute))
+		}
+	}
 	var fromSequence int64
 	previous := ""
 	if !full {

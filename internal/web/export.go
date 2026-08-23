@@ -294,6 +294,12 @@ func (s *Server) writeZIPExport(w http.ResponseWriter, r *http.Request, data exp
 	}
 	defer rows.Close()
 
+	// An archive of a review with many attachments takes longer to write than
+	// the deadline meant for ordinary responses, and being cut off mid-stream
+	// leaves an archive that cannot be opened.
+	if rc := http.NewResponseController(w); rc != nil {
+		_ = rc.SetWriteDeadline(time.Now().Add(15 * time.Minute))
+	}
 	w.Header().Set("Content-Type", "application/zip")
 	w.Header().Set("Content-Disposition", `attachment; filename*=UTF-8''`+urlEncode(base+".zip"))
 	zw := zip.NewWriter(w)

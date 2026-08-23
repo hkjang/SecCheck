@@ -3950,3 +3950,37 @@ func TestAFailedSSOStartReturnsToTheSignInScreen(t *testing.T) {
 		t.Errorf("the failed start was recorded %d times", failures)
 	}
 }
+
+// The server's response deadlines are sized for a page of JSON. Evidence
+// transfers and archives are not that, and being cut off at the deadline is
+// indistinguishable from a broken file at the other end.
+func TestLongTransfersGetTheirOwnDeadline(t *testing.T) {
+	sources := map[string][]string{
+		// Both upload paths read the body through one helper, which is where
+		// the read deadline is lifted.
+		"internal/web/evidence.go": {"readAndValidateEvidence", "downloadEvidence"},
+		"internal/web/export.go":   {"writeZIPExport"},
+		"internal/web/admin.go":    {"verifyAudit"},
+	}
+	for file, functions := range sources {
+		body, err := os.ReadFile(filepath.Join("..", "..", file))
+		if err != nil {
+			t.Fatal(err)
+		}
+		src := string(body)
+		for _, name := range functions {
+			start := strings.Index(src, "func (s *Server) "+name+"(")
+			if start < 0 {
+				t.Errorf("%s no longer contains %s", file, name)
+				continue
+			}
+			end := strings.Index(src[start+10:], "\nfunc ")
+			if end < 0 {
+				end = len(src) - start - 10
+			}
+			if !strings.Contains(src[start:start+10+end], "SetWriteDeadline") && !strings.Contains(src[start:start+10+end], "SetReadDeadline") {
+				t.Errorf("%s does not extend its deadline, so a slow link cuts it off", name)
+			}
+		}
+	}
+}

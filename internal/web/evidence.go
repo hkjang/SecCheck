@@ -16,6 +16,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/hkjang/SecCheck/internal/store"
 
@@ -28,6 +29,11 @@ type uploadSettings struct {
 	ClamAVEnabled     bool     `json:"clamav_enabled"`
 	ClamAVAddress     string   `json:"clamav_address"`
 }
+
+// uploadWindow is how long a transfer of evidence may take end to end. It is
+// generous on purpose: the alternative is a size limit that only works on a
+// fast network.
+const uploadWindow = 15 * time.Minute
 
 func (s *Server) uploadEvidence(w http.ResponseWriter, r *http.Request) {
 	reviewID, itemID := r.PathValue("id"), r.PathValue("itemID")
@@ -236,6 +242,11 @@ func (s *Server) downloadEvidence(w http.ResponseWriter, r *http.Request) {
 		s.fault(w, r, "KEY_UNAVAILABLE", "증적 암호화 키를 사용할 수 없습니다.", err)
 		return
 	}
+	// Sending the file back has the same problem as receiving it: the global
+	// write deadline is sized for a page, not for a download over a slow link.
+	if rc := http.NewResponseController(w); rc != nil {
+		_ = rc.SetWriteDeadline(time.Now().Add(uploadWindow))
+	}
 	w.Header().Set("Content-Type", mime)
 	w.Header().Set("Content-Disposition", `attachment; filename*=UTF-8''`+urlEncode(name))
 	w.Header().Set("Content-Length", fmt.Sprint(size))
@@ -302,6 +313,15 @@ type evidenceUpload struct {
 const spoolThreshold = 8 << 20
 
 func (s *Server) readAndValidateEvidence(w http.ResponseWriter, r *http.Request) (*evidenceUpload, error) {
+	// The server's global read timeout is meant for ordinary requests; an
+	// evidence file is not one. A 25MB upload over a site-to-site link takes
+	// longer than that, and the upload failed at the deadline no matter how
+	// well it was going. The deadline is lifted for the body of this request
+	// only, with the size cap below doing the work of bounding it.
+	if rc := http.NewResponseController(w); rc != nil {
+		_ = rc.SetReadDeadline(time.Now().Add(uploadWindow))
+		_ = rc.SetWriteDeadline(time.Now().Add(uploadWindow))
+	}
 	var cfg uploadSettings
 	_, err := s.Store.Setting(r.Context(), "upload", &cfg)
 	if err != nil {
