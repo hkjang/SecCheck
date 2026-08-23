@@ -3400,3 +3400,65 @@ func TestAChangeRequestHasToSayWhenItIsDue(t *testing.T) {
 		t.Fatalf("a dated change request was refused: %d %s", res.status, res.body)
 	}
 }
+
+// The user guide has always described adding a co-author or a read-only
+// participant to a review. Participants could only be added through the API,
+// and there was no way to read them back or take access away again.
+func TestReviewParticipantsCanBeSeenAndRemoved(t *testing.T) {
+	h := newHarness(t)
+	h.login(adminOf(h))
+	h.user("crew-owner", "REQUESTER")
+	helper := h.user("crew-helper", "REQUESTER")
+	h.user("crew-outsider", "REQUESTER")
+	owner := h.login("crew-owner")
+	reviewID := owner.createReview("공동 작성 서비스")
+	path := "/api/v1/review-requests/" + reviewID + "/participants"
+
+	if res := owner.do(http.MethodGet, path, nil); res.status != http.StatusOK || strings.TrimSpace(res.body) != "[]" {
+		t.Fatalf("a review with no participants answered %d %s", res.status, res.body)
+	}
+	if res := owner.do(http.MethodPost, path, map[string]any{"user_id": helper, "role": "VIEWER"}); res.status != http.StatusNoContent {
+		t.Fatalf("adding a participant: %d %s", res.status, res.body)
+	}
+	listed := owner.do(http.MethodGet, path, nil)
+	var people []map[string]any
+	if err := json.Unmarshal([]byte(listed.body), &people); err != nil {
+		t.Fatal(err)
+	}
+	if len(people) != 1 || people[0]["user_id"] != helper {
+		t.Fatalf("the participant list is %s", listed.body)
+	}
+	if people[0]["participant_role"] != "VIEWER" || people[0]["display_name"] == "" {
+		t.Errorf("the list does not describe the participant: %v", people[0])
+	}
+
+	// A viewer sees the review and the crew, and cannot change the crew.
+	viewer := h.login("crew-helper")
+	if res := viewer.do(http.MethodGet, path, nil); res.status != http.StatusOK {
+		t.Errorf("a participant cannot see who else is on the review: %d %s", res.status, res.body)
+	}
+	if res := viewer.do(http.MethodDelete, path+"/"+helper, nil); res.status != http.StatusForbidden {
+		t.Errorf("a read-only participant removed themselves: %d %s", res.status, res.body)
+	}
+	if res := h.login("crew-outsider").do(http.MethodGet, path, nil); res.status != http.StatusNotFound {
+		t.Errorf("somebody outside the review read its participants: %d %s", res.status, res.body)
+	}
+
+	if res := owner.do(http.MethodDelete, path+"/"+helper, nil); res.status != http.StatusNoContent {
+		t.Fatalf("removing a participant: %d %s", res.status, res.body)
+	}
+	if res := owner.do(http.MethodGet, path, nil); strings.TrimSpace(res.body) != "[]" {
+		t.Errorf("the participant is still listed: %s", res.body)
+	}
+	if res := owner.do(http.MethodDelete, path+"/"+helper, nil); res.status != http.StatusNotFound {
+		t.Errorf("removing somebody twice answered %d", res.status)
+	}
+	// Taking access away is as much a part of the record as granting it.
+	var recorded int
+	if err := h.db.Pool.QueryRow(context.Background(), `SELECT count(*) FROM audit_logs WHERE event_type='REMOVE_PARTICIPANT' AND target_id=$1`, reviewID).Scan(&recorded); err != nil {
+		t.Fatal(err)
+	}
+	if recorded != 1 {
+		t.Errorf("the removal was recorded %d times", recorded)
+	}
+}

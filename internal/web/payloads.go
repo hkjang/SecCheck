@@ -78,6 +78,8 @@ var objectScopedRoutes = map[string]bool{
 	"POST /api/v1/review-requests/{id}/copy":                     true,
 	"POST /api/v1/review-requests/{id}/items/{itemID}/comments":  true,
 	"POST /api/v1/review-requests/{id}/items/{itemID}/evidences": true,
+	"DELETE /api/v1/review-requests/{id}/participants/{userID}":  true,
+	"GET /api/v1/review-requests/{id}/participants":              true,
 	"POST /api/v1/review-requests/{id}/participants":             true,
 	"POST /api/v1/review-requests/{id}/responses/bulk":           true,
 	"POST /api/v1/review-requests/{id}/submit":                   true,

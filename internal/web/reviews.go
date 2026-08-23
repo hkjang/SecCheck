@@ -1513,6 +1513,49 @@ func (s *Server) decideApproval(w http.ResponseWriter, r *http.Request, decision
 	jsonResponse(w, 200, map[string]string{"status": decision})
 }
 
+// listParticipants answers who else is on a review. Participants could be
+// added through the API and nowhere else, and there was no way to read them
+// back at all -- so a requester could not see who they had given access to,
+// and the co-author feature the user guide describes had no screen behind it.
+func (s *Server) listParticipants(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	if !s.canAccessReview(r.Context(), session(r), id) {
+		problem(w, 404, "NOT_FOUND", "심의를 찾을 수 없습니다.", nil)
+		return
+	}
+	rows, err := s.Store.Pool.Query(r.Context(), `SELECT p.user_id,u.display_name,u.department,u.active,p.participant_role
+                FROM review_participants p JOIN users u ON u.id=p.user_id
+                WHERE p.review_request_id=$1 ORDER BY u.display_name`, id)
+	if err != nil {
+		s.fault(w, r, "QUERY_FAILED", "참여자를 불러오지 못했습니다.", err)
+		return
+	}
+	jsonResponse(w, 200, scanDynamic(rows, []string{"user_id", "display_name", "department", "active", "participant_role"}))
+}
+
+// removeParticipant takes access away again -- somebody added by mistake, or
+// somebody who has moved on. Without it, granting access was one-way.
+func (s *Server) removeParticipant(w http.ResponseWriter, r *http.Request) {
+	id, userID := r.PathValue("id"), r.PathValue("userID")
+	if !s.canEditReview(r.Context(), session(r), id) {
+		problem(w, 403, "FORBIDDEN", "참여자를 해제할 수 없습니다.", nil)
+		return
+	}
+	var role string
+	_ = s.Store.Pool.QueryRow(r.Context(), `SELECT participant_role FROM review_participants WHERE review_request_id=$1 AND user_id=$2`, id, userID).Scan(&role)
+	tag, err := s.Store.Pool.Exec(r.Context(), `DELETE FROM review_participants WHERE review_request_id=$1 AND user_id=$2`, id, userID)
+	if err != nil {
+		s.fault(w, r, "UPDATE_FAILED", "참여자를 해제하지 못했습니다.", err)
+		return
+	}
+	if tag.RowsAffected() == 0 {
+		problem(w, 404, "NOT_FOUND", "참여자를 찾을 수 없습니다.", nil)
+		return
+	}
+	_ = s.Store.Audit(r.Context(), auditFrom(r, "REMOVE_PARTICIPANT", "REVIEW_REQUEST", id, map[string]string{"user_id": userID, "role": role}, nil))
+	w.WriteHeader(http.StatusNoContent)
+}
+
 func (s *Server) addParticipant(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 	if !s.canEditReview(r.Context(), session(r), id) {

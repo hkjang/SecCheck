@@ -79,6 +79,7 @@ export default function ReviewDetail() {
     <div className="card" data-sx="sx-027"><div className="card-body review-summary-grid"><div><span className="subtle">작성 진행률</span><div data-sx="sx-020">{percent}% <span className="subtle">({progress.answered}/{progress.total})</span></div></div><div><div className="progress"><progress value={percent} max={100}>{percent}%</progress></div></div><div><span className="subtle">진행 경과</span><div className="subtle"><ReviewDates review={review} /></div></div><div><span className="subtle">검토 집계</span><div data-sx="sx-037"><Badge tone="green">적합 {results.compliant||0}</Badge><Badge tone="amber">조건부 {results.conditional||0}</Badge><Badge tone="red">미흡·부적합 {(results.insufficient||0)+(results.non_compliant||0)}</Badge><Badge>N/A {results.na||0}</Badge></div></div><div className="header-actions"><TemplateVersions review={review} /><Button small onClick={() => save(`/api/v1/review-requests/${id}/export/xlsx`)}><Download size={13} /> Excel</Button><Button small onClick={() => save(`/api/v1/review-requests/${id}/export/pdf`)}><Download size={13} /> PDF</Button><Button small onClick={() => save(`/api/v1/review-requests/${id}/export/zip`)}><Download size={13} /> ZIP</Button></div></div></div>
     <div className="toolbar"><div className="search-box"><Search /><input className="input" placeholder="항목코드, 보안요건, 질문 검색" value={query} onChange={e => setQuery(e.target.value)} /></div><Filter size={16} color="#6d7a8e" /><select className="select" data-sx="sx-051" value={filter} onChange={e => setFilter(e.target.value)}><option value="ALL">전체 항목 ({counts.ALL})</option><option value="MISSING">미작성 ({counts.MISSING})</option><option value="NA">N/A ({counts.NA})</option><option value="EVIDENCE">증적 누락 ({counts.EVIDENCE})</option><option value="CHANGE">보완 요청 ({counts.CHANGE})</option><option value="MINE">내 담당 항목 ({counts.MINE})</option></select></div>
     <ReviewOutcome review={review} />
+    <ReviewParticipants reviewID={review.id} editable={editable} />
 
     <div className="review-layout"><aside className="card section-nav"><div className="card-header"><h3>섹션 이동</h3><Badge>{items.length}</Badge></div><div className="card-body" data-sx="sx-044">{sections.map(section => <button key={section} onClick={() => document.getElementById(`section-${sections.indexOf(section)}`)?.scrollIntoView({ behavior: 'smooth' })}><span>{section}</span><ChevronRight size={13} /></button>)}</div></aside>
       <section className="checklist-list">{filtered.length ? filtered.map((item, index) => { const sectionName = `${item.template_name} · ${item.section || '일반'}`; const sectionIndex = sections.indexOf(sectionName); const previous = index > 0 ? `${filtered[index - 1].template_name} · ${filtered[index - 1].section || '일반'}` : ''; const expanded = open.has(item.id); return <div key={item.id}>{sectionName !== previous && <div id={`section-${sectionIndex}`} data-sx="sx-025">{sectionName} <Badge tone="blue">{item.template_version}</Badge></div>}<article className="checklist-card" id={`item-${item.id}`}><div className="checklist-summary" onClick={() => { setSelected(item.id); setOpen(v => { const n = new Set(v); n.has(item.id) ? n.delete(item.id) : n.add(item.id); return n }) }}><div>{selecting && <input type="checkbox" className="item-select" aria-label={`${item.item_code} 선택`} checked={picked.has(item.id)} onClick={e => e.stopPropagation()} onChange={() => togglePick(item.id)} />}<span className="item-code">{item.item_code}</span> <span className={`badge severity-${item.severity}`}>{item.severity}</span>{item.evidence_required && <Badge tone="amber">증적 필수</Badge>}{item.response.assigned_to ? <Badge tone={item.response.assigned_to === user.id ? 'blue' : 'purple'}><UserRound size={11} /> {nameOf(item.response.assigned_to) || '담당자'}</Badge> : null}<div className="item-title">{item.title}</div><div className="item-question">{item.question}</div></div><div>{item.response.applicability ? <Badge tone={item.response.applicability === 'N/A' ? 'amber' : 'green'}>{String(item.response.applicability)}</Badge> : <Badge>미작성</Badge>} {expanded ? <ChevronDown size={16} /> : <ChevronRight size={16} />}</div></div>{expanded && <ItemEditor review={review} item={item} reviewer={reviewer} people={people} onSaved={load} onSelect={() => setSelected(item.id)} />}</article></div> }) : <Empty title="필터 조건에 맞는 항목이 없습니다." />}</section>
@@ -375,6 +376,45 @@ const verdictTone: Record<string, 'green' | 'amber' | 'red' | ''> = { COMPLIANT:
 // The closing statement of the whole review -- what it was decided to be and
 // why -- was recorded and then shown nowhere. A requester whose review came
 // back rejected had no way to read the reason short of exporting the file.
+// The user guide has always described adding a co-author or a read-only
+// participant to a review. The endpoint existed; the screen did not, so the
+// only way to do it was to call the API by hand -- and there was no way at all
+// to see who had been given access.
+function ReviewParticipants({ reviewID, editable }: { reviewID: string; editable: boolean }) {
+  const toast = useToast()
+  type Participant = { user_id: string; display_name: string; department: string; active: boolean; participant_role: string }
+  const [people, setPeople] = useState<Participant[]>()
+  const [directoryUsers, setDirectoryUsers] = useState<DirectoryUser[]>([])
+  const [adding, setAdding] = useState(false)
+  const [choice, setChoice] = useState({ user_id: '', role: 'CONTRIBUTOR' })
+  const load = () => get<Participant[]>(`/api/v1/review-requests/${reviewID}/participants`).then(setPeople).catch(() => setPeople([]))
+  useEffect(() => { load(); directory<DirectoryUser>().then(setDirectoryUsers).catch(() => undefined) }, [reviewID])
+  const add = async () => {
+    if (!choice.user_id) return
+    try { await post(`/api/v1/review-requests/${reviewID}/participants`, choice); toast.push('참여자를 추가했습니다.'); setAdding(false); setChoice({ user_id: '', role: 'CONTRIBUTOR' }); await load() }
+    catch (e) { toast.push(errorMessage(e), 'error') }
+  }
+  const remove = async (person: Participant) => {
+    if (!confirm(`${person.display_name} 참여자를 해제할까요?`)) return
+    try { await del(`/api/v1/review-requests/${reviewID}/participants/${person.user_id}`); toast.push('참여자를 해제했습니다.'); await load() }
+    catch (e) { toast.push(errorMessage(e), 'error') }
+  }
+  if (!people) return null
+  if (!people.length && !editable) return null
+  return <section className="card"><div className="card-header"><h3>참여자</h3><Badge>{people.length}</Badge>{editable && <div className="header-actions"><Button small onClick={() => setAdding(true)}><UserRound size={13} /> 참여자 추가</Button></div>}</div>
+    {people.length ? <div className="table-wrap"><table><thead><tr><th scope="col">이름</th><th scope="col">부서</th><th scope="col">권한</th>{editable && <th scope="col"></th>}</tr></thead>
+      <tbody>{people.map(person => <tr key={person.user_id}><td>{person.display_name}{!person.active && <> <Badge tone="red">비활성</Badge></>}</td><td className="subtle">{person.department || '-'}</td>
+        <td><Badge tone={person.participant_role === 'CONTRIBUTOR' ? 'blue' : ''}>{person.participant_role === 'CONTRIBUTOR' ? '작성 가능' : '열람 전용'}</Badge></td>
+        {editable && <td><Button small variant="danger" onClick={() => remove(person)}>해제</Button></td>}</tr>)}</tbody></table></div>
+      : <div className="card-body"><p className="subtle">이 심의에는 신청자 외의 참여자가 없습니다.</p></div>}
+    {adding && <Modal title="참여자 추가" onClose={() => setAdding(false)} footer={<><Button onClick={() => setAdding(false)}>취소</Button><Button variant="primary" disabled={!choice.user_id} onClick={add}>추가</Button></>}>
+      <div className="form-grid">
+        <Field label="사용자" required className="span-2"><select className="select" value={choice.user_id} onChange={e => setChoice(v => ({ ...v, user_id: e.target.value }))}><option value="">선택</option>{directoryUsers.map(u => <option key={u.id} value={u.id}>{u.display_name} · {u.department || u.username}</option>)}</select></Field>
+        <Field label="권한" help="열람 전용 참여자는 심의와 증적을 볼 수 있지만 체크리스트를 수정하거나 항목을 배정받을 수 없습니다."><select className="select" value={choice.role} onChange={e => setChoice(v => ({ ...v, role: e.target.value }))}><option value="CONTRIBUTOR">작성 가능</option><option value="VIEWER">열람 전용</option></select></Field>
+      </div></Modal>}
+  </section>
+}
+
 function ReviewOutcome({ review }: { review: Review }) {
   const result = String((review as unknown as Record<string, unknown>).final_result || '')
   const opinion = String((review as unknown as Record<string, unknown>).final_opinion || '')
