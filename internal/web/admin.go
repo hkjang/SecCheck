@@ -552,6 +552,13 @@ func csvText(v string) string {
 func (s *Server) verifyAudit(w http.ResponseWriter, r *http.Request) {
 	full := r.URL.Query().Get("full") == "1"
 	if full {
+		// One at a time. The second caller is told to wait rather than
+		// doubling the work and the connections it holds.
+		if !s.verifying.CompareAndSwap(false, true) {
+			problem(w, http.StatusConflict, "VERIFY_IN_PROGRESS", "전체 재검증이 이미 실행 중입니다. 완료된 뒤 다시 시도하세요.", nil)
+			return
+		}
+		defer s.verifying.Store(false)
 		// Re-hashing every event ever written takes minutes once an
 		// installation has run for years, and the response deadline meant for
 		// ordinary requests would cut the answer off exactly when the chain is

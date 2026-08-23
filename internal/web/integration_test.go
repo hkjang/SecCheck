@@ -3984,3 +3984,63 @@ func TestLongTransfersGetTheirOwnDeadline(t *testing.T) {
 		}
 	}
 }
+
+// A full verification re-hashes every event ever written and holds a
+// connection while it does, so several at once is a way to take the service
+// down from a button the audit role can press twice.
+func TestOnlyOneFullVerificationRunsAtATime(t *testing.T) {
+	h := newHarness(t)
+	admin := h.login(adminOf(h))
+	ctx := context.Background()
+
+	// Enough events that a run is not instantaneous.
+	var uid string
+	if err := h.db.Pool.QueryRow(ctx, `SELECT id FROM users WHERE username='integration-admin'`).Scan(&uid); err != nil {
+		t.Fatal(err)
+	}
+	for i := 0; i < 400; i++ {
+		if err := h.db.Audit(ctx, store.AuditEvent{UserID: uid, UserName: "verify-load", EventType: "LOGIN", TargetType: "USER", TargetID: fmt.Sprint(i)}); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	results := make(chan int, 4)
+	var wg sync.WaitGroup
+	for i := 0; i < 4; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			results <- admin.do(http.MethodGet, "/api/v1/admin/audit/verify?full=1", nil).status
+		}()
+	}
+	wg.Wait()
+	close(results)
+	ok, refused, other := 0, 0, 0
+	for status := range results {
+		switch status {
+		case http.StatusOK:
+			ok++
+		case http.StatusConflict:
+			refused++
+		default:
+			other++
+		}
+	}
+	if other != 0 {
+		t.Fatalf("%d verification requests answered with something unexpected", other)
+	}
+	if ok == 0 {
+		t.Fatal("no verification ran at all")
+	}
+	// The point is that they do not all run together; whichever lost the race
+	// is told to wait rather than piling on.
+	if ok == 4 {
+		t.Error("four full verifications ran at once")
+	}
+	if refused > 0 {
+		body := admin.do(http.MethodGet, "/api/v1/admin/audit/verify?full=1", nil)
+		if body.status != http.StatusOK {
+			t.Errorf("a verification after the others finished was still refused: %d %s", body.status, body.body)
+		}
+	}
+}

@@ -15,6 +15,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/hkjang/SecCheck/internal/auth"
@@ -50,6 +51,10 @@ type Server struct {
 	securityMu   sync.Mutex
 	securityAt   time.Time
 	securityConf runtimeSecurity
+	// A full chain verification re-hashes every event ever written and holds a
+	// connection while it does. Several at once is a way to take the service
+	// down from a button anybody with the audit role can press twice.
+	verifying atomic.Bool
 }
 
 type runtimeSecurity struct {
