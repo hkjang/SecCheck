@@ -271,3 +271,29 @@ func TestEveryWarnedReleaseIsInTheUpgradeTable(t *testing.T) {
 		}
 	}
 }
+
+// The API guide presents its MCP tool list as the list, so a tool missing from
+// it is a tool an integrator never learns exists -- they would have to call
+// tools/list to find out. Two were missing when this was written.
+func TestEveryMCPToolIsInTheAPIGuide(t *testing.T) {
+	guide := repoFile(t, filepath.Join("docs", "api-guide.md"))
+	named := map[string]bool{}
+	for _, tool := range mcpTools() {
+		name, _ := tool["name"].(string)
+		if name == "" {
+			t.Fatal("a tool in the catalogue has no name")
+		}
+		named[name] = true
+		if !strings.Contains(guide, "`"+name+"`") {
+			t.Errorf("%s is offered over MCP but is not in docs/api-guide.md", name)
+		}
+	}
+	if len(named) < 5 {
+		t.Fatalf("only %d tools found; the catalogue must have changed shape", len(named))
+	}
+	for _, match := range regexp.MustCompile("`(seccheck\\.[a-z_]+)`").FindAllStringSubmatch(guide, -1) {
+		if !named[match[1]] {
+			t.Errorf("docs/api-guide.md documents %s, which the server does not offer", match[1])
+		}
+	}
+}

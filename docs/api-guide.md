@@ -72,6 +72,10 @@ Authorization: Bearer sck_a1b2c3d4_xxxxxxxxxxxxxxxxxxxxxxxxxxxx
 3. `seccheck.get_review`: 특정 심의의 상세 정보, 진행률, 체크리스트 항목 조회
 4. `seccheck.search_controls`: Security Control 및 체크리스트 가이드 검색
 5. `seccheck.validate_submission`: 제출 전 누락 항목 및 결함 사전 검증
+6. `seccheck.my_queue`: 지금 본인이 처리해야 하는 심의와 기한이 임박한 보완 요청 조회
+7. `seccheck.review_report`: 기간별 처리 현황·소요 기간·부서별 집계·반복 미흡 항목 조회 (`SYSTEM_ADMIN`, `SECURITY_REVIEWER`, `AUDITOR`, `APPROVER`)
+
+도구는 모두 호출자의 권한 범위 안에서만 답합니다. 읽기 전용이 아닌 도구를 API 키로 호출하려면 키에 쓰기 범위가 있어야 하며, 전체 목록과 입력 스키마는 `tools/list`로 확인합니다.
 
 ### 💬 MCP 호출 예시 (JSON-RPC 2.0)
 
