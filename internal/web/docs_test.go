@@ -426,3 +426,27 @@ func TestNoScreenBuildsItsOwnDialog(t *testing.T) {
 		}
 	}
 }
+
+// Toasts are how the product says whether anything worked. One that is not
+// announced leaves somebody who cannot see it with no way to know whether the
+// save happened, and the same goes for the spinner that says work is running.
+func TestTheProductAnnouncesWhatItIsDoing(t *testing.T) {
+	ui := repoFile(t, filepath.Join("web", "src", "components", "ui.tsx"))
+	toast := ui[strings.Index(ui, "export function ToastProvider"):]
+	if end := strings.Index(toast, "\nexport const useToast"); end > 0 {
+		toast = toast[:end]
+	}
+	if !strings.Contains(toast, "aria-live") {
+		t.Error("toasts are not in a live region, so nothing announces them")
+	}
+	if !strings.Contains(toast, `role={item.kind === 'error' ? 'alert' : 'status'}`) {
+		t.Error("a toast does not carry a role, so its urgency is not conveyed")
+	}
+	loading := ui[strings.Index(ui, "export function Loading"):]
+	if end := strings.Index(loading, "\n"); end > 0 {
+		loading = loading[:end]
+	}
+	if !strings.Contains(loading, `role="status"`) {
+		t.Error("the loading state has no role, so aria-label on its div is ignored")
+	}
+}

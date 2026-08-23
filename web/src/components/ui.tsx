@@ -44,7 +44,9 @@ export function Empty({ title = '표시할 항목이 없습니다.', description
   return <div className="empty"><Inbox /><div>{title}</div>{description && <p className="subtle">{description}</p>}</div>
 }
 
-export function Loading() { return <div className="loading"><div className="spinner" aria-label="불러오는 중" /></div> }
+// aria-label on a plain div is not announced; the role is what makes a screen
+// reader say that something is happening.
+export function Loading() { return <div className="loading" role="status"><div className="spinner" aria-label="불러오는 중" /></div> }
 
 // Saving a file is a request like any other, so its failure belongs in a
 // toast next to the button, not in a tab that navigated away to JSON.
@@ -105,8 +107,13 @@ type ToastValue = { push: (message: string, kind?: 'normal' | 'error') => void }
 const ToastContext = createContext<ToastValue>({ push: () => undefined })
 export function ToastProvider({ children }: PropsWithChildren) {
   const [items, setItems] = useState<{ id: number; message: string; kind: string }[]>([])
-  const push = useCallback((message: string, kind: 'normal' | 'error' = 'normal') => { const id = Date.now(); setItems(v => [...v, { id, message, kind }]); window.setTimeout(() => setItems(v => v.filter(x => x.id !== id)), 4200) }, [])
-  return <ToastContext.Provider value={{ push }}>{children}<div className="toast-stack">{items.map(item => <div key={item.id} className={`toast ${item.kind === 'error' ? 'error' : ''}`}>{item.kind === 'error' && <AlertCircle size={15} />} {item.message}</div>)}</div></ToastContext.Provider>
+  // Two toasts raised in the same millisecond used to share an id, so the
+  // first timer removed both and one of the two messages vanished early.
+  const nextID = useRef(0)
+  const push = useCallback((message: string, kind: 'normal' | 'error' = 'normal') => { const id = ++nextID.current; setItems(v => [...v, { id, message, kind }]); window.setTimeout(() => setItems(v => v.filter(x => x.id !== id)), 4200) }, [])
+  // Every confirmation and refusal in the product arrives as a toast, so a
+  // toast nobody hears is a save whose outcome is unknowable without sight.
+  return <ToastContext.Provider value={{ push }}>{children}<div className="toast-stack" aria-live="polite">{items.map(item => <div key={item.id} role={item.kind === 'error' ? 'alert' : 'status'} className={`toast ${item.kind === 'error' ? 'error' : ''}`}>{item.kind === 'error' && <AlertCircle size={15} />} {item.message}</div>)}</div></ToastContext.Provider>
 }
 export const useToast = () => useContext(ToastContext)
 
