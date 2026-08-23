@@ -21,6 +21,9 @@ type reportScope struct {
 	// includeDone keeps carried-out actions in the register. They are hidden
 	// by default because the register is a list of what is still owed.
 	includeDone bool
+	// The register is capped so a screen cannot be handed tens of thousands of
+	// rows; the workbook, which exists to carry everything, gets the export cap.
+	followUpLimit int
 }
 
 // reportFilter bounds the report by creation date and optionally by
@@ -39,6 +42,10 @@ func reportFilter(r *http.Request) reportScope {
 		scope.to = to
 	}
 	scope.includeDone = query.Get("include_done") == "1"
+	scope.followUpLimit = 500
+	if query.Get("format") == "xlsx" {
+		scope.followUpLimit = exportRowCap
+	}
 	if department := strings.TrimSpace(query.Get("department")); department != "" {
 		scope.args = append(scope.args, department)
 		scope.where += fmt.Sprintf(" AND r.department = $%d", len(scope.args))
@@ -56,7 +63,10 @@ type reportData struct {
 	ByResult     []map[string]any `json:"by_result"`
 	Recurring    []map[string]any `json:"recurring_findings"`
 	FollowUps    []map[string]any `json:"follow_ups"`
-	Aging        []map[string]any `json:"aging"`
+	// How many the register actually holds, so a screen showing the first few
+	// hundred can say so instead of looking complete.
+	FollowUpsTotal int64            `json:"follow_ups_total"`
+	Aging          []map[string]any `json:"aging"`
 }
 
 func (s *Server) reviewReport(w http.ResponseWriter, r *http.Request) {
@@ -158,8 +168,18 @@ func (s *Server) buildReport(r *http.Request, scope reportScope) (reportData, er
                 LEFT JOIN users u ON u.id=rr.follow_up_done_by
                 LEFT JOIN users ru ON ru.id=rr.follow_up_reported_by
                 WHERE `+scope.where+` AND btrim(rr.follow_up)<>''`+done+`
-                ORDER BY rr.follow_up_done_at NULLS FIRST,rr.follow_up_due_date NULLS LAST,COALESCE(r.approved_at,r.updated_at) DESC,r.review_number,si.item_code LIMIT 500`,
+                ORDER BY rr.follow_up_done_at NULLS FIRST,rr.follow_up_due_date NULLS LAST,COALESCE(r.approved_at,r.updated_at) DESC,r.review_number,si.item_code LIMIT `+intString(scope.followUpLimit),
 		scope.args, "id", "review_number", "service_name", "department", "item_code", "title", "result", "follow_up", "decided_on", "due_on", "overdue", "reported_on", "reported_by", "done_on", "done_by", "follow_up_note"); err != nil {
+		return data, err
+	}
+	// The register is capped, so the count is fetched too: a screen that shows
+	// five hundred of three thousand outstanding actions and says nothing is
+	// telling the reader the work is smaller than it is.
+	if err = s.Store.Pool.QueryRow(ctx, `SELECT count(*) FROM review_results rr
+                JOIN submission_items si ON si.id=rr.submission_item_id
+                JOIN submissions sub ON sub.id=si.submission_id
+                JOIN review_requests r ON r.id=sub.review_request_id
+                WHERE `+scope.where+` AND btrim(rr.follow_up)<>''`+done, scope.args...).Scan(&data.FollowUpsTotal); err != nil {
 		return data, err
 	}
 	// Aging looks at what is still open right now, which is the queue the team

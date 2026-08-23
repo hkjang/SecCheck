@@ -8,7 +8,7 @@ type Report = {
   from: string; to: string
   totals: { created: number; submitted: number; completed: number; rejected: number; in_progress: number }
   cycle_time: { measured: number; average_days: number; median_days: number; p90_days: number }
-  by_status: Row[]; by_department: Row[]; by_result: Row[]; recurring_findings: Row[]; follow_ups: Row[]; aging: Row[]
+  by_status: Row[]; by_department: Row[]; by_result: Row[]; recurring_findings: Row[]; follow_ups: Row[]; follow_ups_total: number; aging: Row[]
 }
 const resultLabel: Record<string, string> = { COMPLIANT: '적합', CONDITIONAL: '조건부 적합', INSUFFICIENT: '미흡', NON_COMPLIANT: '부적합', NA_ACCEPTED: 'N/A 인정', RECHECK: '재확인' }
 
@@ -60,7 +60,7 @@ export default function Reports() {
       </div>
       <ReportTable title="부서별 현황" rows={data.by_department} columns={[['department', '부서'], ['created', '신규'], ['completed', '완료'], ['average_days', '평균 처리일']]} />
       <ReportTable title="반복 미흡·부적합 항목" rows={data.recurring_findings} columns={[['item_code', '항목코드'], ['title', '보안요건'], ['category', '분류'], ['count', '발생 건수']]} empty="이 기간에 미흡·부적합 판정이 없습니다." />
-      <FollowUpTable rows={data.follow_ups} includeDone={includeDone} onToggleScope={() => setIncludeDone(v => !v)} onChanged={reload} />
+      <FollowUpTable rows={data.follow_ups} total={data.follow_ups_total} includeDone={includeDone} onToggleScope={() => setIncludeDone(v => !v)} onChanged={reload} />
       <ReportTable title="진행 중 심의 경과" rows={data.aging} columns={[['bucket', '최근 변경 이후'], ['count', '건수']]} empty="진행 중인 심의가 없습니다." />
     </>}
   </div>
@@ -78,7 +78,7 @@ function ReportTable({ title, rows, columns, render, empty }: { title: string; r
 // The register is the work left over from reviewing. Closing an entry here
 // rather than inside the review it came from is the point: by the time an
 // action falls due, nobody is looking at that review any more.
-function FollowUpTable({ rows, includeDone, onToggleScope, onChanged }: { rows: Row[]; includeDone: boolean; onToggleScope: () => void; onChanged: () => Promise<void> | void }) {
+function FollowUpTable({ rows, total, includeDone, onToggleScope, onChanged }: { rows: Row[]; total: number; includeDone: boolean; onToggleScope: () => void; onChanged: () => Promise<void> | void }) {
   const toast = useToast()
   const [busy, setBusy] = useState('')
   const [closing, setClosing] = useState<Row>()
@@ -93,8 +93,9 @@ function FollowUpTable({ rows, includeDone, onToggleScope, onChanged }: { rows: 
     } catch (e) { toast.push(errorMessage(e), 'error') } finally { setBusy('') }
   }
   return <section className="card">
-    <div className="card-header"><h2>미조치 항목</h2><Badge>{rows.length}</Badge>
+    <div className="card-header"><h2>미조치 항목</h2><Badge>{total > rows.length ? `${rows.length} / ${total}` : rows.length}</Badge>
       <div className="header-actions"><button type="button" className={`chip ${includeDone ? 'on' : ''}`} aria-pressed={includeDone} onClick={onToggleScope}>이행 완료 포함</button></div></div>
+    {total > rows.length && <div className="card-body"><p className="subtle">전체 {total.toLocaleString('ko-KR')}건 중 {rows.length.toLocaleString('ko-KR')}건만 표시합니다. 전체 목록은 Excel 내보내기로 확인하세요.</p></div>}
     {rows.length ? <div className="table-wrap"><table><caption className="sr-only">미조치 항목</caption>
       <thead><tr><th scope="col">심의</th><th scope="col">항목</th><th scope="col">판정</th><th scope="col">조치 사항</th><th scope="col">상태</th><th scope="col"><span className="sr-only">작업</span></th></tr></thead>
       <tbody>{rows.map(row => <tr key={String(row.id)}>

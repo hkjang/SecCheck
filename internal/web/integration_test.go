@@ -2468,6 +2468,21 @@ func TestTheReportCollectsOutstandingFollowUps(t *testing.T) {
 	if res := admin.do(http.MethodPost, "/api/v1/review-results/"+plain+"/follow-up", map[string]any{"action": "confirm", "note": ""}); res.status != http.StatusNotFound {
 		t.Errorf("a verdict without an action was closed: %d %s", res.status, res.body)
 	}
+	// The register is capped, so the report says how many there really are: a
+	// screen showing part of the work while looking complete is worse than no
+	// screen at all.
+	sized := admin.do(http.MethodGet, "/api/v1/reports/reviews?from=2000-01-01&to=2099-12-31", nil).json()
+	registerTotal, reported := sized["follow_ups_total"].(float64)
+	if !reported {
+		t.Fatalf("the report does not say how many actions the register holds: %v", sized["follow_ups_total"])
+	}
+	listed, _ := sized["follow_ups"].([]any)
+	if int(registerTotal) != len(listed) {
+		t.Errorf("the register holds %d actions but reports %v", len(listed), registerTotal)
+	}
+	if registerTotal == 0 {
+		t.Error("the register reports no outstanding actions at all")
+	}
 }
 
 // The reviewer's verdict, opinion and the action they asked for are written
