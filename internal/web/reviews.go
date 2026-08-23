@@ -604,14 +604,17 @@ func (s *Server) reviewHistory(w http.ResponseWriter, r *http.Request) {
 		s.fault(w, r, "QUERY_FAILED", "심의 이력을 불러오지 못했습니다.", err)
 		return
 	}
-	rows, err := s.Store.Pool.Query(r.Context(), `SELECT a.timestamp,a.event_type,a.user_name,a.target_type,a.target_id,a.result,
+	// The entry's own identifier travels with it: without it a reader looking
+	// at "누가 무엇을 했다" on this screen has no way to reach the full record
+	// -- the before and after values -- in the audit log.
+	rows, err := s.Store.Pool.Query(r.Context(), `SELECT a.event_id,a.timestamp,a.event_type,a.user_name,a.target_type,a.target_id,a.result,
                 COALESCE((SELECT si.item_code FROM submission_items si WHERE si.id=a.target_id),'') AS item_code
                 FROM audit_logs a WHERE `+scope+` ORDER BY a.timestamp DESC,a.chain_sequence DESC LIMIT $2 OFFSET $3`, id, limit, offset)
 	if err != nil {
 		s.fault(w, r, "QUERY_FAILED", "심의 이력을 불러오지 못했습니다.", err)
 		return
 	}
-	items, err := scanDynamic(rows, []string{"timestamp", "event_type", "user_name", "target_type", "target_id", "result", "item_code"})
+	items, err := scanDynamic(rows, []string{"event_id", "timestamp", "event_type", "user_name", "target_type", "target_id", "result", "item_code"})
 	if err != nil {
 		s.fault(w, r, "QUERY_FAILED", "이력을 불러오지 못했습니다.", err)
 		return

@@ -1,5 +1,5 @@
 import { ChangeEvent, useEffect, useMemo, useRef, useState } from 'react'
-import { useNavigate, useParams } from 'react-router-dom'
+import { Link, useNavigate, useParams } from 'react-router-dom'
 import { AlertTriangle, ArrowLeft, Check, CheckCircle2, CheckSquare, ChevronDown, ChevronRight, ChevronUp, Copy, Download, FileCheck2, FilePlus2, Filter, ListChecks, MessageSquareWarning, Paperclip, Play, RefreshCw, History, Save, Search, Send, ShieldCheck, SlidersHorizontal, Trash2, UserRound, Upload, ZoomIn } from 'lucide-react'
 import { api, del, directory, errorMessage, get, post, put, upload, ApiError } from '../lib/api'
 import { ChangeRequest, ChecklistItem, DirectoryUser, Review } from '../lib/types'
@@ -112,6 +112,10 @@ function TemplateVersions({ review }: { review: Review }) {
 // answer when a change request arrived or why a review came back.
 function HistoryModal({ reviewID, onClose }: { reviewID: string; onClose: () => void }) {
   const toast = useToast()
+  // A reader with audit access can go from "누가 무엇을 했다" to the full
+  // record -- what the value was before and after -- in one click.
+  const { user } = useAuth()
+  const auditable = user.roles.some(role => ['SYSTEM_ADMIN', 'AUDITOR'].includes(role))
   const [page, setPage] = useState<{ items: Record<string, unknown>[]; total: number; has_more: boolean }>()
   const [limit, setLimit] = useState(50)
   useEffect(() => { get<{ items: Record<string, unknown>[]; total: number; has_more: boolean }>(`/api/v1/review-requests/${reviewID}/history?limit=${limit}`).then(setPage).catch(e => toast.push(errorMessage(e), 'error')) }, [reviewID, limit])
@@ -120,7 +124,7 @@ function HistoryModal({ reviewID, onClose }: { reviewID: string; onClose: () => 
       <p className="subtle">전체 {page.total}건 중 최근 {page.items.length}건. 감사로그에서 이 심의와 관련된 기록만 추린 것입니다.</p>
       <div className="table-wrap"><table><caption className="sr-only">심의 이력</caption>
         <thead><tr><th scope="col">시각</th><th scope="col">행위</th><th scope="col">수행자</th><th scope="col">대상</th></tr></thead>
-        <tbody>{page.items.map((e, i) => <tr key={i}><td>{formatDate(e.timestamp, true)}</td><td><Badge tone={e.result === 'SUCCESS' ? 'blue' : 'red'}>{String(e.event_label || e.event_type)}</Badge></td><td>{String(e.user_name || '-')}</td><td className="subtle">{String(e.item_code || e.target_type || '')}</td></tr>)}</tbody>
+        <tbody>{page.items.map((e, i) => <tr key={String(e.event_id || i)}><td>{formatDate(e.timestamp, true)}</td><td><Badge tone={e.result === 'SUCCESS' ? 'blue' : 'red'}>{String(e.event_label || e.event_type)}</Badge></td><td>{String(e.user_name || '-')}</td><td className="subtle">{auditable && e.target_id ? <Link className="table-link" to={`/admin/audit?target=${e.target_id}`} onClick={onClose}>{String(e.item_code || e.target_type || '')}</Link> : String(e.item_code || e.target_type || '')}</td></tr>)}</tbody>
       </table></div>
     </> : <Empty title="기록된 이력이 없습니다." />}
   </Modal>

@@ -4166,3 +4166,49 @@ func TestAReviewHistoryPagesWithoutRepeatingItself(t *testing.T) {
 		t.Errorf("paging saw %d distinct entries, fewer than the events written", len(seen))
 	}
 }
+
+// The history shows that somebody did something; the audit log holds what the
+// value was before and after. Without the entry's own identifier travelling
+// with it there was no way to get from one to the other.
+func TestAHistoryEntryCanBeTracedToItsAuditRecord(t *testing.T) {
+	h := newHarness(t)
+	admin := h.login(adminOf(h))
+	h.user("trace-author", "REQUESTER")
+	author := h.login("trace-author")
+	reviewID := author.createReview("추적 서비스")
+
+	res := author.do(http.MethodGet, "/api/v1/review-requests/"+reviewID+"/history?limit=10", nil)
+	if res.status != http.StatusOK {
+		t.Fatalf("reading the history: %d %s", res.status, res.body)
+	}
+	entries, _ := res.json()["items"].([]any)
+	if len(entries) == 0 {
+		t.Fatal("a review that was just created has no history")
+	}
+	first, _ := entries[0].(map[string]any)
+	eventID, _ := first["event_id"].(string)
+	if eventID == "" {
+		t.Fatalf("a history entry carries no identifier: %v", first)
+	}
+	// And that identifier is the one the audit log knows it by.
+	var known int
+	if err := h.db.Pool.QueryRow(context.Background(), `SELECT count(*) FROM audit_logs WHERE event_id=$1`, eventID).Scan(&known); err != nil {
+		t.Fatal(err)
+	}
+	if known != 1 {
+		t.Errorf("the history's identifier matches %d audit entries", known)
+	}
+	// The target it names can be looked up in the audit log, which is what the
+	// link on the screen does.
+	target, _ := first["target_id"].(string)
+	if target != "" {
+		scoped := admin.do(http.MethodGet, "/api/v1/admin/audit?target="+target, nil)
+		if scoped.status != http.StatusOK {
+			t.Fatalf("looking the target up in the audit log: %d %s", scoped.status, scoped.body)
+		}
+		rows, _ := scoped.json()["items"].([]any)
+		if len(rows) == 0 {
+			t.Error("the audit log has nothing for the target the history names")
+		}
+	}
+}
