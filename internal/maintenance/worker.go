@@ -31,6 +31,10 @@ const (
 	// A review that has not moved in this long is waiting on a person, not on
 	// work in progress, and the same person is not told again for this long.
 	stalledReviewDays = 3
+	// Room below either of these is worth waking somebody for: proportionally
+	// nearly full, or absolutely close enough that a few uploads finish it.
+	lowStorageRatio = 0.10
+	lowStorageBytes = 2 << 30
 )
 
 type Worker struct {
@@ -75,6 +79,7 @@ func (w *Worker) Sweep(ctx context.Context) map[string]int64 {
 	removed["stalled_reviews"] = w.remindStalledReviews(ctx)
 	removed["stall_alerts"] = w.alertStalledQueue(ctx)
 	removed["failure_alerts"] = w.alertFailedJobs(ctx)
+	removed["storage_alerts"] = w.alertLowStorage(ctx)
 	removed["purged_evidence_files"] = w.purgeDeletedEvidence(ctx)
 	total := int64(0)
 	for _, n := range removed {
@@ -84,6 +89,43 @@ func (w *Worker) Sweep(ctx context.Context) map[string]int64 {
 		w.Store.Log(ctx, "INFO", "", "maintenance", "retention sweep completed", map[string]any{"retention_days": retention, "removed": removed})
 	}
 	return removed
+}
+
+// alertLowStorage warns before the evidence volume fills. An appliance that
+// runs offline for years fills its disk eventually, and the first sign used to
+// be an upload failing for a person who could do nothing about it -- the
+// number was not on any screen and not in any metric.
+func (w *Worker) alertLowStorage(ctx context.Context) int64 {
+	if w.Vault == nil {
+		return 0
+	}
+	space := w.Vault.Space()
+	if space.TotalBytes == 0 {
+		return 0
+	}
+	free := float64(space.FreeBytes) / float64(space.TotalBytes)
+	if space.Writable && free > lowStorageRatio && space.FreeBytes > lowStorageBytes {
+		return 0
+	}
+	admins, err := w.uninformedAdmins(ctx, "STORAGE_LOW")
+	if err != nil || len(admins) == 0 {
+		return 0
+	}
+	title := "증적 저장 공간이 부족합니다"
+	body := fmt.Sprintf("증적 볼륨(%s)의 남은 공간이 %.1fGB (%.0f%%)입니다. 공간이 떨어지면 증적 업로드가 실패합니다.",
+		space.Path, float64(space.FreeBytes)/(1<<30), free*100)
+	if !space.Writable {
+		title = "증적 볼륨에 쓸 수 없습니다"
+		body = fmt.Sprintf("증적 볼륨(%s)에 파일을 만들 수 없습니다: %s. 증적 업로드가 모두 실패합니다.", space.Path, space.Detail)
+	}
+	w.Store.Log(ctx, "ERROR", "", "maintenance", "evidence volume is running out", map[string]any{"free_bytes": space.FreeBytes, "total_bytes": space.TotalBytes, "writable": space.Writable})
+	var sent int64
+	for _, admin := range admins {
+		if err := w.Store.Notify(ctx, admin, "STORAGE_LOW", title, body, "", ""); err == nil {
+			sent++
+		}
+	}
+	return sent
 }
 
 // alertFailedJobs reports work the queue has given up on. A stalled queue is

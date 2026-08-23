@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -680,5 +681,66 @@ func TestUnclaimedReviewsAreGatheredIntoOneReminder(t *testing.T) {
 		if !strings.Contains(bodies[0], "외 1건") {
 			t.Errorf("the reminder does not account for the ones it did not name: %s", bodies[0])
 		}
+	}
+}
+
+// An appliance that runs offline for years fills its disk eventually. The
+// first sign used to be an upload failing for somebody who could do nothing
+// about it: the figure was on no screen and in no metric.
+func TestAdministratorsAreWarnedBeforeTheEvidenceVolumeFills(t *testing.T) {
+	db := testdb.New(t)
+	ctx := context.Background()
+	adminID := testdb.Bootstrap(t, db, "storage-watcher")
+	if _, err := db.Pool.Exec(ctx, `INSERT INTO user_roles(user_id,role_code) VALUES($1,'SYSTEM_ADMIN') ON CONFLICT DO NOTHING`, adminID); err != nil {
+		t.Fatal(err)
+	}
+	key, err := cryptox.RandomBytes(32)
+	if err != nil {
+		t.Fatal(err)
+	}
+	box, err := cryptox.New(key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	dir := t.TempDir()
+	worker := maintenance.New(db, vault.New(dir, box, db))
+	alerts := func() int {
+		t.Helper()
+		var n int
+		if err := db.Pool.QueryRow(ctx, `SELECT count(*) FROM notifications WHERE recipient_id=$1 AND event_type='STORAGE_LOW'`, adminID).Scan(&n); err != nil {
+			t.Fatal(err)
+		}
+		return n
+	}
+
+	// A volume with room does not raise anything.
+	worker.Sweep(ctx)
+	if n := alerts(); n != 0 {
+		t.Fatalf("a healthy volume raised %d alerts", n)
+	}
+
+	// One that cannot be written to does, and says so.
+	if err := os.Chmod(filepath.Join(dir, "evidence"), 0o500); err != nil {
+		t.Skipf("cannot make the directory read-only here: %v", err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(filepath.Join(dir, "evidence"), 0o700) })
+	if space := vault.New(dir, box, db).Space(); space.Writable {
+		t.Skip("this filesystem ignores the read-only bit for the test user")
+	}
+	worker.Sweep(ctx)
+	if n := alerts(); n != 1 {
+		t.Fatalf("a volume that cannot be written to raised %d alerts, want 1", n)
+	}
+	var body string
+	if err := db.Pool.QueryRow(ctx, `SELECT body FROM notifications WHERE event_type='STORAGE_LOW' AND recipient_id=$1`, adminID).Scan(&body); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(body, "업로드가 모두 실패") {
+		t.Errorf("the alert does not say what breaks: %s", body)
+	}
+	// And it does not repeat while the same problem lasts.
+	worker.Sweep(ctx)
+	if n := alerts(); n != 1 {
+		t.Errorf("a second sweep raised the count to %d", n)
 	}
 }

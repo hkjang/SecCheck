@@ -78,6 +78,8 @@ scrape_configs:
 | `seccheck_sessions_active` | 만료되지 않은 세션 수 | — |
 | `seccheck_accounts_locked` | 잠긴 계정 수 | 급증 시 조사 |
 | `seccheck_evidence_version_bytes` | 증적 암호문 총 용량(byte) | 볼륨 여유와 대조 |
+| `seccheck_storage_free_bytes` | 증적 볼륨의 남은 공간(byte) | 전체의 10% 또는 2GB 아래면 경고 |
+| `seccheck_storage_writable` | 증적 볼륨 쓰기 가능 여부(1/0) | 0이면 업로드가 전부 실패하는 상태 |
 | `seccheck_evidence_scan_pending` | 검사 대기 증적 수 | 감소하지 않으면 clamd 확인 |
 | `seccheck_scan_failures` | `CLEAN`·`SKIPPED`이 아닌 증적 수 | `> 0` 지속 시 조사 |
 | `seccheck_submission_failures_24h` | 24시간 제출 실패(4xx 이상) 수 | 급증 시 규칙·증적 정책 확인 |
@@ -212,6 +214,12 @@ docker compose exec seccheck /app/seccheck verify-evidence --json         # 파�
 ```
 
 모든 증적을 복호화해 파일 크기와 SHA-256을 DB 기록과 대조하고, 실패가 하나라도 있으면 종료 코드 1을 반환하므로 훈련 스크립트에서 그대로 실패 처리할 수 있습니다. 파일 누락, 키 불일치, 해시 불일치를 각각 구분해 보고합니다.
+
+## 저장 공간
+
+증적 볼륨의 남은 공간과 쓰기 가능 여부는 관리자 > 시스템 정보와 `/metrics`에서 확인합니다. 남은 공간이 전체의 10% 또는 2GB 아래로 내려가거나 볼륨에 파일을 만들 수 없게 되면 시스템 관리자에게 `저장 공간 부족` 알림이 갑니다(6시간에 한 번). 공간이 떨어지면 증적 업로드가 실패하고, 그 시점에 곤란해지는 사람은 아무 조치도 할 수 없는 신청자입니다.
+
+오래된 증적은 보존 기간 경과 후 자동 정리되지만(아래), 정리 대상은 삭제 표시된 증적뿐입니다. 볼륨 자체가 계속 커지는 설치는 용량을 늘리거나 보존 기간을 조정해야 합니다.
 
 ## 데이터 보존 자동 정리
 

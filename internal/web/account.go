@@ -275,6 +275,7 @@ var notificationEvents = []map[string]string{
 	{"code": "JOB_QUEUE_STALLED", "label": "작업 큐 정체", "description": "알림·검사 작업이 처리되지 않고 쌓일 때 (시스템 관리자)"},
 	{"code": "JOB_FAILED", "label": "작업 재시도 소진", "description": "재시도를 모두 소진해 중단된 작업이 있을 때"},
 	{"code": "REVIEW_STALLED", "label": "심의 정체", "description": "담당한 심의가 며칠째 다음 단계로 넘어가지 않을 때"},
+	{"code": "STORAGE_LOW", "label": "저장 공간 부족", "description": "증적 볼륨의 남은 공간이 부족하거나 쓸 수 없을 때"},
 }
 
 type notificationPreference struct {

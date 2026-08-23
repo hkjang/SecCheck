@@ -125,6 +125,47 @@ func (v *Vault) EnsureUserKey(ctx context.Context, userID string) error {
 	return err
 }
 
+// Storage describes the volume evidence is written to. An appliance that runs
+// for years offline fills its disk eventually, and the first sign used to be
+// an upload failing.
+type Storage struct {
+	Path       string `json:"path"`
+	Writable   bool   `json:"writable"`
+	FreeBytes  uint64 `json:"free_bytes"`
+	TotalBytes uint64 `json:"total_bytes"`
+	Detail     string `json:"detail,omitempty"`
+}
+
+// Space probes the evidence volume: whether it can be written to at all, and
+// how much room is left. The write probe is the honest test -- a read-only
+// mount and a full disk both report plenty of inodes.
+func (v *Vault) Space() Storage {
+	dir := filepath.Join(v.Dir, "evidence")
+	out := Storage{Path: dir}
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		out.Detail = err.Error()
+		return out
+	}
+	probe, err := os.CreateTemp(dir, ".writable-*")
+	if err != nil {
+		out.Detail = err.Error()
+	} else {
+		out.Writable = true
+		name := probe.Name()
+		_ = probe.Close()
+		_ = os.Remove(name)
+	}
+	free, total, err := diskSpace(dir)
+	if err != nil {
+		if out.Detail == "" {
+			out.Detail = err.Error()
+		}
+		return out
+	}
+	out.FreeBytes, out.TotalBytes = free, total
+	return out
+}
+
 // VerifyMasterKey proves that ENCRYPTION_KEY is the one this database was
 // written with, before the service starts answering requests.
 //
