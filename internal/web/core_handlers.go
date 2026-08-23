@@ -283,6 +283,14 @@ func (s *Server) dashboard(w http.ResponseWriter, r *http.Request) {
 	var overdue int
 	args2 := append([]any{}, args...)
 	_ = s.Store.Pool.QueryRow(r.Context(), `SELECT count(*) FROM review_requests WHERE `+where+` AND planned_open_date BETWEEN display_today() AND display_today()+14`, args2...).Scan(&overdue)
+	// The number that matters is not how many services open soon but how many
+	// of them are opening with the review unfinished -- the count the alert
+	// mails are about.
+	var openingUnfinished int
+	args3 := append([]any{}, args...)
+	_ = s.Store.Pool.QueryRow(r.Context(), `SELECT count(*) FROM review_requests WHERE `+where+`
+                AND planned_open_date IS NOT NULL AND planned_open_date <= display_today()+14
+                AND status NOT IN ('APPROVED','CLOSED','CANCELLED','REJECTED')`, args3...).Scan(&openingUnfinished)
 	var openChanges int
 	_ = s.Store.Pool.QueryRow(r.Context(), `SELECT count(*) FROM change_requests c JOIN review_requests r ON r.id=c.review_request_id WHERE `+strings.ReplaceAll(where, "review_requests.", "r.")+` AND c.status='OPEN'`, args...).Scan(&openChanges)
 	analytics := map[string]any{}
@@ -305,7 +313,7 @@ func (s *Server) dashboard(w http.ResponseWriter, r *http.Request) {
 		analytics["unassigned"] = unassigned
 		analytics["long_pending"] = longPending
 	}
-	jsonResponse(w, 200, map[string]any{"status_counts": counts, "opening_soon": overdue, "open_change_requests": openChanges, "security_analytics": analytics, "my_queue": s.myQueue(r), "due_soon": s.dueChangeRequests(r), "my_follow_ups": s.myFollowUps(r)})
+	jsonResponse(w, 200, map[string]any{"status_counts": counts, "opening_soon": overdue, "opening_soon_unfinished": openingUnfinished, "open_change_requests": openChanges, "security_analytics": analytics, "my_queue": s.myQueue(r), "due_soon": s.dueChangeRequests(r), "my_follow_ups": s.myFollowUps(r)})
 }
 
 // myQueue lists the reviews that are actually waiting on the signed-in person,

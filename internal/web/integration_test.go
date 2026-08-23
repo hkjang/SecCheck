@@ -4212,3 +4212,46 @@ func TestAHistoryEntryCanBeTracedToItsAuditRecord(t *testing.T) {
 		}
 	}
 }
+
+// "Fourteen days to opening" counts services about to go live; what an owner
+// needs to know is how many of them are going live with the review unfinished.
+func TestTheDashboardSeparatesLaunchesStillUnderReview(t *testing.T) {
+	h := newHarness(t)
+	h.login(adminOf(h))
+	h.user("launch-owner", "REQUESTER")
+	owner := h.login("launch-owner")
+	ctx := context.Background()
+
+	soon := owner.createReview("곧 여는 서비스")
+	done := owner.createReview("이미 끝난 서비스")
+	later := owner.createReview("한참 남은 서비스")
+	if _, err := h.db.Pool.Exec(ctx, `UPDATE review_requests SET planned_open_date=display_today()+3 WHERE id=ANY($1)`, []string{soon, done}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := h.db.Pool.Exec(ctx, `UPDATE review_requests SET planned_open_date=display_today()+90 WHERE id=$1`, later); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := h.db.Pool.Exec(ctx, `UPDATE review_requests SET status='APPROVED' WHERE id=$1`, done); err != nil {
+		t.Fatal(err)
+	}
+
+	board := owner.do(http.MethodGet, "/api/v1/dashboard", nil).json()
+	openingSoon, _ := board["opening_soon"].(float64)
+	unfinished, _ := board["opening_soon_unfinished"].(float64)
+	if openingSoon != 2 {
+		t.Errorf("the dashboard counts %v services opening within two weeks, want 2", openingSoon)
+	}
+	if unfinished != 1 {
+		t.Errorf("the dashboard counts %v of them as still under review, want 1", unfinished)
+	}
+
+	// A date that has already passed with the review unfinished still counts:
+	// that is the worst case, not one to drop off the number.
+	if _, err := h.db.Pool.Exec(ctx, `UPDATE review_requests SET planned_open_date=display_today()-2 WHERE id=$1`, soon); err != nil {
+		t.Fatal(err)
+	}
+	board = owner.do(http.MethodGet, "/api/v1/dashboard", nil).json()
+	if unfinished, _ = board["opening_soon_unfinished"].(float64); unfinished != 1 {
+		t.Errorf("a launch date already passed with the review open counts %v, want 1", unfinished)
+	}
+}
