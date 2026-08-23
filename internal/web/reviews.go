@@ -178,8 +178,19 @@ func (s *Server) nextReviewNumber(r *http.Request, tx pgx.Tx) (string, error) {
 	return fmt.Sprintf("SC-%d-%06d", time.Now().In(zone).Year(), seq), nil
 }
 
+// A field that only has to be non-empty can be two megabytes long, and the
+// service name in particular is copied into every notification about the
+// review -- one long name becomes a mailbox full of them.
+var reviewFieldLimits = map[string]int{"service_name": 200, "department": 100, "description": longTextLimit}
+
 func validateReviewInput(in reviewInput) map[string]string {
 	e := map[string]string{}
+	for key, limit := range reviewFieldLimits {
+		value := map[string]string{"service_name": in.ServiceName, "department": in.Department, "description": in.Description}[key]
+		if len([]rune(value)) > limit {
+			e[key] = fmt.Sprintf("%d자 이내로 입력하세요.", limit)
+		}
+	}
 	for key, v := range map[string]string{"service_name": in.ServiceName, "description": in.Description, "service_type": in.ServiceType, "change_type": in.ChangeType, "builder_id": in.BuilderID, "developer_id": in.DeveloperID, "department": in.Department, "exposure": in.Exposure} {
 		if strings.TrimSpace(v) == "" {
 			e[key] = "필수 입력 항목입니다."
@@ -489,6 +500,10 @@ func (s *Server) updateReviewRequest(w http.ResponseWriter, r *http.Request) {
 		BusinessCriticality string `json:"business_criticality"`
 	}
 	if !decodeJSON(w, r, &in) {
+		return
+	}
+	if field := tooLong(map[string]string{"description": in.Description}, longTextLimit); field != "" {
+		problem(w, 422, "VALIDATION_FAILED", fmt.Sprintf("설명은 %d자 이내로 입력하세요.", longTextLimit), map[string]string{field: "너무 깁니다."})
 		return
 	}
 	if !s.canEditReview(r.Context(), session(r), id) {
@@ -1417,6 +1432,10 @@ func (s *Server) completeReview(w http.ResponseWriter, r *http.Request) {
 		problem(w, 422, "VALIDATION_FAILED", "최종 결과와 최종 의견을 입력하세요.", nil)
 		return
 	}
+	if field := tooLong(map[string]string{"final_opinion": in.FinalOpinion}, longTextLimit); field != "" {
+		problem(w, 422, "VALIDATION_FAILED", fmt.Sprintf("최종 의견은 %d자 이내로 입력하세요.", longTextLimit), map[string]string{field: "너무 깁니다."})
+		return
+	}
 	var wf struct {
 		ApprovalEnabled bool `json:"approval_enabled"`
 	}
@@ -1506,6 +1525,10 @@ func (s *Server) decideApproval(w http.ResponseWriter, r *http.Request, decision
 		Comment string `json:"comment"`
 	}
 	if !decodeOptionalJSON(w, r, &in) {
+		return
+	}
+	if field := tooLong(map[string]string{"comment": in.Comment}, longTextLimit); field != "" {
+		problem(w, 422, "VALIDATION_FAILED", fmt.Sprintf("의견은 %d자 이내로 입력하세요.", longTextLimit), map[string]string{field: "너무 깁니다."})
 		return
 	}
 	sess := session(r)

@@ -3671,3 +3671,46 @@ func TestAnAnswerCannotCarryAWholeLogFile(t *testing.T) {
 		t.Errorf("an answer at the limit was refused: %d %s", fits.status, fits.body)
 	}
 }
+
+// The service name is copied into every notification about the review, so one
+// unbounded field becomes a mailbox full of them. Nothing checked its length:
+// the rule was only that it must not be empty.
+func TestAReviewsOwnFieldsAreBounded(t *testing.T) {
+	h := newHarness(t)
+	h.user("long-name-requester", "REQUESTER")
+	author := h.login("long-name-requester")
+	me := author.do(http.MethodGet, "/api/v1/me", nil).json()
+	user, _ := me["user"].(map[string]any)
+	uid, _ := user["id"].(string)
+	base := map[string]any{
+		"service_name": "정상 서비스", "description": "설명", "service_type": "WEB", "change_type": "NEW",
+		"builder_id": uid, "developer_id": uid, "department": "보안팀", "exposure": "INTERNAL",
+	}
+	send := func(field string, value string) response {
+		t.Helper()
+		body := map[string]any{}
+		for k, v := range base {
+			body[k] = v
+		}
+		body[field] = value
+		return author.do(http.MethodPost, "/api/v1/review-requests", body)
+	}
+
+	if res := send("service_name", strings.Repeat("가", 201)); res.status != http.StatusUnprocessableEntity {
+		t.Errorf("a 201-character service name was accepted: %d %s", res.status, res.body)
+	}
+	if res := send("department", strings.Repeat("나", 101)); res.status != http.StatusUnprocessableEntity {
+		t.Errorf("a 101-character department was accepted: %d %s", res.status, res.body)
+	}
+	if res := send("description", strings.Repeat("다", 4001)); res.status != http.StatusUnprocessableEntity {
+		t.Errorf("a 4001-character description was accepted: %d %s", res.status, res.body)
+	}
+	ok := send("service_name", strings.Repeat("라", 200))
+	if ok.status != http.StatusCreated {
+		t.Fatalf("a name at the limit was refused: %d %s", ok.status, ok.body)
+	}
+	reviewID, _ := ok.json()["id"].(string)
+	if res := author.do(http.MethodPatch, "/api/v1/review-requests/"+reviewID, map[string]any{"description": strings.Repeat("마", 4001)}); res.status != http.StatusUnprocessableEntity {
+		t.Errorf("an over-long description was accepted on update: %d %s", res.status, res.body)
+	}
+}
