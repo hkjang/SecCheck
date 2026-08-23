@@ -269,7 +269,7 @@ func (s *Server) mcpDashboard(r *http.Request, sess auth.Session) (any, error) {
 	if err != nil {
 		return nil, err
 	}
-	return scanDynamic(rows, []string{"status", "count"}), nil
+	return scanDynamicAny(rows, []string{"status", "count"})
 }
 func (s *Server) mcpGetReview(r *http.Request, sess auth.Session, id string) (any, error) {
 	if !s.canAccessReview(r.Context(), sess, id) {
@@ -303,7 +303,7 @@ func (s *Server) mcpListReviews(r *http.Request, sess auth.Session, status, q st
 	if err != nil {
 		return nil, err
 	}
-	return scanDynamic(rows, []string{"id", "review_number", "service_name", "status", "department", "planned_open_date", "updated_at"}), nil
+	return scanDynamicAny(rows, []string{"id", "review_number", "service_name", "status", "department", "planned_open_date", "updated_at"})
 }
 func (s *Server) mcpSearchControls(r *http.Request, q, category string, limit int) (any, error) {
 	if len(strings.TrimSpace(q)) < 2 {
@@ -320,8 +320,20 @@ func (s *Server) mcpSearchControls(r *http.Request, q, category string, limit in
 	if err != nil {
 		return nil, err
 	}
-	return scanDynamic(rows, []string{"item_code", "category", "title", "question", "guide", "legal_basis", "severity", "template", "version"}), nil
+	return scanDynamicAny(rows, []string{"item_code", "category", "title", "question", "guide", "legal_basis", "severity", "template", "version"})
 }
+
+// scanDynamicAny adapts the reader for the MCP helpers, which answer with an
+// interface value and the error beside it.
+func scanDynamicAny(rows interface {
+	Next() bool
+	Values() ([]any, error)
+	Close()
+	Err() error
+}, names []string) (any, error) {
+	return scanDynamic(rows, names)
+}
+
 func numberValue(v any, fallback int) int {
 	if n, ok := v.(float64); ok && n >= 1 && n <= 100 {
 		return int(n)

@@ -64,7 +64,11 @@ func (s *Server) loadExportData(r *http.Request, id string) (exportData, error) 
 	if err != nil {
 		return exportData{}, err
 	}
-	return exportData{Review: review, Items: scanDynamic(rows, []string{"item_code", "section", "category", "title", "question", "severity", "template_name", "template_version", "applicability", "self_assessment", "current_state", "na_reason", "action_plan", "review_result", "review_opinion", "evidence_adequacy", "na_approved", "follow_up", "follow_up_due_date", "follow_up_reported_on", "follow_up_done_on", "evidences"})}, nil
+	items, err := scanDynamic(rows, []string{"item_code", "section", "category", "title", "question", "severity", "template_name", "template_version", "applicability", "self_assessment", "current_state", "na_reason", "action_plan", "review_result", "review_opinion", "evidence_adequacy", "na_approved", "follow_up", "follow_up_due_date", "follow_up_reported_on", "follow_up_done_on", "evidences"})
+	if err != nil {
+		return exportData{}, err
+	}
+	return exportData{Review: review, Items: items}, nil
 }
 
 // localTimestamp renders a stored timestamp in the configured display zone.

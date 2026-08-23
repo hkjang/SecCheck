@@ -124,7 +124,12 @@ func (s *Server) listReviewRequests(w http.ResponseWriter, r *http.Request) {
 			s.fault(w, r, "QUERY_FAILED", "심의 목록을 불러오지 못했습니다.", err)
 			return
 		}
-		records, truncated := capExport(w, scanDynamic(rows, reviewColumns))
+		listed, scanErr := scanDynamic(rows, reviewColumns)
+		if scanErr != nil {
+			s.fault(w, r, "QUERY_FAILED", "심의 목록을 불러오지 못했습니다.", scanErr)
+			return
+		}
+		records, truncated := capExport(w, listed)
 		_ = s.Store.Audit(r.Context(), auditFrom(r, "EXPORT_REVIEW_LIST", "REVIEW_REQUEST", "", nil, map[string]any{"rows": len(records), "truncated": truncated}))
 		writeCSV(w, "seccheck-reviews", s.Store.Location(r.Context()), reviewColumns, records)
 		return
@@ -142,7 +147,11 @@ func (s *Server) listReviewRequests(w http.ResponseWriter, r *http.Request) {
 		s.fault(w, r, "QUERY_FAILED", "심의 목록을 불러오지 못했습니다.", err)
 		return
 	}
-	items := scanDynamic(rows, reviewColumns)
+	items, err := scanDynamic(rows, reviewColumns)
+	if err != nil {
+		s.fault(w, r, "QUERY_FAILED", "심의 목록을 불러오지 못했습니다.", err)
+		return
+	}
 	jsonResponse(w, 200, map[string]any{"items": items, "total": total, "limit": limit, "offset": offset, "has_more": int64(offset+len(items)) < total})
 }
 
@@ -561,7 +570,10 @@ func (s *Server) snapshotTemplateVersions(r *http.Request, reviewID string) []ma
 	if err != nil {
 		return []map[string]any{}
 	}
-	out := scanDynamic(rows, []string{"template_name", "snapshot_version", "current_version"})
+	out, scanErr := scanDynamic(rows, []string{"template_name", "snapshot_version", "current_version"})
+	if scanErr != nil {
+		return []map[string]any{}
+	}
 	for _, entry := range out {
 		snapshot, _ := entry["snapshot_version"].(string)
 		current, _ := entry["current_version"].(string)
@@ -599,7 +611,11 @@ func (s *Server) reviewHistory(w http.ResponseWriter, r *http.Request) {
 		s.fault(w, r, "QUERY_FAILED", "심의 이력을 불러오지 못했습니다.", err)
 		return
 	}
-	items := scanDynamic(rows, []string{"timestamp", "event_type", "user_name", "target_type", "target_id", "result", "item_code"})
+	items, err := scanDynamic(rows, []string{"timestamp", "event_type", "user_name", "target_type", "target_id", "result", "item_code"})
+	if err != nil {
+		s.fault(w, r, "QUERY_FAILED", "이력을 불러오지 못했습니다.", err)
+		return
+	}
 	for _, item := range items {
 		if code, ok := item["event_type"].(string); ok {
 			item["event_label"] = auditEventLabels[code]
@@ -619,7 +635,12 @@ func (s *Server) listSubmissionItems(w http.ResponseWriter, r *http.Request) {
 		s.fault(w, r, "QUERY_FAILED", "체크리스트를 불러오지 못했습니다.", err)
 		return
 	}
-	jsonResponse(w, 200, scanDynamic(rows, []string{"id", "template_name", "template_version", "item_code", "section", "category", "title", "question", "guide", "legal_basis", "example", "severity", "required", "answer_type", "evidence_required", "options", "sort_order", "response", "review_result", "evidences", "change_requests", "comments"}))
+	items, err := scanDynamic(rows, []string{"id", "template_name", "template_version", "item_code", "section", "category", "title", "question", "guide", "legal_basis", "example", "severity", "required", "answer_type", "evidence_required", "options", "sort_order", "response", "review_result", "evidences", "change_requests", "comments"})
+	if err != nil {
+		s.fault(w, r, "QUERY_FAILED", "목록을 불러오지 못했습니다.", err)
+		return
+	}
+	jsonResponse(w, 200, items)
 }
 
 func (s *Server) addComment(w http.ResponseWriter, r *http.Request) {
@@ -1593,7 +1614,12 @@ func (s *Server) listParticipants(w http.ResponseWriter, r *http.Request) {
 		s.fault(w, r, "QUERY_FAILED", "참여자를 불러오지 못했습니다.", err)
 		return
 	}
-	jsonResponse(w, 200, scanDynamic(rows, []string{"user_id", "display_name", "department", "active", "participant_role"}))
+	items, err := scanDynamic(rows, []string{"user_id", "display_name", "department", "active", "participant_role"})
+	if err != nil {
+		s.fault(w, r, "QUERY_FAILED", "목록을 불러오지 못했습니다.", err)
+		return
+	}
+	jsonResponse(w, 200, items)
 }
 
 // removeParticipant takes access away again -- somebody added by mistake, or
@@ -1663,7 +1689,12 @@ func (s *Server) listRuleCandidates(w http.ResponseWriter, r *http.Request) {
 		s.fault(w, r, "QUERY_FAILED", "Rule 후보를 불러오지 못했습니다.", err)
 		return
 	}
-	jsonResponse(w, 200, map[string]any{"editable": status == "DRAFT", "items": scanDynamic(rows, []string{"source_item_id", "template_name", "template_version", "item_code", "section", "category", "title", "question", "severity", "assigned_item_id"})})
+	candidates, err := scanDynamic(rows, []string{"source_item_id", "template_name", "template_version", "item_code", "section", "category", "title", "question", "severity", "assigned_item_id"})
+	if err != nil {
+		s.fault(w, r, "QUERY_FAILED", "항목 후보를 불러오지 못했습니다.", err)
+		return
+	}
+	jsonResponse(w, 200, map[string]any{"editable": status == "DRAFT", "items": candidates})
 }
 
 func (s *Server) overrideRuleResult(w http.ResponseWriter, r *http.Request) {

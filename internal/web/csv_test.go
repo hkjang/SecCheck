@@ -1,6 +1,7 @@
 package web
 
 import (
+	"errors"
 	"net/http/httptest"
 	"strings"
 	"testing"
@@ -108,5 +109,44 @@ func TestAnOverlongCellIsCutRatherThanBreakingTheWorkbook(t *testing.T) {
 	}
 	if !strings.HasSuffix(cut, "…(이하 생략)") {
 		t.Error("the cut value does not say that it was cut")
+	}
+}
+
+// A row that cannot be read used to end the loop and hand back what had been
+// collected so far, as if that were the whole answer -- a short list, with no
+// error, in a product whose lists are the record.
+type halfRows struct {
+	rows   [][]any
+	at     int
+	broken int
+}
+
+func (h *halfRows) Next() bool { h.at++; return h.at <= len(h.rows) }
+func (h *halfRows) Values() ([]any, error) {
+	if h.at == h.broken {
+		return nil, errors.New("connection lost")
+	}
+	return h.rows[h.at-1], nil
+}
+func (h *halfRows) Close()     {}
+func (h *halfRows) Err() error { return nil }
+
+func TestAPartialReadIsNotAnAnswer(t *testing.T) {
+	whole := &halfRows{rows: [][]any{{"a", 1}, {"b", 2}, {"c", 3}}}
+	items, err := scanDynamic(whole, []string{"name", "count"})
+	if err != nil {
+		t.Fatalf("a complete read reported %v", err)
+	}
+	if len(items) != 3 || items[2]["name"] != "c" {
+		t.Fatalf("the complete read returned %v", items)
+	}
+
+	broken := &halfRows{rows: [][]any{{"a", 1}, {"b", 2}, {"c", 3}}, broken: 2}
+	items, err = scanDynamic(broken, []string{"name", "count"})
+	if err == nil {
+		t.Fatalf("a read that failed half way returned %d rows and no error", len(items))
+	}
+	if items != nil {
+		t.Errorf("the partial rows were handed back anyway: %v", items)
 	}
 }

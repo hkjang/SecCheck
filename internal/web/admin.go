@@ -24,7 +24,12 @@ func (s *Server) listUsers(w http.ResponseWriter, r *http.Request) {
 		s.fault(w, r, "QUERY_FAILED", "사용자를 불러오지 못했습니다.", err)
 		return
 	}
-	jsonResponse(w, 200, scanDynamic(rows, []string{"id", "username", "display_name", "email", "department", "auth_source", "active", "last_login_at", "created_at", "failed_login_count", "locked_until", "totp_enabled", "roles"}))
+	items, err := scanDynamic(rows, []string{"id", "username", "display_name", "email", "department", "auth_source", "active", "last_login_at", "created_at", "failed_login_count", "locked_until", "totp_enabled", "roles"})
+	if err != nil {
+		s.fault(w, r, "QUERY_FAILED", "목록을 불러오지 못했습니다.", err)
+		return
+	}
+	jsonResponse(w, 200, items)
 }
 
 func (s *Server) createUser(w http.ResponseWriter, r *http.Request) {
@@ -191,7 +196,12 @@ func (s *Server) listSettings(w http.ResponseWriter, r *http.Request) {
 		s.fault(w, r, "QUERY_FAILED", "설정을 불러오지 못했습니다.", err)
 		return
 	}
-	jsonResponse(w, 200, scanDynamic(rows, []string{"key", "value", "secret_configured", "sensitive", "updated_at"}))
+	items, err := scanDynamic(rows, []string{"key", "value", "secret_configured", "sensitive", "updated_at"})
+	if err != nil {
+		s.fault(w, r, "QUERY_FAILED", "목록을 불러오지 못했습니다.", err)
+		return
+	}
+	jsonResponse(w, 200, items)
 }
 
 func (s *Server) updateSetting(w http.ResponseWriter, r *http.Request) {
@@ -447,7 +457,11 @@ func (s *Server) listAudit(w http.ResponseWriter, r *http.Request) {
 		s.fault(w, r, "QUERY_FAILED", "감사 로그를 불러오지 못했습니다.", err)
 		return
 	}
-	records := scanDynamic(rows, auditColumns)
+	records, err := scanDynamic(rows, auditColumns)
+	if err != nil {
+		s.fault(w, r, "QUERY_FAILED", "감사 로그를 불러오지 못했습니다.", err)
+		return
+	}
 	for _, record := range records {
 		if code, ok := record["event_type"].(string); ok {
 			record["event_label"] = auditEventLabels[code]
@@ -637,7 +651,12 @@ func (s *Server) listLogs(w http.ResponseWriter, r *http.Request) {
 		s.fault(w, r, "QUERY_FAILED", "서버 로그를 불러오지 못했습니다.", err)
 		return
 	}
-	jsonResponse(w, 200, scanDynamic(rows, []string{"id", "timestamp", "level", "request_id", "component", "message", "fields"}))
+	items, err := scanDynamic(rows, []string{"id", "timestamp", "level", "request_id", "component", "message", "fields"})
+	if err != nil {
+		s.fault(w, r, "QUERY_FAILED", "목록을 불러오지 못했습니다.", err)
+		return
+	}
+	jsonResponse(w, 200, items)
 }
 
 func contains(items []string, v string) bool {
@@ -699,11 +718,19 @@ func (s *Server) listJobs(w http.ResponseWriter, r *http.Request) {
 		s.fault(w, r, "QUERY_FAILED", "작업 큐를 불러오지 못했습니다.", err)
 		return
 	}
-	items := scanDynamic(rows, []string{"id", "type", "status", "attempts", "available_at", "locked_at", "last_error", "created_at", "updated_at"})
+	items, err := scanDynamic(rows, []string{"id", "type", "status", "attempts", "available_at", "locked_at", "last_error", "created_at", "updated_at"})
+	if err != nil {
+		s.fault(w, r, "QUERY_FAILED", "작업 큐를 불러오지 못했습니다.", err)
+		return
+	}
 	summary := map[string]any{}
 	counts, err := s.Store.Pool.Query(r.Context(), `SELECT type,status,count(*) FROM jobs GROUP BY type,status`)
 	if err == nil {
-		summary["counts"] = scanDynamic(counts, []string{"type", "status", "count"})
+		// A summary that cannot be read is left out rather than reported half
+		// done; the list above it is the answer that matters here.
+		if grouped, groupErr := scanDynamic(counts, []string{"type", "status", "count"}); groupErr == nil {
+			summary["counts"] = grouped
+		}
 	}
 	var pendingScans int64
 	_ = s.Store.Pool.QueryRow(r.Context(), `SELECT count(*) FROM evidences WHERE scan_status IN ('PENDING','ERROR') AND deleted_at IS NULL`).Scan(&pendingScans)

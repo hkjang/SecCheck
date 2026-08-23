@@ -183,7 +183,7 @@ func (s *Server) reportRows(ctx context.Context, query string, args []any, colum
 	if err != nil {
 		return nil, err
 	}
-	return scanDynamic(rows, columns), nil
+	return scanDynamic(rows, columns)
 }
 
 func round1(v *float64) float64 {

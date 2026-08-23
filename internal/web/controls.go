@@ -37,7 +37,11 @@ func (s *Server) listControls(w http.ResponseWriter, r *http.Request) {
 		s.fault(w, r, "QUERY_FAILED", "Security Control을 불러오지 못했습니다.", err)
 		return
 	}
-	items := scanDynamic(rows, []string{"id", "code", "title", "description", "owner_id", "owner", "created_at", "updated_at", "mapped_items", "affected_reviews"})
+	items, err := scanDynamic(rows, []string{"id", "code", "title", "description", "owner_id", "owner", "created_at", "updated_at", "mapped_items", "affected_reviews"})
+	if err != nil {
+		s.fault(w, r, "QUERY_FAILED", "Security Control을 불러오지 못했습니다.", err)
+		return
+	}
 	jsonResponse(w, 200, map[string]any{"items": items, "total": total, "limit": limit, "offset": offset, "has_more": int64(offset+len(items)) < total})
 }
 
@@ -144,5 +148,10 @@ func (s *Server) controlImpact(w http.ResponseWriter, r *http.Request) {
 		s.fault(w, r, "QUERY_FAILED", "영향 범위를 불러오지 못했습니다.", err)
 		return
 	}
-	jsonResponse(w, 200, scanDynamic(rows, []string{"item_id", "template_name", "template_version", "item_code", "title", "version_status", "affected_reviews"}))
+	items, err := scanDynamic(rows, []string{"item_id", "template_name", "template_version", "item_code", "title", "version_status", "affected_reviews"})
+	if err != nil {
+		s.fault(w, r, "QUERY_FAILED", "목록을 불러오지 못했습니다.", err)
+		return
+	}
+	jsonResponse(w, 200, items)
 }

@@ -18,7 +18,12 @@ func (s *Server) listSessions(w http.ResponseWriter, r *http.Request) {
 		s.fault(w, r, "QUERY_FAILED", "세션을 불러오지 못했습니다.", err)
 		return
 	}
-	jsonResponse(w, 200, scanDynamic(rows, []string{"id", "source_ip", "user_agent", "created_at", "last_seen_at", "expires_at", "current"}))
+	items, err := scanDynamic(rows, []string{"id", "source_ip", "user_agent", "created_at", "last_seen_at", "expires_at", "current"})
+	if err != nil {
+		s.fault(w, r, "QUERY_FAILED", "목록을 불러오지 못했습니다.", err)
+		return
+	}
+	jsonResponse(w, 200, items)
 }
 
 func (s *Server) revokeSession(w http.ResponseWriter, r *http.Request) {

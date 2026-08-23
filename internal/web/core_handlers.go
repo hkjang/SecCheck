@@ -279,11 +279,15 @@ func (s *Server) dashboard(w http.ResponseWriter, r *http.Request) {
 		_ = s.Store.Pool.QueryRow(r.Context(), `SELECT count(*) FROM review_requests WHERE status IN ('SUBMITTED','RESUBMITTED','REVIEWING') AND updated_at<now()-interval '7 days'`).Scan(&longPending)
 		rows, err := s.Store.Pool.Query(r.Context(), `SELECT si.category,rr.result,count(*) FROM review_results rr JOIN submission_items si ON si.id=rr.submission_item_id WHERE rr.result IN ('INSUFFICIENT','NON_COMPLIANT','CONDITIONAL') GROUP BY si.category,rr.result ORDER BY count(*) DESC LIMIT 20`)
 		if err == nil {
-			analytics["category_findings"] = scanDynamic(rows, []string{"category", "result", "count"})
+			if grouped, groupErr := scanDynamic(rows, []string{"category", "result", "count"}); groupErr == nil {
+				analytics["category_findings"] = grouped
+			}
 		}
 		rows, err = s.Store.Pool.Query(r.Context(), `SELECT si.item_code,si.title,count(*) AS failures FROM review_results rr JOIN submission_items si ON si.id=rr.submission_item_id WHERE rr.result IN ('INSUFFICIENT','NON_COMPLIANT') GROUP BY si.item_code,si.title ORDER BY failures DESC LIMIT 10`)
 		if err == nil {
-			analytics["recurring_controls"] = scanDynamic(rows, []string{"item_code", "title", "failures"})
+			if grouped, groupErr := scanDynamic(rows, []string{"item_code", "title", "failures"}); groupErr == nil {
+				analytics["recurring_controls"] = grouped
+			}
 		}
 		analytics["unassigned"] = unassigned
 		analytics["long_pending"] = longPending
@@ -307,7 +311,11 @@ func (s *Server) myQueue(r *http.Request) []map[string]any {
 	if err != nil {
 		return []map[string]any{}
 	}
-	return scanDynamic(rows, []string{"id", "review_number", "service_name", "status", "planned_open_date", "updated_at", "action"})
+	rows2, scanErr := scanDynamic(rows, []string{"id", "review_number", "service_name", "status", "planned_open_date", "updated_at", "action"})
+	if scanErr != nil {
+		return []map[string]any{}
+	}
+	return rows2
 }
 
 // dueChangeRequests surfaces the change requests whose due date has passed or
@@ -336,7 +344,11 @@ func (s *Server) myFollowUps(r *http.Request) []map[string]any {
 	if err != nil {
 		return []map[string]any{}
 	}
-	return scanDynamic(rows, []string{"id", "review_id", "review_number", "service_name", "item_code", "title", "follow_up", "due_date", "overdue", "reported"})
+	rows2, scanErr := scanDynamic(rows, []string{"id", "review_id", "review_number", "service_name", "item_code", "title", "follow_up", "due_date", "overdue", "reported"})
+	if scanErr != nil {
+		return []map[string]any{}
+	}
+	return rows2
 }
 
 func (s *Server) dueChangeRequests(r *http.Request) []map[string]any {
@@ -355,7 +367,11 @@ func (s *Server) dueChangeRequests(r *http.Request) []map[string]any {
 	if err != nil {
 		return []map[string]any{}
 	}
-	return scanDynamic(rows, []string{"id", "review_request_id", "review_number", "service_name", "item_code", "title", "due_date", "status", "overdue"})
+	rows2, scanErr := scanDynamic(rows, []string{"id", "review_request_id", "review_number", "service_name", "item_code", "title", "due_date", "status", "overdue"})
+	if scanErr != nil {
+		return []map[string]any{}
+	}
+	return rows2
 }
 
 func (s *Server) search(w http.ResponseWriter, r *http.Request) {
@@ -377,20 +393,32 @@ func (s *Server) search(w http.ResponseWriter, r *http.Request) {
 		s.fault(w, r, "SEARCH_FAILED", "검색하지 못했습니다.", err)
 		return
 	}
-	reviews := scanDynamic(rows, []string{"id", "review_number", "service_name", "status", "department"})
+	reviews, err := scanDynamic(rows, []string{"id", "review_number", "service_name", "status", "department"})
+	if err != nil {
+		s.fault(w, r, "SEARCH_FAILED", "검색하지 못했습니다.", err)
+		return
+	}
 	itemWhere := strings.ReplaceAll(where, "review_requests.", "r.")
 	rows, err = s.Store.Pool.Query(r.Context(), `SELECT DISTINCT r.id AS review_id,r.review_number,si.item_code,si.title,si.category FROM submission_items si JOIN submissions s ON s.id=si.submission_id JOIN review_requests r ON r.id=s.review_request_id LEFT JOIN review_results rr ON rr.submission_item_id=si.id WHERE `+itemWhere+` AND (si.item_code ILIKE $1 OR si.title ILIKE $1 OR si.question ILIKE $1 OR si.template_name ILIKE $1 OR rr.opinion ILIKE $1) LIMIT 20`, args...)
 	if err != nil {
 		s.fault(w, r, "SEARCH_FAILED", "검색하지 못했습니다.", err)
 		return
 	}
-	items := scanDynamic(rows, []string{"review_id", "review_number", "item_code", "title", "category"})
+	items, err := scanDynamic(rows, []string{"review_id", "review_number", "item_code", "title", "category"})
+	if err != nil {
+		s.fault(w, r, "SEARCH_FAILED", "검색하지 못했습니다.", err)
+		return
+	}
 	rows, err = s.Store.Pool.Query(r.Context(), `SELECT DISTINCT r.id AS review_id,r.review_number,e.id,e.original_filename,e.mime_type,e.created_at FROM evidences e JOIN submission_items si ON si.id=e.submission_item_id JOIN submissions sub ON sub.id=si.submission_id JOIN review_requests r ON r.id=sub.review_request_id WHERE e.deleted_at IS NULL AND `+itemWhere+` AND e.original_filename ILIKE $1 ORDER BY e.created_at DESC LIMIT 20`, args...)
 	if err != nil {
 		s.fault(w, r, "SEARCH_FAILED", "검색하지 못했습니다.", err)
 		return
 	}
-	evidences := scanDynamic(rows, []string{"review_id", "review_number", "id", "original_filename", "mime_type", "created_at"})
+	evidences, err := scanDynamic(rows, []string{"review_id", "review_number", "id", "original_filename", "mime_type", "created_at"})
+	if err != nil {
+		s.fault(w, r, "SEARCH_FAILED", "검색하지 못했습니다.", err)
+		return
+	}
 	jsonResponse(w, 200, map[string]any{"reviews": reviews, "items": items, "evidences": evidences})
 }
 
@@ -404,13 +432,17 @@ func scanDynamic(rows interface {
 	Values() ([]any, error)
 	Close()
 	Err() error
-}, names []string) []map[string]any {
+}, names []string) ([]map[string]any, error) {
 	defer rows.Close()
 	out := []map[string]any{}
 	for rows.Next() {
 		vals, err := rows.Values()
 		if err != nil {
-			break
+			// Stopping here used to hand back the rows read so far as if they
+			// were the whole answer: a list that is short and looks complete.
+			// In an audit log or a register of outstanding work, that is worse
+			// than an error.
+			return nil, err
 		}
 		m := map[string]any{}
 		for i, n := range names {
@@ -420,7 +452,7 @@ func scanDynamic(rows interface {
 		}
 		out = append(out, m)
 	}
-	return out
+	return out, rows.Err()
 }
 
 func (s *Server) notifications(w http.ResponseWriter, r *http.Request) {
@@ -443,7 +475,11 @@ func (s *Server) notifications(w http.ResponseWriter, r *http.Request) {
 		s.fault(w, r, "QUERY_FAILED", "알림을 불러오지 못했습니다.", err)
 		return
 	}
-	items := scanDynamic(rows, []string{"id", "event_type", "title", "body", "status", "target_type", "target_id", "read_at", "created_at"})
+	items, err := scanDynamic(rows, []string{"id", "event_type", "title", "body", "status", "target_type", "target_id", "read_at", "created_at"})
+	if err != nil {
+		s.fault(w, r, "QUERY_FAILED", "알림을 불러오지 못했습니다.", err)
+		return
+	}
 	jsonResponse(w, 200, map[string]any{"items": items, "total": total, "limit": limit, "offset": offset, "has_more": int64(offset+len(items)) < total})
 }
 
@@ -462,7 +498,12 @@ func (s *Server) userDirectory(w http.ResponseWriter, r *http.Request) {
 		s.fault(w, r, "QUERY_FAILED", "사용자 목록을 불러오지 못했습니다.", err)
 		return
 	}
-	jsonResponse(w, 200, scanDynamic(rows, []string{"id", "username", "display_name", "department"}))
+	items, err := scanDynamic(rows, []string{"id", "username", "display_name", "department"})
+	if err != nil {
+		s.fault(w, r, "QUERY_FAILED", "목록을 불러오지 못했습니다.", err)
+		return
+	}
+	jsonResponse(w, 200, items)
 }
 
 // unreadNotifications backs the badge in the header, so it stays a single
@@ -514,7 +555,9 @@ func (s *Server) systemInfo(w http.ResponseWriter, r *http.Request) {
                 LEFT JOIN user_roles ur ON ur.role_code=r.code
                 LEFT JOIN users u ON u.id=ur.user_id
                 GROUP BY r.code ORDER BY r.code`); err == nil {
-		coverage = scanDynamic(rows, []string{"code", "active", "total"})
+		if counted, scanErr := scanDynamic(rows, []string{"code", "active", "total"}); scanErr == nil {
+			coverage = counted
+		}
 	}
 	jsonResponse(w, 200, map[string]any{"version": s.Version, "schema_version": s.Store.SchemaVersion(r.Context()), "go_version": runtime.Version(), "users": users, "reviews": reviews, "templates": templates, "evidences": evidences, "logs": logs, "database_size": dbSize, "pdf_font": pdfFont, "pdf_export_available": pdfFont != "", "storage": storage, "role_coverage": coverage, "now": time.Now()})
 }
@@ -529,7 +572,12 @@ func (s *Server) listAPIKeys(w http.ResponseWriter, r *http.Request) {
 		s.fault(w, r, "QUERY_FAILED", "API 키를 불러오지 못했습니다.", err)
 		return
 	}
-	jsonResponse(w, 200, scanDynamic(rows, []string{"id", "name", "prefix", "scopes", "expires_at", "last_used_at", "revoked_at", "created_at"}))
+	items, err := scanDynamic(rows, []string{"id", "name", "prefix", "scopes", "expires_at", "last_used_at", "revoked_at", "created_at"})
+	if err != nil {
+		s.fault(w, r, "QUERY_FAILED", "목록을 불러오지 못했습니다.", err)
+		return
+	}
+	jsonResponse(w, 200, items)
 }
 func (s *Server) createAPIKey(w http.ResponseWriter, r *http.Request) {
 	var in struct {

@@ -175,7 +175,11 @@ func (s *Server) listEvidenceVersions(w http.ResponseWriter, r *http.Request) {
 		s.fault(w, r, "QUERY_FAILED", "증적 이력을 불러오지 못했습니다.", err)
 		return
 	}
-	items := scanDynamic(rows, []string{"version", "original_filename", "size_bytes", "sha256", "mime_type", "scan_status", "uploaded_by", "created_at", "purged", "current"})
+	items, err := scanDynamic(rows, []string{"version", "original_filename", "size_bytes", "sha256", "mime_type", "scan_status", "uploaded_by", "created_at", "purged", "current"})
+	if err != nil {
+		s.fault(w, r, "QUERY_FAILED", "증적 이력을 불러오지 못했습니다.", err)
+		return
+	}
 	jsonResponse(w, 200, map[string]any{"items": items, "current_version": current})
 }
 

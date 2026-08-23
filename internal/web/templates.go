@@ -53,7 +53,11 @@ func (s *Server) listTemplates(w http.ResponseWriter, r *http.Request) {
 		s.fault(w, r, "QUERY_FAILED", "템플릿을 불러오지 못했습니다.", err)
 		return
 	}
-	items := scanDynamic(rows, []string{"id", "name", "category", "description", "active", "created_at", "updated_at", "versions"})
+	items, err := scanDynamic(rows, []string{"id", "name", "category", "description", "active", "created_at", "updated_at", "versions"})
+	if err != nil {
+		s.fault(w, r, "QUERY_FAILED", "템플릿을 불러오지 못했습니다.", err)
+		return
+	}
 	jsonResponse(w, 200, map[string]any{"items": items, "total": total, "limit": limit, "offset": offset, "has_more": int64(offset+len(items)) < total})
 }
 
@@ -584,7 +588,12 @@ func (s *Server) versionDiff(w http.ResponseWriter, r *http.Request) {
 		s.fault(w, r, "DIFF_FAILED", "버전을 비교하지 못했습니다.", err)
 		return
 	}
-	jsonResponse(w, 200, map[string]any{"base_version_id": base, "current_version_id": current, "changes": scanDynamic(rows, []string{"item_code", "change_type", "current", "base"})})
+	changes, err := scanDynamic(rows, []string{"item_code", "change_type", "current", "base"})
+	if err != nil {
+		s.fault(w, r, "DIFF_FAILED", "버전을 비교하지 못했습니다.", err)
+		return
+	}
+	jsonResponse(w, 200, map[string]any{"base_version_id": base, "current_version_id": current, "changes": changes})
 }
 
 func (s *Server) versionChanges(w http.ResponseWriter, r *http.Request) {
@@ -593,7 +602,12 @@ func (s *Server) versionChanges(w http.ResponseWriter, r *http.Request) {
 		s.fault(w, r, "QUERY_FAILED", "변경 이력을 불러오지 못했습니다.", err)
 		return
 	}
-	jsonResponse(w, 200, scanDynamic(rows, []string{"id", "item_code", "change_type", "before", "after", "changed_by", "created_at"}))
+	items, err := scanDynamic(rows, []string{"id", "item_code", "change_type", "before", "after", "changed_by", "created_at"})
+	if err != nil {
+		s.fault(w, r, "QUERY_FAILED", "목록을 불러오지 못했습니다.", err)
+		return
+	}
+	jsonResponse(w, 200, items)
 }
 
 type importColumn struct {
