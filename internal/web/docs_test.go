@@ -357,3 +357,24 @@ func TestIconOnlyControlsHaveANameToRead(t *testing.T) {
 		}
 	}
 }
+
+// The label of a field has to be attached to the control it names, or a screen
+// reader announces an unnamed box and clicking the label does nothing. The
+// association lives in one component, so this checks that it is still there.
+func TestFieldLabelsAreAttachedToTheirControl(t *testing.T) {
+	ui := repoFile(t, filepath.Join("web", "src", "components", "ui.tsx"))
+	start := strings.Index(ui, "export function Field(")
+	if start < 0 {
+		t.Fatal("the Field component is gone; this test needs rewriting")
+	}
+	end := strings.Index(ui[start:], "\nexport function ")
+	if end < 0 {
+		end = len(ui) - start
+	}
+	field := ui[start : start+end]
+	for _, needed := range []string{"htmlFor", "useId", "aria-describedby", "aria-invalid"} {
+		if !strings.Contains(field, needed) {
+			t.Errorf("Field no longer uses %s, so its label and messages are not attached to the control", needed)
+		}
+	}
+}

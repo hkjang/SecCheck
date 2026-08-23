@@ -1,4 +1,4 @@
-import { PropsWithChildren, ReactNode, createContext, useCallback, useContext, useEffect, useState } from 'react'
+import { PropsWithChildren, ReactElement, ReactNode, cloneElement, createContext, isValidElement, useCallback, useContext, useEffect, useId, useState } from 'react'
 import { AlertCircle, Inbox, RefreshCw } from 'lucide-react'
 import { download, errorMessage } from '../lib/api'
 
@@ -10,8 +10,30 @@ export function Badge({ children, tone = '' }: PropsWithChildren<{ tone?: 'blue'
   return <span className={`badge ${tone}`}>{children}</span>
 }
 
+// The label used to sit beside the control rather than being attached to it,
+// so a screen reader announced every field in the product as an unnamed text
+// box, clicking the label did nothing, and the help and error lines were read
+// only if somebody navigated to them separately. One control gets the id; a
+// field holding several is left as it was, since there is nothing to point at.
 export function Field({ label, required, help, error, children, className = '' }: PropsWithChildren<{ label: string; required?: boolean; help?: string; error?: string; className?: string }>) {
-  return <div className={`field ${className}`}><label>{label}{required && <span className="required">*</span>}</label>{children}{help && <span className="field-help">{help}</span>}{error && <span className="field-error">{error}</span>}</div>
+  const generated = useId()
+  const single = isValidElement(children) ? (children as ReactElement<Record<string, unknown>>) : null
+  const id = String(single?.props?.id || generated)
+  const describedBy = [help ? `${id}-help` : '', error ? `${id}-error` : ''].filter(Boolean).join(' ')
+  const control = single
+    ? cloneElement(single, {
+      id,
+      ...(describedBy ? { 'aria-describedby': describedBy } : {}),
+      ...(error ? { 'aria-invalid': true } : {}),
+      ...(required ? { 'aria-required': true } : {}),
+    })
+    : children
+  return <div className={`field ${className}`}>
+    {single ? <label htmlFor={id}>{label}{required && <span className="required">*</span>}</label> : <label>{label}{required && <span className="required">*</span>}</label>}
+    {control}
+    {help && <span className="field-help" id={`${id}-help`}>{help}</span>}
+    {error && <span className="field-error" id={`${id}-error`}>{error}</span>}
+  </div>
 }
 
 export function Toggle({ value, onChange, label }: { value: boolean; onChange: (value: boolean) => void; label: string }) {
