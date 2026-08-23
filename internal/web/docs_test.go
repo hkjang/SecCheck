@@ -450,3 +450,28 @@ func TestTheProductAnnouncesWhatItIsDoing(t *testing.T) {
 		t.Error("the loading state has no role, so aria-label on its div is ignored")
 	}
 }
+
+// A notification that names no target leaves the reader with nowhere to go
+// unless the screen knows where that kind of alert belongs. Every such event
+// therefore has to appear in the notification screen's destination map.
+func TestNotificationsWithoutATargetHaveSomewhereToGo(t *testing.T) {
+	page := repoFile(t, filepath.Join("web", "src", "pages", "Notifications.tsx"))
+	sources := []string{"internal/maintenance/worker.go", "internal/scanner/worker.go", "internal/web/admin.go", "internal/web/reviews.go"}
+	targetless := regexp.MustCompile(`Notify\(ctx, [A-Za-z0-9_.]+, "([A-Z_]{3,})"[^)]*, "", ""\)`)
+	checked := 0
+	for _, file := range sources {
+		body, err := os.ReadFile(filepath.Join("..", "..", file))
+		if err != nil {
+			continue
+		}
+		for _, m := range targetless.FindAllStringSubmatch(string(body), -1) {
+			checked++
+			if !strings.Contains(page, m[1]+":") {
+				t.Errorf("%s is sent with no target and has no destination on the notification screen", m[1])
+			}
+		}
+	}
+	if checked == 0 {
+		t.Fatal("the scan found no target-less notifications; the call shape must have changed")
+	}
+}
