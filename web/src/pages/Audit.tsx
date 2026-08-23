@@ -14,7 +14,7 @@ export default function AuditPage() {
   // Another screen can hand the log a target to look at, so "what happened to
   // this Control" is one link away from the Control itself.
   const [search, setSearch] = useSearchParams()
-  const [filter, setFilter] = useState({ event: '', user: '', target: search.get('target') || '', target_type: search.get('target_type') || '', from: '', to: '', limit: '200' })
+  const [filter, setFilter] = useState({ event: '', user: '', target: search.get('target') || '', target_type: search.get('target_type') || '', event_id: search.get('event_id') || '', from: '', to: '', limit: '200' })
   const [detail, setDetail] = useState<Record<string, unknown>>()
   const params = useMemo(() => { const qs = new URLSearchParams(); Object.entries(filter).forEach(([k, v]) => { if (v) qs.set(k, v) }); return qs }, [filter])
   useEffect(() => { setItems(undefined); const timer = window.setTimeout(() => { get<{ items: Record<string, unknown>[]; events: { code: string; label: string }[] }>(`/api/v1/admin/audit?${params}`).then(page => { setItems(page.items); if (page.events?.length) setEvents(page.events) }) }, 200); return () => clearTimeout(timer) }, [params])
@@ -33,18 +33,19 @@ export default function AuditPage() {
   }
   const set = (key: keyof typeof filter, value: string) => setFilter(v => ({ ...v, [key]: value }))
   // The address bar carries the target so the filtered view can be shared.
-  useEffect(() => { const next = new URLSearchParams(search); filter.target ? next.set('target', filter.target) : next.delete('target'); filter.target_type ? next.set('target_type', filter.target_type) : next.delete('target_type'); if (next.toString() !== search.toString()) setSearch(next, { replace: true }) }, [filter.target, filter.target_type])
-  const active = Boolean(filter.event || filter.user || filter.target || filter.target_type || filter.from || filter.to)
+  useEffect(() => { const next = new URLSearchParams(search); filter.target ? next.set('target', filter.target) : next.delete('target'); filter.target_type ? next.set('target_type', filter.target_type) : next.delete('target_type'); filter.event_id ? next.set('event_id', filter.event_id) : next.delete('event_id'); if (next.toString() !== search.toString()) setSearch(next, { replace: true }) }, [filter.target, filter.target_type])
+  const active = Boolean(filter.event || filter.user || filter.target || filter.target_type || filter.event_id || filter.from || filter.to)
   return <div className="page">
     <div className="page-header"><div><h1 className="page-title">감사로그</h1><p className="page-description">이전 이벤트 해시를 연결한 위변조 탐지 체인입니다. 애플리케이션에서 수정·삭제 API를 제공하지 않습니다.</p></div><div className="header-actions"><Button onClick={() => save(`/api/v1/admin/audit?${new URLSearchParams({ ...Object.fromEntries(params), format: 'csv' })}`)}><Download size={14} /> CSV 내보내기</Button><Button disabled={verifying} onClick={() => verify(false)}><ShieldCheck size={14} /> 체인 검증</Button><Button disabled={verifying} onClick={() => verify(true)}>전체 재검증</Button></div></div>
     <div className="card"><div className="card-body"><div className="form-grid">
       <Field label="이벤트 유형" help="앞부분만 입력해도 됩니다. 예: LOGIN"><div className="search-box"><Search /><input className="input" list="audit-events" placeholder="목록에서 고르거나 직접 입력" value={filter.event} onChange={e => set('event', e.target.value)} /><datalist id="audit-events">{events.map(e => <option key={e.code} value={e.code}>{e.label}</option>)}</datalist></div></Field>
       <Field label="사용자 / 접속 IP"><input className="input" placeholder="이름 또는 IP 일부" value={filter.user} onChange={e => set('user', e.target.value)} /></Field>
       <Field label="대상 ID" help="표의 대상 값을 누르면 그 대상의 이력만 남습니다."><input className="input" placeholder="심의·Control·템플릿 ID" value={filter.target} onChange={e => set('target', e.target.value)} /></Field>
+      <Field label="이벤트 ID" help="무결성 실패 알림이 가리키는 그 이벤트만 봅니다."><input className="input" placeholder="감사 이벤트 ID" value={filter.event_id} onChange={e => set('event_id', e.target.value)} /></Field>
       <Field label="시작일"><input type="date" className="input" max={filter.to || today()} value={filter.from} onChange={e => set('from', e.target.value)} /></Field>
       <Field label="종료일"><input type="date" className="input" min={filter.from} max={today()} value={filter.to} onChange={e => set('to', e.target.value)} /></Field>
       <Field label="표시 건수"><select className="select" value={filter.limit} onChange={e => set('limit', e.target.value)}><option value="50">50</option><option value="200">200</option></select></Field>
-      <div className="field"><label>&nbsp;</label><Button disabled={!active} onClick={() => setFilter({ event: '', user: '', target: '', target_type: '', from: '', to: '', limit: filter.limit })}><RotateCcw size={13} /> 필터 초기화</Button></div>
+      <div className="field"><label>&nbsp;</label><Button disabled={!active} onClick={() => setFilter({ event: '', user: '', target: '', target_type: '', event_id: '', from: '', to: '', limit: filter.limit })}><RotateCcw size={13} /> 필터 초기화</Button></div>
     </div></div>
       {!items ? <Loading /> : items.length ? <div className="table-wrap"><table><thead><tr><th>시각</th><th>이벤트</th><th>사용자 / IP</th><th>대상</th><th>결과</th><th>해시</th></tr></thead><tbody>{items.map(x => <tr key={String(x.event_id)}><td>{formatDate(x.timestamp, true)}</td><td><button className="link-button" onClick={() => setDetail(x)}><Badge tone="blue">{String(x.event_label || x.event_type)}</Badge></button><div className="subtle">{String(x.event_type)}</div></td><td>{String(x.user_name || '-')}<div className="subtle">{String(x.source_ip || '')}</div></td><td>{x.target_id ? <button className="link-button" title="이 대상의 이력만 보기" onClick={() => setFilter(v => ({ ...v, target: String(x.target_id), target_type: String(x.target_type || '') }))}>{String(x.target_type)}<div className="subtle">{String(x.target_id)}</div></button> : <>{String(x.target_type)}</>}</td><td><Badge tone={x.result === 'SUCCESS' ? 'green' : 'red'}>{String(x.result)}</Badge></td><td><code title={String(x.event_hash)}>{String(x.event_hash).slice(0, 12)}…</code></td></tr>)}</tbody></table></div> : <Empty title="조건에 맞는 감사 이벤트가 없습니다." description="필터를 넓히거나 기간을 조정하세요." />}
     </div>

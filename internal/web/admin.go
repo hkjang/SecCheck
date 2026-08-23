@@ -438,6 +438,13 @@ func (s *Server) listAudit(w http.ResponseWriter, r *http.Request) {
 		args = append(args, strings.ToUpper(targetType))
 		where += ` AND target_type=$` + intString(len(args))
 	}
+	// A chain-break alert names the event the verification stopped at, and an
+	// administrator following that alert needs to land on that one event
+	// rather than on a page of two hundred.
+	if eventID := strings.TrimSpace(query.Get("event_id")); eventID != "" {
+		args = append(args, eventID)
+		where += ` AND event_id=$` + intString(len(args))
+	}
 	if from := strings.TrimSpace(query.Get("from")); from != "" {
 		args = append(args, from)
 		where += ` AND timestamp >= display_day_start($` + intString(len(args)) + `::date)`

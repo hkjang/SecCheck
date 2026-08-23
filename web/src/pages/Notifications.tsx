@@ -55,6 +55,7 @@ export default function Notifications() {
         <p className="subtle">{n.body}</p>
         <span className="subtle">{formatDate(n.created_at, true)}</span>
         {n.target_type === 'REVIEW_REQUEST' && n.target_id ? <Link className="table-link" to={`/reviews/${n.target_id}`} onClick={() => { if (!n.read_at) read(n.id) }}> 심의 열기 <ArrowRight size={13} /></Link>
+          : n.target_type === 'AUDIT_LOG' && n.target_id ? <Link className="table-link" to={`/admin/audit?event_id=${n.target_id}`} onClick={() => { if (!n.read_at) read(n.id) }}> 해당 감사 이벤트 열기 <ArrowRight size={13} /></Link>
           : adminDestination[n.event_type] && <Link className="table-link" to={adminDestination[n.event_type].to} onClick={() => { if (!n.read_at) read(n.id) }}> {adminDestination[n.event_type].label} <ArrowRight size={13} /></Link>}
       </div>
       {!n.read_at && <Button small onClick={() => read(n.id)}><Check size={13} /> 읽음</Button>}

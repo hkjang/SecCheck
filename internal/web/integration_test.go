@@ -459,7 +459,16 @@ func TestAuditChainVerificationIsIncrementalAndDetectsTampering(t *testing.T) {
 	if alerts == 0 {
 		t.Error("no administrator was notified that the chain is broken")
 	}
-	// The bell has to lead somewhere: the event the verification stopped at.
+	// The bell has to lead somewhere the screen can actually open: one event,
+	// not the two hundred most recent.
+	one := admin.do(http.MethodGet, "/api/v1/admin/audit?event_id="+targetID, nil).json()
+	rows, _ := one["items"].([]any)
+	if len(rows) != 1 {
+		t.Errorf("filtering the audit log by the alert's event returned %d rows", len(rows))
+	} else if row, _ := rows[0].(map[string]any); row["event_id"] != targetID {
+		t.Errorf("the filter returned %v, want %s", row["event_id"], targetID)
+	}
+	// The event the verification stopped at.
 	if target != "AUDIT_LOG" || targetID == "" {
 		t.Errorf("the chain-break alert points at %q/%q", target, targetID)
 	}
