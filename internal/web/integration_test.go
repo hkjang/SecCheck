@@ -4093,3 +4093,76 @@ func TestSearchSaysWhenThereIsMoreToFind(t *testing.T) {
 		t.Errorf("a search that fits on one page claimed there was more: %v", narrowMore)
 	}
 }
+
+// Several audit events written by one action share a timestamp to the
+// microsecond, so a history ordered only by time has no defined order among
+// them: paging through it could show the same entry twice and never show
+// another. In the record of what happened to a review, that is not cosmetic.
+func TestAReviewHistoryPagesWithoutRepeatingItself(t *testing.T) {
+	h := newHarness(t)
+	admin := h.login(adminOf(h))
+	ctx := context.Background()
+	h.user("history-author", "REQUESTER")
+	author := h.login("history-author")
+	reviewID := author.createReview("이력 페이지 서비스")
+	items := []map[string]any{}
+	if err := json.Unmarshal([]byte(author.do(http.MethodGet, "/api/v1/review-requests/"+reviewID+"/items", nil).body), &items); err != nil {
+		t.Fatal(err)
+	}
+	var reviewerID string
+	if err := h.db.Pool.QueryRow(ctx, `SELECT id FROM users WHERE username='integration-admin'`).Scan(&reviewerID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := h.db.Pool.Exec(ctx, `UPDATE review_requests SET reviewer_id=$2,status='REVIEWING' WHERE id=$1`, reviewID, reviewerID); err != nil {
+		t.Fatal(err)
+	}
+	// Eight events sharing one instant, which is what a batch action produces,
+	// each still distinguishable so the test can tell entries apart.
+	same := time.Now().UTC()
+	for _, event := range []string{"REVIEW_ITEM", "BEGIN_REVIEW", "UPDATE_SUBMISSION", "VIEW_SUBMISSION", "EXPORT_DATA", "ADD_PARTICIPANT", "CANCEL", "CLOSE"} {
+		if err := h.db.Audit(ctx, store.AuditEvent{UserID: reviewerID, UserName: "batch", EventType: event, TargetType: "REVIEW_REQUEST", TargetID: reviewID}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := h.db.Pool.Exec(ctx, `UPDATE audit_logs SET timestamp=$2 WHERE target_id=$1`, reviewID, same); err != nil {
+		t.Fatal(err)
+	}
+
+	seen := map[string]int{}
+	pages := 0
+	for offset := 0; ; offset += 3 {
+		res := admin.do(http.MethodGet, fmt.Sprintf("/api/v1/review-requests/%s/history?limit=3&offset=%d", reviewID, offset), nil)
+		if res.status != http.StatusOK {
+			t.Fatalf("reading the history: %d %s", res.status, res.body)
+		}
+		var page []map[string]any
+		if err := json.Unmarshal([]byte(res.body), &page); err != nil {
+			var wrapped map[string]any
+			if err2 := json.Unmarshal([]byte(res.body), &wrapped); err2 != nil {
+				t.Fatalf("the history is neither a list nor an object: %s", res.body)
+			}
+			for _, raw := range wrapped["items"].([]any) {
+				row, _ := raw.(map[string]any)
+				page = append(page, row)
+			}
+		}
+		if len(page) == 0 {
+			break
+		}
+		for _, row := range page {
+			seen[fmt.Sprint(row["timestamp"], row["event_type"], row["target_id"], row["item_code"])]++
+		}
+		pages++
+		if pages > 20 {
+			t.Fatal("the history never ended")
+		}
+	}
+	for key, count := range seen {
+		if count > 1 {
+			t.Errorf("paging returned the same entry %d times: %s", count, key)
+		}
+	}
+	if len(seen) < 8 {
+		t.Errorf("paging saw %d distinct entries, fewer than the events written", len(seen))
+	}
+}

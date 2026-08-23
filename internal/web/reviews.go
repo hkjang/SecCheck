@@ -606,7 +606,7 @@ func (s *Server) reviewHistory(w http.ResponseWriter, r *http.Request) {
 	}
 	rows, err := s.Store.Pool.Query(r.Context(), `SELECT a.timestamp,a.event_type,a.user_name,a.target_type,a.target_id,a.result,
                 COALESCE((SELECT si.item_code FROM submission_items si WHERE si.id=a.target_id),'') AS item_code
-                FROM audit_logs a WHERE `+scope+` ORDER BY a.timestamp DESC LIMIT $2 OFFSET $3`, id, limit, offset)
+                FROM audit_logs a WHERE `+scope+` ORDER BY a.timestamp DESC,a.chain_sequence DESC LIMIT $2 OFFSET $3`, id, limit, offset)
 	if err != nil {
 		s.fault(w, r, "QUERY_FAILED", "심의 이력을 불러오지 못했습니다.", err)
 		return

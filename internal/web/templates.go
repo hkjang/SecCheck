@@ -48,7 +48,7 @@ func (s *Server) listTemplates(w http.ResponseWriter, r *http.Request) {
 	limit, offset := parsePage(r)
 	paged := append(append([]any{}, args...), limit, offset)
 	rows, err := s.Store.Pool.Query(r.Context(), `SELECT t.id,t.name,t.category,t.description,t.active,t.created_at,t.updated_at,COALESCE((SELECT jsonb_agg(jsonb_build_object('id',v.id,'version',v.version,'status',v.status,'change_note',v.change_note,'source_filename',v.source_filename,'published_at',v.published_at,'created_at',v.created_at) ORDER BY v.created_at DESC) FROM checklist_versions v WHERE v.template_id=t.id),'[]') FROM checklist_templates t WHERE `+where+
-		` ORDER BY t.category,t.name LIMIT $`+intString(len(paged)-1)+` OFFSET $`+intString(len(paged)), paged...)
+		` ORDER BY t.category,t.name,t.id LIMIT $`+intString(len(paged)-1)+` OFFSET $`+intString(len(paged)), paged...)
 	if err != nil {
 		s.fault(w, r, "QUERY_FAILED", "템플릿을 불러오지 못했습니다.", err)
 		return
