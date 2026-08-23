@@ -359,10 +359,13 @@ func TestChainVerificationCostAtScale(t *testing.T) {
 	}
 	again, _ := incremental["checked"].(float64)
 	t.Logf("incremental re-check covered %.0f events in %v", again, incrementalTime)
+	// How much it re-reads is the property that matters and the one that can
+	// be measured honestly. Comparing the two wall-clock times was a race
+	// between two sub-100ms measurements on a shared runner: the incremental
+	// pass read a single event and still "lost", which failed a release for
+	// scheduler noise rather than for anything about the checkpoint.
 	if again > checked/2 {
 		t.Errorf("the incremental pass re-checked %.0f of %.0f events; the checkpoint is not being used", again, checked)
 	}
-	if incrementalTime > fullTime {
-		t.Errorf("the incremental pass (%v) was slower than the full one (%v)", incrementalTime, fullTime)
-	}
+	t.Logf("full %v over %.0f events, incremental %v over %.0f", fullTime, checked, incrementalTime, again)
 }
