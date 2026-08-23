@@ -3714,3 +3714,48 @@ func TestAReviewsOwnFieldsAreBounded(t *testing.T) {
 		t.Errorf("an over-long description was accepted on update: %d %s", res.status, res.body)
 	}
 }
+
+// A checklist item is copied into the snapshot of every review it applies to,
+// so one over-long field is duplicated across every review for ever.
+func TestChecklistItemTextIsBounded(t *testing.T) {
+	h := newHarness(t)
+	admin := h.login(adminOf(h))
+	ctx := context.Background()
+	created := admin.do(http.MethodPost, "/api/v1/templates", map[string]any{"name": "길이 제한 템플릿", "category": "DEVELOPMENT", "description": "", "version": "V1"})
+	if created.status != http.StatusCreated {
+		t.Fatalf("creating a template: %d %s", created.status, created.body)
+	}
+	templateID, _ := created.json()["id"].(string)
+	var versionID string
+	if err := h.db.Pool.QueryRow(ctx, `SELECT id FROM checklist_versions WHERE template_id=$1`, templateID).Scan(&versionID); err != nil {
+		t.Fatal(err)
+	}
+	base := fmt.Sprintf("/api/v1/templates/%s/versions/%s/items", templateID, versionID)
+	item := func(field string, value string) map[string]any {
+		body := map[string]any{"item_code": "LEN-1", "title": "제목", "question": "질문", "category": "DEVELOPMENT", "severity": "MEDIUM", "answer_type": "YNNA", "sort_order": 1}
+		body[field] = value
+		return body
+	}
+	if res := admin.do(http.MethodPost, base, item("title", strings.Repeat("가", 301))); res.status != http.StatusUnprocessableEntity {
+		t.Errorf("a 301-character title was accepted: %d %s", res.status, res.body)
+	}
+	if res := admin.do(http.MethodPost, base, item("guide", strings.Repeat("나", 4001))); res.status != http.StatusUnprocessableEntity {
+		t.Errorf("a 4001-character guide was accepted: %d %s", res.status, res.body)
+	}
+	if res := admin.do(http.MethodPost, base, item("item_code", strings.Repeat("A", 41))); res.status != http.StatusUnprocessableEntity {
+		t.Errorf("a 41-character item code was accepted: %d %s", res.status, res.body)
+	}
+	added := admin.do(http.MethodPost, base, item("title", strings.Repeat("다", 300)))
+	if added.status != http.StatusCreated {
+		t.Fatalf("a title at the limit was refused: %d %s", added.status, added.body)
+	}
+	itemID, _ := added.json()["id"].(string)
+	if res := admin.do(http.MethodPatch, base+"/"+itemID, map[string]any{"guide": strings.Repeat("라", 4001)}); res.status != http.StatusUnprocessableEntity {
+		t.Errorf("an over-long guide was accepted on update: %d %s", res.status, res.body)
+	}
+
+	// A profile carries into audit entries and notifications, so it is bounded too.
+	if res := admin.do(http.MethodPatch, "/api/v1/me", map[string]any{"display_name": strings.Repeat("마", 101)}); res.status != http.StatusUnprocessableEntity {
+		t.Errorf("a 101-character display name was accepted: %d %s", res.status, res.body)
+	}
+}

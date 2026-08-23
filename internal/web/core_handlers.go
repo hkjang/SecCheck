@@ -178,6 +178,15 @@ func (s *Server) updateMe(w http.ResponseWriter, r *http.Request) {
 		problem(w, 422, "VALIDATION_FAILED", "표시 이름은 비울 수 없습니다.", nil)
 		return
 	}
+	// The display name is written into every audit entry and notification the
+	// account touches, so its length is not only this person's business.
+	for field, limits := range map[string]int{"display_name": 100, "email": 200, "department": 100} {
+		value := map[string]*string{"display_name": name, "email": email, "department": department}[field]
+		if value != nil && len([]rune(*value)) > limits {
+			problem(w, 422, "VALIDATION_FAILED", fmt.Sprintf("%s는 %d자 이내로 입력하세요.", field, limits), map[string]string{field: "너무 깁니다."})
+			return
+		}
+	}
 	sess := session(r)
 	_, err := s.Store.Pool.Exec(r.Context(), `UPDATE users SET display_name=COALESCE($2::text,display_name),email=COALESCE($3::text,email),department=COALESCE($4::text,department),updated_at=now() WHERE id=$1`, sess.User.ID, name, email, department)
 	if err != nil {

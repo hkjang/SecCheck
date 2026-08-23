@@ -304,6 +304,39 @@ func cloneVersion(ctx context.Context, tx pgx.Tx, source, target string) error {
 	return nil
 }
 
+// A checklist item is copied into the snapshot of every review it applies to,
+// so one over-long guide is duplicated across every review for ever. The item
+// text is bounded like everything else a person types.
+var itemFieldLimits = map[string]int{"item_code": 40, "title": 300, "question": longTextLimit, "guide": longTextLimit, "legal_basis": shortTextLimit, "example": longTextLimit, "section": 100}
+
+func itemTextOf(in itemInput) map[string]string {
+	return map[string]string{"item_code": in.ItemCode, "title": in.Title, "question": in.Question, "guide": in.Guide, "legal_basis": in.LegalBasis, "example": in.Example, "section": in.Section}
+}
+
+// checkedItemText reports the first field that is longer than it may be.
+func checkedItemText(fields map[string]string) (string, int) {
+	names := make([]string, 0, len(fields))
+	for name := range fields {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	for _, name := range names {
+		if limit, ok := itemFieldLimits[name]; ok && len([]rune(fields[name])) > limit {
+			return name, limit
+		}
+	}
+	return "", 0
+}
+
+// cut shortens a value that came from a spreadsheet rather than refusing the
+// whole workbook for it; the wizard reports how many it had to shorten.
+func cut(v string, limit int) string {
+	if len([]rune(v)) <= limit {
+		return v
+	}
+	return string([]rune(v)[:limit])
+}
+
 type itemInput struct {
 	Section           string `json:"section"`
 	ControlID         string `json:"control_id"`
@@ -381,6 +414,10 @@ func (s *Server) createTemplateItem(w http.ResponseWriter, r *http.Request) {
 		problem(w, 422, "VALIDATION_FAILED", "적용 조건을 확인하세요: "+err.Error(), map[string]string{"applicability_rule": err.Error()})
 		return
 	}
+	if field, limit := checkedItemText(itemTextOf(in)); field != "" {
+		problem(w, 422, "VALIDATION_FAILED", fmt.Sprintf("%s는 %d자 이내로 입력하세요.", field, limit), map[string]string{field: fmt.Sprintf("%d자를 넘습니다.", limit)})
+		return
+	}
 	id := store.NewID()
 	secID, err := s.sectionID(r.Context(), r.PathValue("versionID"), in.Section)
 	if err != nil {
@@ -423,6 +460,16 @@ func (s *Server) updateTemplateItem(w http.ResponseWriter, r *http.Request) {
 	}
 	if err := checkedRule(in.ApplicabilityRule); err != nil {
 		problem(w, 422, "VALIDATION_FAILED", "적용 조건을 확인하세요: "+err.Error(), map[string]string{"applicability_rule": err.Error()})
+		return
+	}
+	patched := map[string]string{}
+	for name, value := range map[string]*string{"item_code": in.ItemCode, "title": in.Title, "question": in.Question, "guide": in.Guide, "legal_basis": in.LegalBasis, "example": in.Example, "section": in.Section} {
+		if value != nil {
+			patched[name] = *value
+		}
+	}
+	if field, limit := checkedItemText(patched); field != "" {
+		problem(w, 422, "VALIDATION_FAILED", fmt.Sprintf("%s는 %d자 이내로 입력하세요.", field, limit), map[string]string{field: fmt.Sprintf("%d자를 넘습니다.", limit)})
 		return
 	}
 	var secID string
@@ -780,6 +827,9 @@ type importReport struct {
 	GeneratedCodes int      `json:"generated_codes"`
 	DuplicateCodes []string `json:"duplicate_codes"`
 	MissingFields  []string `json:"missing_fields"`
+	// Spreadsheet cells hold far more than a checklist item should, and
+	// failing a whole workbook over one long cell helps nobody.
+	ShortenedFields int `json:"shortened_fields"`
 }
 
 func parseImportRows(rows [][]string, header int, mapping []importColumn, category string) []itemInput {
@@ -833,7 +883,11 @@ func parseImportRowsWithReport(rows [][]string, header int, mapping []importColu
 			code = fmt.Sprintf("%s-DUP%d", code, seenCodes[code])
 		}
 		severity := normalizeSeverity(get("severity"))
-		items = append(items, itemInput{Section: get("section"), ItemCode: code, Category: category, Title: title, Question: question, Guide: get("guide"), LegalBasis: get("legal_basis"), Example: get("example"), Severity: severity, Required: true, AnswerType: "YNNA", SortOrder: i - header})
+		parsedItem := itemInput{Section: cut(get("section"), itemFieldLimits["section"]), ItemCode: cut(code, itemFieldLimits["item_code"]), Category: category, Title: cut(title, itemFieldLimits["title"]), Question: cut(question, itemFieldLimits["question"]), Guide: cut(get("guide"), itemFieldLimits["guide"]), LegalBasis: cut(get("legal_basis"), itemFieldLimits["legal_basis"]), Example: cut(get("example"), itemFieldLimits["example"]), Severity: severity, AnswerType: "YNNA", Required: true, SortOrder: len(items) + 1}
+		if field, _ := checkedItemText(map[string]string{"item_code": code, "title": title, "question": question, "guide": get("guide"), "legal_basis": get("legal_basis"), "example": get("example"), "section": get("section")}); field != "" {
+			report.ShortenedFields++
+		}
+		items = append(items, parsedItem)
 	}
 	report.Parsed = len(items)
 	for _, field := range []string{"item_code", "title", "question", "guide", "severity"} {
