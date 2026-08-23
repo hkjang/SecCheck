@@ -1436,8 +1436,16 @@ func (s *Server) completeReview(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var missing, open int
-	_ = s.Store.Pool.QueryRow(r.Context(), `SELECT count(*) FROM submissions sub JOIN submission_items si ON si.submission_id=sub.id LEFT JOIN review_results rr ON rr.submission_item_id=si.id WHERE sub.review_request_id=$1 AND sub.revision=(SELECT max(revision) FROM submissions WHERE review_request_id=$1) AND (rr.id IS NULL OR rr.result='')`, id).Scan(&missing)
-	_ = s.Store.Pool.QueryRow(r.Context(), `SELECT count(*) FROM change_requests WHERE review_request_id=$1 AND status<>'VERIFIED'`, id).Scan(&open)
+	// Completing a review while items are unjudged is exactly what this guard
+	// exists to prevent, and a failed count used to read as zero.
+	if err := s.Store.Pool.QueryRow(r.Context(), `SELECT count(*) FROM submissions sub JOIN submission_items si ON si.submission_id=sub.id LEFT JOIN review_results rr ON rr.submission_item_id=si.id WHERE sub.review_request_id=$1 AND sub.revision=(SELECT max(revision) FROM submissions WHERE review_request_id=$1) AND (rr.id IS NULL OR rr.result='')`, id).Scan(&missing); err != nil {
+		s.fault(w, r, "QUERY_FAILED", "남은 항목을 확인하지 못해 검토 완료를 중단했습니다.", err)
+		return
+	}
+	if err := s.Store.Pool.QueryRow(r.Context(), `SELECT count(*) FROM change_requests WHERE review_request_id=$1 AND status<>'VERIFIED'`, id).Scan(&open); err != nil {
+		s.fault(w, r, "QUERY_FAILED", "남은 항목을 확인하지 못해 검토 완료를 중단했습니다.", err)
+		return
+	}
 	if missing > 0 || open > 0 {
 		problem(w, 422, "REVIEW_INCOMPLETE", "검토를 완료할 수 없습니다.", map[string]int{"unreviewed_items": missing, "unverified_changes": open})
 		return

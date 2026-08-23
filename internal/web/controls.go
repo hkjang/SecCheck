@@ -123,7 +123,13 @@ func (s *Server) updateControl(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) deleteControl(w http.ResponseWriter, r *http.Request) {
 	var mapped int
-	_ = s.Store.Pool.QueryRow(r.Context(), `SELECT count(*) FROM checklist_items WHERE control_id=$1`, r.PathValue("id")).Scan(&mapped)
+	// A guard whose query failed used to read as "nothing is mapped", so a
+	// database hiccup was enough to let a Control that items point at be
+	// deleted. A check that cannot run has not passed.
+	if err := s.Store.Pool.QueryRow(r.Context(), `SELECT count(*) FROM checklist_items WHERE control_id=$1`, r.PathValue("id")).Scan(&mapped); err != nil {
+		s.fault(w, r, "QUERY_FAILED", "연결된 항목을 확인하지 못해 삭제를 중단했습니다.", err)
+		return
+	}
 	if mapped > 0 {
 		problem(w, 409, "CONTROL_IN_USE", "체크리스트 항목 연결을 먼저 해제하세요.", map[string]int{"mapped_items": mapped})
 		return

@@ -79,6 +79,8 @@ scrape_configs:
 | `seccheck_accounts_locked` | 잠긴 계정 수 | 급증 시 조사 |
 | `seccheck_evidence_version_bytes` | 증적 암호문 총 용량(byte) | 볼륨 여유와 대조 |
 | `seccheck_storage_free_bytes` | 증적 볼륨의 남은 공간(byte) | 전체의 10% 또는 2GB 아래면 경고 |
+
+지표 수집 쿼리가 실패하면 `/metrics`는 0을 돌려주지 않고 503으로 응답합니다. 데이터베이스가 답하지 않는 순간에 "실패한 작업 0건, 잠긴 계정 0건"을 기록하는 것은 사실이 아니며, 스크레이프 실패로 대상이 down으로 표시되는 편이 맞습니다.
 | `seccheck_storage_writable` | 증적 볼륨 쓰기 가능 여부(1/0) | 0이면 업로드가 전부 실패하는 상태 |
 | `seccheck_evidence_scan_pending` | 검사 대기 증적 수 | 감소하지 않으면 clamd 확인 |
 | `seccheck_scan_failures` | `CLEAN`·`SKIPPED`이 아닌 증적 수 | `> 0` 지속 시 조사 |

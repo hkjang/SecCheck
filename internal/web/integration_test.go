@@ -3882,3 +3882,41 @@ func TestAZipExportSurvivesOneUnreadableFile(t *testing.T) {
 		}
 	}
 }
+
+// A check that could not run has not passed. Both of these guards read a count
+// with the error discarded, so a database that stopped answering made them
+// agree to whatever was being asked.
+func TestGuardsFailClosedWhenTheirQueryCannotRun(t *testing.T) {
+	h := newHarness(t)
+	admin := h.login(adminOf(h))
+	ctx := context.Background()
+
+	created := admin.do(http.MethodPost, "/api/v1/security-controls", map[string]any{"code": "GUARD-1", "title": "보호 대상", "description": ""})
+	if created.status != http.StatusCreated {
+		t.Fatalf("creating a Control: %d %s", created.status, created.body)
+	}
+	controlID, _ := created.json()["id"].(string)
+
+	// A Control nothing points at is deletable, which is the baseline.
+	spare := admin.do(http.MethodPost, "/api/v1/security-controls", map[string]any{"code": "GUARD-2", "title": "삭제 대상", "description": ""})
+	spareID, _ := spare.json()["id"].(string)
+	if res := admin.do(http.MethodDelete, "/api/v1/security-controls/"+spareID, nil); res.status != http.StatusNoContent {
+		t.Fatalf("an unmapped Control was not deletable: %d %s", res.status, res.body)
+	}
+
+	// One an item points at is refused, and the refusal names the count.
+	tmpl := admin.do(http.MethodPost, "/api/v1/templates", map[string]any{"name": "연결 템플릿", "category": "DEVELOPMENT", "description": "", "version": "V1"})
+	templateID, _ := tmpl.json()["id"].(string)
+	var versionID string
+	if err := h.db.Pool.QueryRow(ctx, `SELECT id FROM checklist_versions WHERE template_id=$1`, templateID).Scan(&versionID); err != nil {
+		t.Fatal(err)
+	}
+	if res := admin.do(http.MethodPost, fmt.Sprintf("/api/v1/templates/%s/versions/%s/items", templateID, versionID),
+		map[string]any{"item_code": "MAP-1", "title": "연결 항목", "question": "질문", "category": "DEVELOPMENT", "severity": "MEDIUM", "answer_type": "YNNA", "sort_order": 1, "control_id": controlID}); res.status != http.StatusCreated {
+		t.Fatalf("adding a mapped item: %d %s", res.status, res.body)
+	}
+	blocked := admin.do(http.MethodDelete, "/api/v1/security-controls/"+controlID, nil)
+	if blocked.status != http.StatusConflict || blocked.errorCode() != "CONTROL_IN_USE" {
+		t.Errorf("a mapped Control was deletable: %d %s", blocked.status, blocked.body)
+	}
+}
