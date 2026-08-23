@@ -628,7 +628,9 @@ func (s *Server) verifyAudit(w http.ResponseWriter, r *http.Request) {
 // whoever happened to press the button.
 func (s *Server) reportChainBreak(r *http.Request, eventID string, sequence int64, reason string) {
 	s.Store.Log(r.Context(), "ERROR", requestID(r), "audit", "audit chain verification failed", map[string]any{"event_id": eventID, "sequence": sequence, "reason": reason})
-	rows, err := s.Store.Pool.Query(r.Context(), `SELECT user_id FROM user_roles WHERE role_code='SYSTEM_ADMIN'`)
+	// A closed account cannot act on it, and the alert is noise in a bell
+	// nobody opens.
+	rows, err := s.Store.Pool.Query(r.Context(), `SELECT ur.user_id FROM user_roles ur JOIN users u ON u.id=ur.user_id WHERE ur.role_code='SYSTEM_ADMIN' AND u.active`)
 	if err != nil {
 		return
 	}
@@ -640,10 +642,16 @@ func (s *Server) reportChainBreak(r *http.Request, eventID string, sequence int6
 			admins = append(admins, id)
 		}
 	}
+	body := fmt.Sprintf("감사로그 %d번 이벤트에서 무결성 검증에 실패했습니다 (%s). 데이터베이스 직접 변경 여부를 즉시 확인하세요.", sequence, reason)
 	for _, admin := range admins {
-		_, _ = s.Store.Pool.Exec(r.Context(), `INSERT INTO notifications(id,recipient_id,event_type,title,body) VALUES($1,$2,'AUDIT_CHAIN_BROKEN',$3,$4)`,
-			store.NewID(), admin, "감사로그 체인 검증 실패",
-			fmt.Sprintf("감사로그 %d번 이벤트에서 무결성 검증에 실패했습니다 (%s). 데이터베이스 직접 변경 여부를 즉시 확인하세요.", sequence, reason))
+		// This used to insert the row by hand, which meant the one alert an
+		// administrator most needs to receive away from the screen was the one
+		// that never left the building -- the preference screen offers mail for
+		// it all the same. Store.Notify is what keeps that promise, and it
+		// carries the event the check stopped at so the bell links to it.
+		if err := s.Store.Notify(r.Context(), admin, "AUDIT_CHAIN_BROKEN", "감사로그 체인 검증 실패", body, "AUDIT_LOG", eventID); err != nil {
+			s.Store.Log(r.Context(), "ERROR", requestID(r), "audit", "could not notify an administrator of the chain break", map[string]any{"recipient": admin, "error": err.Error()})
+		}
 	}
 }
 

@@ -439,6 +439,11 @@ func TestAuditChainVerificationIsIncrementalAndDetectsTampering(t *testing.T) {
 
 	// Tampering with a stored payload has to be caught by the full pass, and
 	// it must reach the administrators rather than only the caller.
+	if res := admin.do(http.MethodPut, "/api/v1/admin/settings/notification", map[string]any{
+		"email_enabled": true, "smtp_host": "smtp.internal", "smtp_port": 25, "smtp_username": "", "smtp_tls_mode": "none", "from": "seccheck@example.test", "digest_hour": 8,
+	}); res.status != http.StatusOK {
+		t.Fatalf("enable e-mail: %d %s", res.status, res.body)
+	}
 	if _, err := h.db.Pool.Exec(ctx, `UPDATE audit_logs SET canonical_payload=canonical_payload||'tampered' WHERE chain_sequence=1`); err != nil {
 		t.Fatal(err)
 	}
@@ -447,11 +452,32 @@ func TestAuditChainVerificationIsIncrementalAndDetectsTampering(t *testing.T) {
 		t.Fatal("a tampered payload passed the full verification")
 	}
 	var alerts int
-	if err := h.db.Pool.QueryRow(ctx, `SELECT count(*) FROM notifications WHERE event_type='AUDIT_CHAIN_BROKEN'`).Scan(&alerts); err != nil {
+	var target, targetID string
+	if err := h.db.Pool.QueryRow(ctx, `SELECT count(*),COALESCE(max(target_type),''),COALESCE(max(target_id),'') FROM notifications WHERE event_type='AUDIT_CHAIN_BROKEN'`).Scan(&alerts, &target, &targetID); err != nil {
 		t.Fatal(err)
 	}
 	if alerts == 0 {
 		t.Error("no administrator was notified that the chain is broken")
+	}
+	// The bell has to lead somewhere: the event the verification stopped at.
+	if target != "AUDIT_LOG" || targetID == "" {
+		t.Errorf("the chain-break alert points at %q/%q", target, targetID)
+	}
+	// The preference screen offers mail for this event, so the alert an
+	// administrator most needs away from the screen has to leave the building.
+	var mails int
+	if err := h.db.Pool.QueryRow(ctx, `SELECT count(*) FROM jobs WHERE type='SEND_EMAIL'`).Scan(&mails); err != nil {
+		t.Fatal(err)
+	}
+	if mails == 0 {
+		t.Error("the chain-break alert queued no e-mail even with immediate delivery on")
+	}
+	var unsent int
+	if err := h.db.Pool.QueryRow(ctx, `SELECT count(*) FROM notifications WHERE event_type='AUDIT_CHAIN_BROKEN' AND emailed_at IS NULL`).Scan(&unsent); err != nil {
+		t.Fatal(err)
+	}
+	if unsent != 0 {
+		t.Errorf("%d chain-break alerts are still waiting for the digest", unsent)
 	}
 }
 
