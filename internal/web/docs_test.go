@@ -378,3 +378,51 @@ func TestFieldLabelsAreAttachedToTheirControl(t *testing.T) {
 		}
 	}
 }
+
+// Every dialog in the product comes from one component, so what it does for a
+// keyboard user is decided in one place: it has to announce itself as a
+// dialog, take focus when it opens, keep Tab inside it and give focus back
+// when it closes.
+func TestDialogsTakeFocusAndSayWhatTheyAre(t *testing.T) {
+	ui := repoFile(t, filepath.Join("web", "src", "components", "ui.tsx"))
+	start := strings.Index(ui, "export function Modal(")
+	if start < 0 {
+		t.Fatal("the Modal component is gone; this test needs rewriting")
+	}
+	end := strings.Index(ui[start:], "\ntype ")
+	if end < 0 {
+		end = len(ui) - start
+	}
+	modal := ui[start : start+end]
+	for behaviour, marker := range map[string]string{
+		"announce itself as a dialog":  `role="dialog"`,
+		"hide the page behind it":      `aria-modal="true"`,
+		"take focus when it opens":     ".focus()",
+		"keep Tab inside it":           "e.key !== 'Tab'",
+		"close on Escape":              "'Escape'",
+		"give focus back when it goes": "opener?.focus",
+	} {
+		if !strings.Contains(modal, marker) {
+			t.Errorf("Modal no longer seems to %s (%s is missing)", behaviour, marker)
+		}
+	}
+}
+
+// A screen that builds its own dialog out of the backdrop markup misses
+// everything the shared component does for a keyboard user, and nobody
+// notices until somebody tries to use it that way.
+func TestNoScreenBuildsItsOwnDialog(t *testing.T) {
+	pages, err := filepath.Glob(filepath.Join("..", "..", "web", "src", "pages", "*.tsx"))
+	if err != nil || len(pages) == 0 {
+		t.Fatalf("no screens found: %v", err)
+	}
+	for _, page := range pages {
+		body, err := os.ReadFile(page)
+		if err != nil {
+			continue
+		}
+		if strings.Contains(string(body), `className="modal-backdrop"`) {
+			t.Errorf("%s builds its own dialog; use the Modal component so it takes focus and announces itself", filepath.Base(page))
+		}
+	}
+}

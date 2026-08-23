@@ -1,4 +1,4 @@
-import { PropsWithChildren, ReactElement, ReactNode, cloneElement, createContext, isValidElement, useCallback, useContext, useEffect, useId, useState } from 'react'
+import { PropsWithChildren, ReactElement, ReactNode, cloneElement, createContext, isValidElement, useCallback, useContext, useEffect, useId, useRef, useState } from 'react'
 import { AlertCircle, Inbox, RefreshCw } from 'lucide-react'
 import { download, errorMessage } from '../lib/api'
 
@@ -66,9 +66,39 @@ export function LoadFailed({ error, onRetry }: { error: unknown; onRetry?: () =>
     {onRetry && <Button onClick={onRetry}><RefreshCw size={14} /> 다시 시도</Button>}</div>
 }
 
+// A dialog that does not take focus is a dialog a keyboard user cannot reach:
+// the page behind it keeps the focus ring, Tab walks the page rather than the
+// form on top of it, and closing leaves focus nowhere. Assistive technology
+// was not told it was a dialog either.
 export function Modal({ title, children, footer, onClose, className = '' }: PropsWithChildren<{ title?: string; footer?: ReactNode; onClose: () => void; className?: string }>) {
-  useEffect(() => { const close = (e: KeyboardEvent) => e.key === 'Escape' && onClose(); window.addEventListener('keydown', close); return () => window.removeEventListener('keydown', close) }, [onClose])
-  return <div className="modal-backdrop" onMouseDown={e => e.target === e.currentTarget && onClose()}><div className={`modal ${className}`}>{title && <div className="modal-header"><strong>{title}</strong><Button variant="ghost" onClick={onClose}>닫기</Button></div>}<div className="modal-body">{children}</div>{footer && <div className="modal-footer">{footer}</div>}</div></div>
+  const titleID = useId()
+  const dialog = useRef<HTMLDivElement>(null)
+  useEffect(() => {
+    const opener = document.activeElement as HTMLElement | null
+    const focusable = () => Array.from(dialog.current?.querySelectorAll<HTMLElement>('a[href], button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])') || [])
+    const first = focusable()[0]
+    ;(first || dialog.current)?.focus()
+    const key = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') { onClose(); return }
+      if (e.key !== 'Tab') return
+      const items = focusable()
+      if (!items.length) return
+      const edge = e.shiftKey ? items[0] : items[items.length - 1]
+      if (document.activeElement === edge || !dialog.current?.contains(document.activeElement)) {
+        e.preventDefault()
+        ;(e.shiftKey ? items[items.length - 1] : items[0]).focus()
+      }
+    }
+    window.addEventListener('keydown', key)
+    return () => { window.removeEventListener('keydown', key); opener?.focus?.() }
+  }, [onClose])
+  return <div className="modal-backdrop" onMouseDown={e => e.target === e.currentTarget && onClose()}>
+    <div ref={dialog} className={`modal ${className}`} role="dialog" aria-modal="true" tabIndex={-1} {...(title ? { 'aria-labelledby': titleID } : { 'aria-label': '대화 상자' })}>
+      {title && <div className="modal-header"><strong id={titleID}>{title}</strong><Button variant="ghost" onClick={onClose}>닫기</Button></div>}
+      <div className="modal-body">{children}</div>
+      {footer && <div className="modal-footer">{footer}</div>}
+    </div>
+  </div>
 }
 
 type ToastValue = { push: (message: string, kind?: 'normal' | 'error') => void }

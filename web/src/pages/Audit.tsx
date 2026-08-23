@@ -2,7 +2,7 @@ import { useEffect, useMemo, useState } from 'react'
 import { useSearchParams } from 'react-router-dom'
 import { Download, RotateCcw, Search, ShieldCheck } from 'lucide-react'
 import { errorMessage, get } from '../lib/api'
-import { Badge, Button, Empty, Field, Loading, formatDate, useDownload, useToast } from '../components/ui'
+import { Badge, Button, Empty, Field, Loading, Modal, formatDate, useDownload, useToast } from '../components/ui'
 
 const today = () => new Date().toISOString().slice(0, 10)
 
@@ -54,9 +54,11 @@ export default function AuditPage() {
 
 function AuditDetail({ event, onClose }: { event: Record<string, unknown>; onClose: () => void }) {
   const rows: [string, string][] = [['이벤트', `${event.event_label || ''} (${event.event_type})`.trim()], ['시각', formatDate(event.timestamp, true)], ['사용자', String(event.user_name || '-')], ['접속 IP', String(event.source_ip || '-')], ['대상', `${event.target_type} ${event.target_id || ''}`.trim()], ['결과', String(event.result)], ['요청 ID', String(event.request_id || '-')], ['이전 해시', String(event.previous_hash || '-')], ['이벤트 해시', String(event.event_hash || '-')]]
-  return <div className="modal-backdrop" onMouseDown={e => e.target === e.currentTarget && onClose()}><div className="modal"><div className="modal-header"><strong>감사 이벤트 상세</strong><Button variant="ghost" onClick={onClose}>닫기</Button></div><div className="modal-body">
+  // Built by hand, this dialog missed everything the shared one does for a
+  // keyboard user, so it uses the shared one.
+  return <Modal title="감사 이벤트 상세" onClose={onClose} footer={<Button onClick={onClose}>닫기</Button>}>
     <div className="table-wrap"><table><tbody>{rows.map(([label, value]) => <tr key={label}><th>{label}</th><td style={{ wordBreak: 'break-all' }}>{value}</td></tr>)}</tbody></table></div>
     {Boolean(event.before_value) && <><h4>변경 전</h4><div className="guide-block"><code>{JSON.stringify(event.before_value, null, 2)}</code></div></>}
     {Boolean(event.after_value) && <><h4>변경 후</h4><div className="guide-block"><code>{JSON.stringify(event.after_value, null, 2)}</code></div></>}
-  </div></div></div>
+  </Modal>
 }
