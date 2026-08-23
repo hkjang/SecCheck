@@ -4255,3 +4255,52 @@ func TestTheDashboardSeparatesLaunchesStillUnderReview(t *testing.T) {
 		t.Errorf("a launch date already passed with the review open counts %v, want 1", unfinished)
 	}
 }
+
+// The dashboard says how many launches are at risk; this is the list of them,
+// so the number leads somewhere rather than just worrying somebody.
+func TestTheReviewListCanShowOnlyLaunchesAtRisk(t *testing.T) {
+	h := newHarness(t)
+	h.login(adminOf(h))
+	h.user("risk-owner", "REQUESTER")
+	owner := h.login("risk-owner")
+	ctx := context.Background()
+
+	atRisk := owner.createReview("임박 서비스")
+	approved := owner.createReview("승인된 서비스")
+	distant := owner.createReview("여유 서비스")
+	if _, err := h.db.Pool.Exec(ctx, `UPDATE review_requests SET planned_open_date=display_today()+5 WHERE id=ANY($1)`, []string{atRisk, approved}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := h.db.Pool.Exec(ctx, `UPDATE review_requests SET planned_open_date=display_today()+120 WHERE id=$1`, distant); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := h.db.Pool.Exec(ctx, `UPDATE review_requests SET status='APPROVED' WHERE id=$1`, approved); err != nil {
+		t.Fatal(err)
+	}
+
+	res := owner.do(http.MethodGet, "/api/v1/review-requests?open_at_risk=1", nil)
+	if res.status != http.StatusOK {
+		t.Fatalf("filtering by launch risk: %d %s", res.status, res.body)
+	}
+	rows, _ := res.json()["items"].([]any)
+	found := map[string]bool{}
+	for _, raw := range rows {
+		row, _ := raw.(map[string]any)
+		id, _ := row["id"].(string)
+		found[id] = true
+	}
+	if !found[atRisk] {
+		t.Error("the review opening in five days with the review unfinished is missing")
+	}
+	if found[approved] {
+		t.Error("an approved review was listed as at risk")
+	}
+	if found[distant] {
+		t.Error("a review opening in four months was listed as at risk")
+	}
+	// The filter narrows rather than replaces: the whole list still has all three.
+	all := owner.do(http.MethodGet, "/api/v1/review-requests", nil).json()
+	if everything, _ := all["items"].([]any); len(everything) < 3 {
+		t.Errorf("the unfiltered list holds %d reviews, fewer than were created", len(everything))
+	}
+}

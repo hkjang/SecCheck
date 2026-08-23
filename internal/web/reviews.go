@@ -95,6 +95,12 @@ func (s *Server) reviewFilter(r *http.Request) (string, []any) {
 	if v := strings.TrimSpace(query.Get("to")); v != "" {
 		add("review_requests.created_at < display_day_start($%d::date + 1)", v)
 	}
+	// The launch happens on its date whether or not the review is finished, so
+	// "which of these will open unreviewed" is a queue somebody has to work.
+	if strings.TrimSpace(query.Get("open_at_risk")) == "1" {
+		where += " AND review_requests.planned_open_date IS NOT NULL AND review_requests.planned_open_date <= display_today()+14" +
+			" AND review_requests.status NOT IN ('APPROVED','CLOSED','CANCELLED','REJECTED')"
+	}
 	if strings.TrimSpace(query.Get("overdue")) == "1" {
 		where += " AND EXISTS(SELECT 1 FROM change_requests oc WHERE oc.review_request_id=review_requests.id AND oc.status<>'VERIFIED' AND oc.due_date < display_today())"
 	}

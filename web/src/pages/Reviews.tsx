@@ -1,11 +1,11 @@
 import { useEffect, useMemo, useState } from 'react'
 import { Link } from 'react-router-dom'
-import { AlertTriangle, ChevronLeft, ChevronRight, Download, Filter, Plus, RotateCcw, Search, ShieldCheck } from 'lucide-react'
+import { AlertTriangle, CalendarClock, ChevronLeft, ChevronRight, Download, Filter, Plus, RotateCcw, Search, ShieldCheck } from 'lucide-react'
 import { directory, get } from '../lib/api'
 import { DirectoryUser, Page, Review } from '../lib/types'
 import { Badge, Button, Empty, Field, Loading, StatusBadge, formatDate, useDownload } from '../components/ui'
 
-const emptyFilter = { q: '', status: '', department: '', reviewer_id: '', from: '', to: '', overdue: '', mine: '' }
+const emptyFilter = { q: '', status: '', department: '', reviewer_id: '', from: '', to: '', overdue: '', open_at_risk: '', mine: '' }
 const sorts: [string, string][] = [['updated', '최근 변경순'], ['created', '생성일순'], ['open_date', '오픈 예정일순'], ['number', '심의번호순'], ['service', '서비스명순'], ['status', '상태순']]
 
 export default function Reviews({ security = false }: { security?: boolean }) {
@@ -35,7 +35,7 @@ export default function Reviews({ security = false }: { security?: boolean }) {
         <select className="select" aria-label="상태 필터" value={filter.status} onChange={e => set('status', e.target.value)}><option value="">전체 상태</option><option value="DRAFT">작성 중</option><option value="SUBMITTED,RESUBMITTED">제출·재제출</option><option value="REVIEWING">검토 중</option><option value="CHANGE_REQUESTED">보완 요청</option><option value="APPROVAL_PENDING">승인 대기</option><option value="APPROVED">심의 완료</option><option value="REJECTED">반려</option><option value="CLOSED">종료</option></select>
         <select className="select" aria-label="정렬" value={sort} onChange={e => { setOffset(0); setSort(e.target.value) }}>{sorts.map(([v, label]) => <option key={v} value={v}>{label}</option>)}</select>
         <button type="button" className={`chip ${filter.mine ? 'on' : ''}`} aria-pressed={Boolean(filter.mine)} onClick={() => set('mine', filter.mine ? '' : '1')}>내 차례</button>
-        <button type="button" className={`chip ${filter.overdue ? 'on' : ''}`} aria-pressed={Boolean(filter.overdue)} onClick={() => set('overdue', filter.overdue ? '' : '1')}><AlertTriangle size={13} /> 기한 초과</button>
+        <button type="button" className={`chip ${filter.overdue ? 'on' : ''}`} aria-pressed={Boolean(filter.overdue)} onClick={() => set('overdue', filter.overdue ? '' : '1')}><AlertTriangle size={13} /> 기한 초과</button><button type="button" className={`chip ${filter.open_at_risk ? 'on' : ''}`} aria-pressed={Boolean(filter.open_at_risk)} onClick={() => set('open_at_risk', filter.open_at_risk ? '' : '1')} title="오픈 예정일이 2주 이내인데 심의가 끝나지 않은 건"><CalendarClock size={13} /> 오픈 임박</button>
         {dirty && <Button small onClick={() => { setOffset(0); setFilter({ ...emptyFilter }) }}><RotateCcw size={13} /> 초기화</Button>}
       </div>
       <div className="form-grid compact">
