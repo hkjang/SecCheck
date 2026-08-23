@@ -198,6 +198,7 @@ button.table-link:hover { text-decoration: underline; }
 .command-list { max-height: 380px; overflow-y: auto; padding: 8px; }
 .command-item { width: 100%; border: 0; background: transparent; display: flex; align-items: center; gap: 12px; padding: 11px 12px; border-radius: 8px; text-align: left; }
 .command-item:hover { background: #f1f5fa; }
+.command-note { padding: 10px 14px; color: #6d7a8e; font-size: 13px; border-top: 1px solid #e6ebf2; }
 
 .login-page { min-height: 100vh; display: grid; grid-template-columns: minmax(360px,45%) 1fr; background: #061421; }
 .login-panel { background: white; display: flex; flex-direction: column; justify-content: center; padding: clamp(32px,7vw,110px); position: relative; }

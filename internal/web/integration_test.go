@@ -4059,3 +4059,37 @@ func TestOnlyOneFullVerificationRunsAtATime(t *testing.T) {
 		}
 	}
 }
+
+// Search showed twenty hits of each kind and stopped, with nothing to say that
+// the thing being looked for might be the twenty-first.
+func TestSearchSaysWhenThereIsMoreToFind(t *testing.T) {
+	h := newHarness(t)
+	h.login(adminOf(h))
+	h.user("search-author", "REQUESTER")
+	author := h.login("search-author")
+	// The server shows twenty of each kind; two extra make the cap visible.
+	const shown = 20
+	for i := 0; i < shown+2; i++ {
+		author.createReview(fmt.Sprintf("검색대상 서비스 %02d", i))
+	}
+
+	page := author.do(http.MethodGet, "/api/v1/search?q=검색대상", nil).json()
+	reviews, _ := page["reviews"].([]any)
+	if len(reviews) != shown {
+		t.Fatalf("search returned %d reviews, want the page size %d", len(reviews), shown)
+	}
+	more, _ := page["has_more"].(map[string]any)
+	if flag, _ := more["reviews"].(bool); !flag {
+		t.Errorf("search found more than it showed but did not say so: %v", more)
+	}
+
+	narrow := author.do(http.MethodGet, "/api/v1/search?q="+url.QueryEscape("검색대상 서비스 01"), nil).json()
+	narrowed, _ := narrow["reviews"].([]any)
+	if len(narrowed) == 0 {
+		t.Fatal("a narrower search found nothing")
+	}
+	narrowMore, _ := narrow["has_more"].(map[string]any)
+	if flag, _ := narrowMore["reviews"].(bool); flag {
+		t.Errorf("a search that fits on one page claimed there was more: %v", narrowMore)
+	}
+}

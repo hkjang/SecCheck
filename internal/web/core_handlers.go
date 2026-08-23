@@ -387,11 +387,23 @@ func (s *Server) dueChangeRequests(r *http.Request) []map[string]any {
 	return rows2
 }
 
+// searchPageSize is how many hits of each kind a search shows. One more than
+// this is read from the database so the screen knows whether it is showing
+// everything.
+const searchPageSize = 20
+
+func trimSearch(rows []map[string]any) ([]map[string]any, bool) {
+	if len(rows) > searchPageSize {
+		return rows[:searchPageSize], true
+	}
+	return rows, false
+}
+
 func (s *Server) search(w http.ResponseWriter, r *http.Request) {
 	sess := session(r)
 	term := strings.TrimSpace(r.URL.Query().Get("q"))
 	if len(term) < 2 {
-		jsonResponse(w, 200, map[string]any{"reviews": []any{}, "items": []any{}, "evidences": []any{}})
+		jsonResponse(w, 200, map[string]any{"reviews": []any{}, "items": []any{}, "evidences": []any{}, "has_more": map[string]bool{}})
 		return
 	}
 	like := "%" + term + "%"
@@ -401,7 +413,7 @@ func (s *Server) search(w http.ResponseWriter, r *http.Request) {
 		args = nil
 	}
 	args = append([]any{like}, args...)
-	rows, err := s.Store.Pool.Query(r.Context(), `SELECT review_requests.id,review_number,service_name,status,review_requests.department FROM review_requests JOIN users requester ON requester.id=review_requests.requester_id JOIN users builder ON builder.id=review_requests.builder_id JOIN users developer ON developer.id=review_requests.developer_id LEFT JOIN users reviewer ON reviewer.id=review_requests.reviewer_id LEFT JOIN users approver ON approver.id=review_requests.approver_id WHERE `+where+` AND (review_number ILIKE $1 OR service_name ILIKE $1 OR review_requests.department ILIKE $1 OR requester.display_name ILIKE $1 OR builder.display_name ILIKE $1 OR developer.display_name ILIKE $1 OR reviewer.display_name ILIKE $1 OR approver.display_name ILIKE $1 OR EXISTS(SELECT 1 FROM submissions sx JOIN submission_items six ON six.submission_id=sx.id WHERE sx.review_request_id=review_requests.id AND six.template_name ILIKE $1)) ORDER BY review_requests.updated_at DESC LIMIT 20`, args...)
+	rows, err := s.Store.Pool.Query(r.Context(), `SELECT review_requests.id,review_number,service_name,status,review_requests.department FROM review_requests JOIN users requester ON requester.id=review_requests.requester_id JOIN users builder ON builder.id=review_requests.builder_id JOIN users developer ON developer.id=review_requests.developer_id LEFT JOIN users reviewer ON reviewer.id=review_requests.reviewer_id LEFT JOIN users approver ON approver.id=review_requests.approver_id WHERE `+where+` AND (review_number ILIKE $1 OR service_name ILIKE $1 OR review_requests.department ILIKE $1 OR requester.display_name ILIKE $1 OR builder.display_name ILIKE $1 OR developer.display_name ILIKE $1 OR reviewer.display_name ILIKE $1 OR approver.display_name ILIKE $1 OR EXISTS(SELECT 1 FROM submissions sx JOIN submission_items six ON six.submission_id=sx.id WHERE sx.review_request_id=review_requests.id AND six.template_name ILIKE $1)) ORDER BY review_requests.updated_at DESC LIMIT 21`, args...)
 	if err != nil {
 		s.fault(w, r, "SEARCH_FAILED", "검색하지 못했습니다.", err)
 		return
@@ -412,7 +424,7 @@ func (s *Server) search(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	itemWhere := strings.ReplaceAll(where, "review_requests.", "r.")
-	rows, err = s.Store.Pool.Query(r.Context(), `SELECT DISTINCT r.id AS review_id,r.review_number,si.item_code,si.title,si.category FROM submission_items si JOIN submissions s ON s.id=si.submission_id JOIN review_requests r ON r.id=s.review_request_id LEFT JOIN review_results rr ON rr.submission_item_id=si.id WHERE `+itemWhere+` AND (si.item_code ILIKE $1 OR si.title ILIKE $1 OR si.question ILIKE $1 OR si.template_name ILIKE $1 OR rr.opinion ILIKE $1) LIMIT 20`, args...)
+	rows, err = s.Store.Pool.Query(r.Context(), `SELECT DISTINCT r.id AS review_id,r.review_number,si.item_code,si.title,si.category FROM submission_items si JOIN submissions s ON s.id=si.submission_id JOIN review_requests r ON r.id=s.review_request_id LEFT JOIN review_results rr ON rr.submission_item_id=si.id WHERE `+itemWhere+` AND (si.item_code ILIKE $1 OR si.title ILIKE $1 OR si.question ILIKE $1 OR si.template_name ILIKE $1 OR rr.opinion ILIKE $1) LIMIT 21`, args...)
 	if err != nil {
 		s.fault(w, r, "SEARCH_FAILED", "검색하지 못했습니다.", err)
 		return
@@ -422,7 +434,7 @@ func (s *Server) search(w http.ResponseWriter, r *http.Request) {
 		s.fault(w, r, "SEARCH_FAILED", "검색하지 못했습니다.", err)
 		return
 	}
-	rows, err = s.Store.Pool.Query(r.Context(), `SELECT DISTINCT r.id AS review_id,r.review_number,e.id,e.original_filename,e.mime_type,e.created_at FROM evidences e JOIN submission_items si ON si.id=e.submission_item_id JOIN submissions sub ON sub.id=si.submission_id JOIN review_requests r ON r.id=sub.review_request_id WHERE e.deleted_at IS NULL AND `+itemWhere+` AND e.original_filename ILIKE $1 ORDER BY e.created_at DESC LIMIT 20`, args...)
+	rows, err = s.Store.Pool.Query(r.Context(), `SELECT DISTINCT r.id AS review_id,r.review_number,e.id,e.original_filename,e.mime_type,e.created_at FROM evidences e JOIN submission_items si ON si.id=e.submission_item_id JOIN submissions sub ON sub.id=si.submission_id JOIN review_requests r ON r.id=sub.review_request_id WHERE e.deleted_at IS NULL AND `+itemWhere+` AND e.original_filename ILIKE $1 ORDER BY e.created_at DESC LIMIT 21`, args...)
 	if err != nil {
 		s.fault(w, r, "SEARCH_FAILED", "검색하지 못했습니다.", err)
 		return
@@ -432,7 +444,14 @@ func (s *Server) search(w http.ResponseWriter, r *http.Request) {
 		s.fault(w, r, "SEARCH_FAILED", "검색하지 못했습니다.", err)
 		return
 	}
-	jsonResponse(w, 200, map[string]any{"reviews": reviews, "items": items, "evidences": evidences})
+	// Twenty was a silent cap: somebody searching for a review that ranks
+	// twenty-first was shown a full-looking page without it. One row past the
+	// cap is fetched so the screen can say there is more to find.
+	reviews, moreReviews := trimSearch(reviews)
+	items, moreItems := trimSearch(items)
+	evidences, moreEvidences := trimSearch(evidences)
+	jsonResponse(w, 200, map[string]any{"reviews": reviews, "items": items, "evidences": evidences,
+		"has_more": map[string]bool{"reviews": moreReviews, "items": moreItems, "evidences": moreEvidences}})
 }
 
 func accessFilter(sess auth.Session, start int) (string, []any) {
