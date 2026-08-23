@@ -3590,3 +3590,53 @@ func TestNobodyReviewsTheirOwnRequest(t *testing.T) {
 		t.Errorf("a single-person installation could not review at all: %d %s", res.status, res.body)
 	}
 }
+
+// With self-review refused, a role nobody holds is a workflow that never runs
+// and a role one person holds is one that stops the moment that person is the
+// one asking. The screen an administrator checks first now says so.
+func TestSystemInfoReportsWhoCanAct(t *testing.T) {
+	h := newHarness(t)
+	admin := h.login(adminOf(h))
+	ctx := context.Background()
+
+	coverage := func() map[string]map[string]any {
+		t.Helper()
+		res := admin.do(http.MethodGet, "/api/v1/admin/system", nil)
+		if res.status != http.StatusOK {
+			t.Fatalf("reading system info: %d %s", res.status, res.body)
+		}
+		rows, _ := res.json()["role_coverage"].([]any)
+		out := map[string]map[string]any{}
+		for _, raw := range rows {
+			row, _ := raw.(map[string]any)
+			code, _ := row["code"].(string)
+			out[code] = row
+		}
+		return out
+	}
+
+	// Every role the workflow depends on is reported, whether or not anybody
+	// holds it -- a role with no holders is the one worth seeing.
+	first := coverage()
+	for _, role := range []string{"SYSTEM_ADMIN", "SECURITY_REVIEWER", "APPROVER", "TEMPLATE_ADMIN", "AUDITOR"} {
+		if _, ok := first[role]; !ok {
+			t.Fatalf("%s is missing from the coverage report: %v", role, first)
+		}
+	}
+	before, _ := first["SECURITY_REVIEWER"]["active"].(float64)
+
+	h.user("second-reviewer", "SECURITY_REVIEWER")
+	if active, _ := coverage()["SECURITY_REVIEWER"]["active"].(float64); active != before+1 {
+		t.Errorf("a new reviewer took the count from %v to %v", before, coverage()["SECURITY_REVIEWER"]["active"])
+	}
+	// A disabled account cannot act, so it does not count towards coverage.
+	if _, err := h.db.Pool.Exec(ctx, `UPDATE users SET active=false WHERE username='second-reviewer'`); err != nil {
+		t.Fatal(err)
+	}
+	row := coverage()["SECURITY_REVIEWER"]
+	active, _ := row["active"].(float64)
+	total, _ := row["total"].(float64)
+	if active != before || total != before+1 {
+		t.Errorf("a disabled reviewer still counts as able to act: %v (started from %v)", row, before)
+	}
+}

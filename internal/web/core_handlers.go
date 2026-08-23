@@ -494,7 +494,20 @@ func (s *Server) systemInfo(w http.ResponseWriter, r *http.Request) {
 	// database size has always been here, the disk the files live on has not,
 	// and it is the one that stops uploads when it fills.
 	storage := s.vault().Space()
-	jsonResponse(w, 200, map[string]any{"version": s.Version, "schema_version": s.Store.SchemaVersion(r.Context()), "go_version": runtime.Version(), "users": users, "reviews": reviews, "templates": templates, "evidences": evidences, "logs": logs, "database_size": dbSize, "pdf_font": pdfFont, "pdf_export_available": pdfFont != "", "storage": storage, "now": time.Now()})
+	// Who can actually act. With self-review refused, a role held by one
+	// person is a workflow that stops the moment that person is the one
+	// asking, and a role held by nobody is one that never runs at all.
+	coverage := []map[string]any{}
+	if rows, err := s.Store.Pool.Query(r.Context(), `SELECT r.code,
+                count(*) FILTER (WHERE u.id IS NOT NULL AND u.active) AS active,
+                count(u.id) AS total
+                FROM (VALUES ('SYSTEM_ADMIN'),('SECURITY_REVIEWER'),('APPROVER'),('TEMPLATE_ADMIN'),('AUDITOR')) AS r(code)
+                LEFT JOIN user_roles ur ON ur.role_code=r.code
+                LEFT JOIN users u ON u.id=ur.user_id
+                GROUP BY r.code ORDER BY r.code`); err == nil {
+		coverage = scanDynamic(rows, []string{"code", "active", "total"})
+	}
+	jsonResponse(w, 200, map[string]any{"version": s.Version, "schema_version": s.Store.SchemaVersion(r.Context()), "go_version": runtime.Version(), "users": users, "reviews": reviews, "templates": templates, "evidences": evidences, "logs": logs, "database_size": dbSize, "pdf_font": pdfFont, "pdf_export_available": pdfFont != "", "storage": storage, "role_coverage": coverage, "now": time.Now()})
 }
 
 func (s *Server) ensureUserDataKey(ctx context.Context, userID string) error {

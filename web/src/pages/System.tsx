@@ -4,11 +4,14 @@ import { get } from '../lib/api'
 import { Badge, Button, formatBytes, formatDate, LoadFailed, Loading } from '../components/ui'
 
 type Storage = { path: string; writable: boolean; free_bytes: number; total_bytes: number; detail?: string }
+type Coverage = { code: string; active: number; total: number }
 type Info = {
   version: string; schema_version: number; go_version: string
   users: number; reviews: number; templates: number; evidences: number; logs: number
-  database_size: string; pdf_font: string; pdf_export_available: boolean; storage: Storage; now: string
+  database_size: string; pdf_font: string; pdf_export_available: boolean; storage: Storage; role_coverage: Coverage[]; now: string
 }
+
+const roleLabel: Record<string, string> = { SYSTEM_ADMIN: '서비스 관리자', SECURITY_REVIEWER: '보안 담당자', APPROVER: '승인자', TEMPLATE_ADMIN: '체크리스트 관리자', AUDITOR: '감사' }
 
 // The endpoint behind this screen has always existed and nothing showed it, so
 // the schema version an upgrade note refers to and the Korean font a PDF
@@ -46,6 +49,11 @@ export default function SystemPage() {
       </tbody></table></div>
       {(!info.storage.writable || free < 0.1) && <div className="card-body"><p className="subtle">공간이 떨어지거나 볼륨에 쓸 수 없게 되면 증적 업로드가 실패합니다. 시스템 관리자에게 `저장 공간 부족` 알림이 발송됩니다.</p></div>}
     </section>
+    <section className="card"><div className="card-header"><h2>역할 보유자</h2></div>
+      <div className="card-body"><p className="subtle">본인이 신청한 심의는 본인이 검토·승인할 수 없으므로, 검토자와 승인자가 한 명뿐이면 그 사람이 신청한 건은 처리할 수 없습니다.</p></div>
+      <div className="table-wrap"><table><thead><tr><th scope="col">역할</th><th scope="col">활성 계정</th><th scope="col">전체</th><th scope="col"></th></tr></thead>
+        <tbody>{(info.role_coverage || []).map(role => <tr key={role.code}><td>{roleLabel[role.code] || role.code}</td><td>{role.active}</td><td className="subtle">{role.total}</td>
+          <td>{role.active === 0 ? <Badge tone="red">담당자 없음</Badge> : role.active === 1 ? <Badge tone="amber">1명뿐</Badge> : null}</td></tr>)}</tbody></table></div></section>
     <section className="card"><div className="card-header"><h2>런타임</h2></div>
       <div className="table-wrap"><table><tbody>{rows.map(([label, value]) => <tr key={label}><th>{label}</th><td>{value}</td></tr>)}</tbody></table></div></section>
     <section className="card"><div className="card-header"><h2>데이터 규모</h2></div>
