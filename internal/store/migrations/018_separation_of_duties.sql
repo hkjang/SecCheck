@@ -1,0 +1,11 @@
+-- Nothing stopped the person who filed a review from being the one who signed
+-- it off. Somebody holding both REQUESTER and APPROVER could submit their own
+-- change and approve it, and with no approver named, any approver -- including
+-- the requester -- could decide it. The same held for the security verdict: a
+-- requester who also holds SECURITY_REVIEWER could review their own work.
+--
+-- Reviewing your own request is the one thing a security review exists to
+-- prevent, so it is refused by default. A single-person installation, where
+-- the bootstrap account holds every role and nobody else can act, can turn it
+-- back on knowingly.
+UPDATE settings SET value_json = '{"allow_self_review":false}'::jsonb || value_json WHERE key = 'workflow';

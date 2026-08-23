@@ -2000,7 +2000,9 @@ func TestUserListCarriesTheLastSignIn(t *testing.T) {
 // one at a time.
 func TestReviewersCanJudgeItemsInBulk(t *testing.T) {
 	h := newHarness(t)
-	author := h.login(adminOf(h))
+	reviewer := h.login(adminOf(h))
+	h.user("bulk-author", "REQUESTER")
+	author := h.login("bulk-author")
 	reviewID := author.createReview("일괄 판정 서비스")
 	items := []map[string]any{}
 	if err := json.Unmarshal([]byte(author.do(http.MethodGet, "/api/v1/review-requests/"+reviewID+"/items", nil).body), &items); err != nil {
@@ -2026,22 +2028,22 @@ func TestReviewersCanJudgeItemsInBulk(t *testing.T) {
 		t.Fatal(err)
 	}
 	// Judging is only possible once the review is actually under review.
-	if res := author.do(http.MethodPost, bulk, map[string]any{"item_ids": ids, "result": "COMPLIANT"}); res.errorCode() != "STATE_CONFLICT" {
+	if res := reviewer.do(http.MethodPost, bulk, map[string]any{"item_ids": ids, "result": "COMPLIANT"}); res.errorCode() != "STATE_CONFLICT" {
 		t.Fatalf("judging a draft returned %d %s", res.status, res.body)
 	}
 	if _, err := h.db.Pool.Exec(ctx, `UPDATE review_requests SET status='REVIEWING' WHERE id=$1`, reviewID); err != nil {
 		t.Fatal(err)
 	}
-	if res := author.do(http.MethodPost, bulk, map[string]any{"item_ids": ids, "result": "NOT_A_RESULT"}); res.errorCode() != "VALIDATION_FAILED" {
+	if res := reviewer.do(http.MethodPost, bulk, map[string]any{"item_ids": ids, "result": "NOT_A_RESULT"}); res.errorCode() != "VALIDATION_FAILED" {
 		t.Errorf("an unknown verdict was accepted: %s", res.body)
 	}
 
-	first := author.do(http.MethodPost, bulk, map[string]any{"item_ids": ids[:3], "result": "COMPLIANT", "opinion": "일괄 적합"})
+	first := reviewer.do(http.MethodPost, bulk, map[string]any{"item_ids": ids[:3], "result": "COMPLIANT", "opinion": "일괄 적합"})
 	if applied, _ := first.json()["applied"].(float64); int(applied) != 3 {
 		t.Fatalf("first bulk judgement applied %v: %s", first.json()["applied"], first.body)
 	}
 	// Without overwrite an existing verdict has to survive.
-	again := author.do(http.MethodPost, bulk, map[string]any{"item_ids": ids, "result": "INSUFFICIENT"})
+	again := reviewer.do(http.MethodPost, bulk, map[string]any{"item_ids": ids, "result": "INSUFFICIENT"})
 	if applied, _ := again.json()["applied"].(float64); int(applied) != 2 {
 		t.Errorf("the second pass applied %v, want 2 (the already-judged three skipped): %s", again.json()["applied"], again.body)
 	}
@@ -2052,7 +2054,7 @@ func TestReviewersCanJudgeItemsInBulk(t *testing.T) {
 	if verdict != "COMPLIANT" {
 		t.Errorf("an existing verdict was replaced without overwrite: %s", verdict)
 	}
-	if res := author.do(http.MethodPost, bulk, map[string]any{"item_ids": ids, "result": "INSUFFICIENT", "overwrite": true}); res.status != http.StatusOK {
+	if res := reviewer.do(http.MethodPost, bulk, map[string]any{"item_ids": ids, "result": "INSUFFICIENT", "overwrite": true}); res.status != http.StatusOK {
 		t.Fatalf("overwrite returned %d %s", res.status, res.body)
 	}
 	if err := h.db.Pool.QueryRow(ctx, `SELECT result FROM review_results WHERE submission_item_id=$1`, ids[0]).Scan(&verdict); err != nil {
@@ -2315,10 +2317,13 @@ func TestApprovingWritesTheDecisionOrNothing(t *testing.T) {
 func TestTheReportCollectsOutstandingFollowUps(t *testing.T) {
 	h := newHarness(t)
 	admin := h.login(adminOf(h))
+	// The reviewer cannot be the person who filed the review.
+	h.user("followup-author", "REQUESTER")
+	author := h.login("followup-author")
 	ctx := context.Background()
-	reviewID := admin.createReview("미조치 서비스")
+	reviewID := author.createReview("미조치 서비스")
 	items := []map[string]any{}
-	if err := json.Unmarshal([]byte(admin.do(http.MethodGet, "/api/v1/review-requests/"+reviewID+"/items", nil).body), &items); err != nil {
+	if err := json.Unmarshal([]byte(author.do(http.MethodGet, "/api/v1/review-requests/"+reviewID+"/items", nil).body), &items); err != nil {
 		t.Fatal(err)
 	}
 	var uid string
@@ -3525,5 +3530,63 @@ func TestARetiredVersionLeavesNewReviewsButNotOldOnes(t *testing.T) {
 	}
 	if recorded != 1 {
 		t.Errorf("retiring was recorded %d times", recorded)
+	}
+}
+
+// Reviewing your own request is the one thing a security review exists to
+// prevent, and nothing stopped it: somebody holding both roles could file a
+// change and sign it off, and with no approver named, any approver -- the
+// requester included -- could decide it.
+func TestNobodyReviewsTheirOwnRequest(t *testing.T) {
+	h := newHarness(t)
+	admin := h.login(adminOf(h))
+	ctx := context.Background()
+	both := h.user("wears-both-hats", "REQUESTER", "SECURITY_REVIEWER", "APPROVER")
+	author := h.login("wears-both-hats")
+	reviewID := author.createReview("겸직 서비스")
+	if _, err := h.db.Pool.Exec(ctx, `UPDATE review_requests SET status='SUBMITTED' WHERE id=$1`, reviewID); err != nil {
+		t.Fatal(err)
+	}
+
+	begin := author.do(http.MethodPost, "/api/v1/review-requests/"+reviewID+"/begin-review", nil)
+	if begin.status != http.StatusForbidden || begin.errorCode() != "SELF_REVIEW_FORBIDDEN" {
+		t.Errorf("the requester took their own review: %d %s", begin.status, begin.body)
+	}
+	// Being named the reviewer directly does not help either.
+	if _, err := h.db.Pool.Exec(ctx, `UPDATE review_requests SET reviewer_id=$2,status='REVIEWING' WHERE id=$1`, reviewID, both); err != nil {
+		t.Fatal(err)
+	}
+	items := []map[string]any{}
+	if err := json.Unmarshal([]byte(author.do(http.MethodGet, "/api/v1/review-requests/"+reviewID+"/items", nil).body), &items); err != nil {
+		t.Fatal(err)
+	}
+	verdict := author.do(http.MethodPut, "/api/v1/review-requests/"+reviewID+"/review-results/"+items[0]["id"].(string),
+		map[string]any{"result": "COMPLIANT", "opinion": "제가 봤습니다", "expected_updated_at": ""})
+	if verdict.status != http.StatusForbidden {
+		t.Errorf("the requester judged their own item: %d %s", verdict.status, verdict.body)
+	}
+	// Nor at the signature.
+	if _, err := h.db.Pool.Exec(ctx, `UPDATE review_requests SET status='APPROVAL_PENDING',approver_id=NULL WHERE id=$1`, reviewID); err != nil {
+		t.Fatal(err)
+	}
+	approve := author.do(http.MethodPost, "/api/v1/review-requests/"+reviewID+"/approve", map[string]any{"comment": "제가 승인합니다"})
+	if approve.status != http.StatusForbidden || approve.errorCode() != "SELF_REVIEW_FORBIDDEN" {
+		t.Errorf("the requester approved their own review: %d %s", approve.status, approve.body)
+	}
+	// Somebody else decides it, which is the point.
+	if res := admin.do(http.MethodPost, "/api/v1/review-requests/"+reviewID+"/approve", map[string]any{"comment": "확인"}); res.status != http.StatusOK {
+		t.Fatalf("another approver could not decide it either: %d %s", res.status, res.body)
+	}
+
+	// An installation with one person can allow it, knowingly.
+	second := author.createReview("1인 운영 서비스")
+	if _, err := h.db.Pool.Exec(ctx, `UPDATE settings SET value_json = value_json || '{"allow_self_review":true}'::jsonb WHERE key='workflow'`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := h.db.Pool.Exec(ctx, `UPDATE review_requests SET status='SUBMITTED' WHERE id=$1`, second); err != nil {
+		t.Fatal(err)
+	}
+	if res := author.do(http.MethodPost, "/api/v1/review-requests/"+second+"/begin-review", nil); res.status != http.StatusOK {
+		t.Errorf("a single-person installation could not review at all: %d %s", res.status, res.body)
 	}
 }

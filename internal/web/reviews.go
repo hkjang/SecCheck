@@ -1022,6 +1022,11 @@ func emptyAnswer(raw []byte) bool {
 func (s *Server) beginReview(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 	sess := session(r)
+	// Taking your own request to review is the same conflict as approving it.
+	if s.selfReviewBlocked(r.Context(), id, sess.User.ID) {
+		problem(w, 403, "SELF_REVIEW_FORBIDDEN", "본인이 신청한 심의는 본인이 검토할 수 없습니다. 다른 검토자가 맡아야 합니다.", nil)
+		return
+	}
 	tag, err := s.Store.Pool.Exec(r.Context(), `UPDATE review_requests SET status='REVIEWING',reviewer_id=COALESCE(reviewer_id,$2),updated_at=now() WHERE id=$1 AND status IN ('SUBMITTED','RESUBMITTED') AND (reviewer_id IS NULL OR reviewer_id=$2)`, id, sess.User.ID)
 	if err != nil || tag.RowsAffected() == 0 {
 		problem(w, 409, "STATE_CONFLICT", "심의를 시작할 수 없습니다.", nil)
@@ -1462,6 +1467,25 @@ func (s *Server) closeReview(w http.ResponseWriter, r *http.Request) {
 	jsonResponse(w, 200, map[string]string{"status": "CLOSED"})
 }
 
+// selfReviewBlocked reports whether this person may decide this review. The
+// person who asked for a review is not a neutral judge of it, which is the
+// premise the whole process rests on; an installation small enough that the
+// same account has to do both can allow it deliberately.
+func (s *Server) selfReviewBlocked(ctx context.Context, reviewID, userID string) bool {
+	var workflow struct {
+		AllowSelfReview bool `json:"allow_self_review"`
+	}
+	_, _ = s.Store.Setting(ctx, "workflow", &workflow)
+	if workflow.AllowSelfReview {
+		return false
+	}
+	var own bool
+	if err := s.Store.Pool.QueryRow(ctx, `SELECT requester_id=$2 FROM review_requests WHERE id=$1`, reviewID, userID).Scan(&own); err != nil {
+		return false
+	}
+	return own
+}
+
 func (s *Server) decideApproval(w http.ResponseWriter, r *http.Request, decision string) {
 	id := r.PathValue("id")
 	// The comment is optional, so an approval sent with no body at all -- the
@@ -1479,6 +1503,10 @@ func (s *Server) decideApproval(w http.ResponseWriter, r *http.Request, decision
 	// it does -- sat in every queue and could not be decided by anyone. The
 	// approver who does decide is recorded on the review.
 	anyApprover := hasAnyRole(sess.User, "APPROVER")
+	if s.selfReviewBlocked(r.Context(), id, sess.User.ID) {
+		problem(w, 403, "SELF_REVIEW_FORBIDDEN", "본인이 신청한 심의는 본인이 승인할 수 없습니다. 다른 승인자를 지정하거나, 1인 운영이라면 서비스 설정에서 본인 심의 처리 허용을 켜십시오.", nil)
+		return
+	}
 	// The approvals row is the decision itself -- who, what and why. Writing
 	// it after the status had committed, with the error discarded, allowed a
 	// review to read APPROVED with no record of anyone approving it.
@@ -1770,6 +1798,11 @@ func (s *Server) canEditReview(ctx context.Context, sess auth.Session, id string
 }
 func (s *Server) canReview(ctx context.Context, sess auth.Session, id string) bool {
 	if !containsRole(sess.User, "SECURITY_REVIEWER") {
+		return false
+	}
+	// Being named the reviewer of your own request does not make you one:
+	// starting the review is refused, and so is everything it would allow.
+	if s.selfReviewBlocked(ctx, id, sess.User.ID) {
 		return false
 	}
 	var ok bool

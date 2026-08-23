@@ -146,6 +146,7 @@
 ![관리자 설정 - 파일보안](./screenshots/24_admin_settings_upload.png)
 - **일반 설정**: 세션 시간, 데이터 보존 기간(일), 표시 시간대
 - **검토·승인 워크플로**: 팀장/승인자 최종 승인 프로세스 On/Off, 검토자 배정 필수 정책
+- **본인 심의 처리 금지**: 신청자 본인은 자신이 올린 심의를 검토하거나 승인할 수 없습니다(기본값). 담당자가 한 명뿐인 설치를 위해 설정에서 해제할 수 있습니다
 - **Keycloak OIDC SSO**: Issuer Discovery, Client Secret(암호화 보관), 그룹 → 역할 매핑(로그인마다 동기화, 그룹에서 빠지면 역할 회수), 연결 테스트
 - **파일 보안 & ClamAV**: 최대 파일 크기, 허용 확장자 화이트리스트, ClamAV 데몬 주소 및 악성코드 차단
 - **접근 보안**: HTTPS Secure Cookie, Rate Limiting, 장기 미접속 관리자 잠금, CORS Origin
