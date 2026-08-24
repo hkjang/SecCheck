@@ -5,6 +5,10 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"os"
+	"path/filepath"
+	"regexp"
+	"strings"
 	"sync"
 	"testing"
 )
@@ -154,5 +158,54 @@ func TestConcurrentEvidenceVersionsGetDistinctNumbers(t *testing.T) {
 	}
 	if current != versions {
 		t.Errorf("the evidence points at version %d but %d versions exist", current, versions)
+	}
+}
+
+// Everybody's list of reviews is filtered by the columns that name them on the
+// review. Three of those columns had an index and three did not, so the same
+// screen was an index lookup for a reviewer and a full table read for the
+// builder of the same service. A column the filter uses has to be indexed.
+func TestEveryColumnTheAccessFilterUsesIsIndexed(t *testing.T) {
+	h := newHarness(t)
+	source, err := os.ReadFile(filepath.Join("..", "..", "internal", "web", "core_handlers.go"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(source)
+	start := strings.Index(text, "func accessFilter(")
+	if start < 0 {
+		t.Fatal("accessFilter is gone; this guard needs rewriting")
+	}
+	clause := text[start:]
+	if end := strings.Index(clause, "\n}"); end > 0 {
+		clause = clause[:end]
+	}
+	columns := map[string]bool{}
+	for _, m := range regexp.MustCompile(`review_requests\.([a-z_]+_id)`).FindAllStringSubmatch(clause, -1) {
+		columns[m[1]] = true
+	}
+	if len(columns) < 5 {
+		t.Fatalf("only %d owner columns found in accessFilter: %v", len(columns), columns)
+	}
+	indexed := map[string]bool{}
+	rows, err := h.db.Pool.Query(context.Background(), `SELECT indexdef FROM pg_indexes WHERE tablename='review_requests'`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var def string
+		if rows.Scan(&def) != nil {
+			continue
+		}
+		// Only the leading column of an index can serve a lookup on its own.
+		if m := regexp.MustCompile(`\(([a-z_]+)`).FindStringSubmatch(def[strings.Index(def, "USING"):]); m != nil {
+			indexed[m[1]] = true
+		}
+	}
+	for column := range columns {
+		if !indexed[column] {
+			t.Errorf("accessFilter filters by %s, which no index leads with: a list for that person reads the whole table", column)
+		}
 	}
 }
