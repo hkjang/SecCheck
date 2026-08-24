@@ -212,7 +212,7 @@ func (s *Server) bulkSaveResponses(w http.ResponseWriter, r *http.Request) {
 	// a bulk action cannot silently discard someone's work.
 	conflict := `ON CONFLICT(submission_item_id) DO NOTHING`
 	if in.Overwrite {
-		conflict = `ON CONFLICT(submission_item_id) DO UPDATE SET applicability=EXCLUDED.applicability,self_assessment=EXCLUDED.self_assessment,na_reason=EXCLUDED.na_reason,current_state=EXCLUDED.current_state,action_plan=EXCLUDED.action_plan,assigned_to=EXCLUDED.assigned_to,updated_by=EXCLUDED.updated_by,updated_at=now()`
+		conflict = `ON CONFLICT(submission_item_id) DO UPDATE SET applicability=EXCLUDED.applicability,self_assessment=EXCLUDED.self_assessment,na_reason=EXCLUDED.na_reason,current_state=EXCLUDED.current_state,action_plan=EXCLUDED.action_plan,assigned_to=EXCLUDED.assigned_to,updated_by=EXCLUDED.updated_by,updated_at=now(),carried_at=NULL`
 	}
 	tag, err := s.Store.Pool.Exec(r.Context(), `
                 INSERT INTO responses(id,submission_item_id,answer_json,applicability,self_assessment,current_state,na_reason,action_plan,assigned_to,updated_by)

@@ -348,6 +348,7 @@ docker compose exec seccheck /app/seccheck selftest --username admin --password 
 | 023 | 증적 무결성 확인 실패 사유(`evidences.verify_error`) |
 | 024 | 삭제분까지 포함한 항목별 증적 조회 인덱스(`evidence_touched_at()` 성능) |
 | 025 | 구축·개발·운영 담당자 열 인덱스(본인 심의 목록 조회 성능) |
+| 026 | 재심의로 이월된 답변 표시(`responses.carried_at`) |
 
 ## 업그레이드와 롤백
 

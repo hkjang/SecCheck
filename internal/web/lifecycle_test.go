@@ -770,3 +770,72 @@ func TestTheDashboardRefusesRatherThanReportZero(t *testing.T) {
 		t.Errorf("the failure is reported as %s", res.errorCode())
 	}
 }
+
+// A re-review copies last year's answers into the new checklist -- that is what
+// it is for. But a copied answer looked exactly like one somebody wrote this
+// cycle, so a review where nobody re-examined anything was indistinguishable
+// from one where everybody did.
+func TestACarriedAnswerSaysThatItWasCarried(t *testing.T) {
+	h := newHarness(t)
+	ctx := context.Background()
+	h.user("carry-requester", "REQUESTER")
+	requester := h.login("carry-requester")
+
+	firstID := requester.createReview("작년 심의")
+	var items []map[string]any
+	if err := json.Unmarshal([]byte(requester.do(http.MethodGet, "/api/v1/review-requests/"+firstID+"/items", nil).body), &items); err != nil {
+		t.Fatal(err)
+	}
+	ids := make([]string, 0, len(items))
+	for _, item := range items {
+		ids = append(ids, item["id"].(string))
+	}
+	if res := requester.do(http.MethodPost, "/api/v1/review-requests/"+firstID+"/responses/bulk",
+		map[string]any{"item_ids": ids, "applicability": "N/A", "na_reason": "작년에 적은 사유", "self_assessment": "N/A"}); res.status != http.StatusOK {
+		t.Fatalf("answering last year's review: %d %s", res.status, res.body)
+	}
+
+	copied := requester.do(http.MethodPost, "/api/v1/review-requests/"+firstID+"/copy", map[string]any{})
+	if copied.status != http.StatusCreated {
+		t.Fatalf("re-review: %d %s", copied.status, copied.body)
+	}
+	secondID, _ := copied.json()["id"].(string)
+
+	read := func() []map[string]any {
+		t.Helper()
+		var out []map[string]any
+		if err := json.Unmarshal([]byte(requester.do(http.MethodGet, "/api/v1/review-requests/"+secondID+"/items", nil).body), &out); err != nil {
+			t.Fatal(err)
+		}
+		return out
+	}
+	fresh := read()
+	carried := 0
+	var firstItem string
+	for _, item := range fresh {
+		response, _ := item["response"].(map[string]any)
+		if response != nil && response["carried_at"] != nil {
+			carried++
+			if firstItem == "" {
+				firstItem = item["id"].(string)
+			}
+		}
+	}
+	if carried == 0 {
+		t.Fatal("every answer was copied from last year and none of them says so")
+	}
+
+	// Looking at the answer again is what clears it -- that is the whole point
+	// of the mark.
+	if res := requester.do(http.MethodPut, "/api/v1/review-requests/"+secondID+"/responses/"+firstItem,
+		map[string]any{"applicability": "N/A", "na_reason": "올해 다시 확인했습니다", "self_assessment": "N/A"}); res.status != http.StatusOK {
+		t.Fatalf("re-answering: %d %s", res.status, res.body)
+	}
+	var still bool
+	if err := h.db.Pool.QueryRow(ctx, `SELECT carried_at IS NOT NULL FROM responses WHERE submission_item_id=$1`, firstItem).Scan(&still); err != nil {
+		t.Fatal(err)
+	}
+	if still {
+		t.Error("an answer the requester rewrote is still marked as carried over")
+	}
+}
