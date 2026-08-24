@@ -475,3 +475,40 @@ func TestNotificationsWithoutATargetHaveSomewhereToGo(t *testing.T) {
 		t.Fatal("the scan found no target-less notifications; the call shape must have changed")
 	}
 }
+
+// A row that only a mouse can open is a row a keyboard user cannot read. The
+// checklist row -- the most used control in the product -- was a plain div with
+// an onClick: everything inside it was reachable by keyboard except the one
+// action that reveals it. Every clickable container has to carry either its own
+// keyboard handling or a real control that does the same thing.
+func TestClickableRowsCanBeOperatedFromTheKeyboard(t *testing.T) {
+	pages, err := filepath.Glob(filepath.Join("..", "..", "web", "src", "*", "*.tsx"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(pages) < 10 {
+		t.Fatalf("only %d screens found; the layout must have changed", len(pages))
+	}
+	clickable := regexp.MustCompile(`(?s)<(div|span|article|li|tr|td)\b[^>]{0,400}?onClick`)
+	for _, page := range pages {
+		body, err := os.ReadFile(page)
+		if err != nil {
+			t.Fatal(err)
+		}
+		text := string(body)
+		for _, m := range clickable.FindAllString(text, -1) {
+			// onFocusCapture covers a container that only records which item
+			// the user is working on: tabbing into its fields is the keyboard
+			// equivalent of clicking it.
+			if strings.Contains(m, "onKeyDown") || strings.Contains(m, "tabIndex") || strings.Contains(m, "role=") || strings.Contains(m, "onFocusCapture") {
+				continue
+			}
+			// Otherwise the same block has to offer a focusable control for the
+			// action, which is what aria-expanded on a button marks.
+			if strings.Contains(text, "aria-expanded") {
+				continue
+			}
+			t.Errorf("%s: a container reacts to a click with no keyboard equivalent:\n%s", filepath.Base(page), strings.TrimSpace(m))
+		}
+	}
+}
