@@ -952,3 +952,64 @@ func TestTheDashboardNumbersOpenTheSetTheyCount(t *testing.T) {
 		t.Errorf("the filter is refused for an administrator: %d", res.status)
 	}
 }
+
+// A checklist item assigned to somebody who is then removed from the review, or
+// demoted to read-only, kept their name on it: the row looked owned, the person
+// could not even open the review, and nobody was told. Losing the assignment is
+// the honest outcome, and the count comes back so the screen can say so.
+func TestRemovingAParticipantReleasesTheItemsTheyHeld(t *testing.T) {
+	h := newHarness(t)
+	ctx := context.Background()
+	h.user("part-requester", "REQUESTER")
+	helperID := h.user("part-helper", "CONTRIBUTOR")
+	requester := h.login("part-requester")
+
+	reviewID := requester.createReview("참여자 해제 서비스")
+	var items []map[string]any
+	if err := json.Unmarshal([]byte(requester.do(http.MethodGet, "/api/v1/review-requests/"+reviewID+"/items", nil).body), &items); err != nil {
+		t.Fatal(err)
+	}
+	first, second := items[0]["id"].(string), items[1]["id"].(string)
+	if res := requester.do(http.MethodPost, "/api/v1/review-requests/"+reviewID+"/participants", map[string]any{"user_id": helperID, "role": "CONTRIBUTOR"}); res.status != http.StatusOK && res.status != http.StatusNoContent {
+		t.Fatalf("adding a contributor: %d %s", res.status, res.body)
+	}
+	if res := requester.do(http.MethodPost, "/api/v1/review-requests/"+reviewID+"/responses/bulk",
+		map[string]any{"item_ids": []string{first, second}, "assigned_to": helperID, "assign_only": true}); res.status != http.StatusOK {
+		t.Fatalf("assigning items: %d %s", res.status, res.body)
+	}
+
+	// Demoting to read-only releases them, because a viewer cannot answer.
+	demoted := requester.do(http.MethodPost, "/api/v1/review-requests/"+reviewID+"/participants", map[string]any{"user_id": helperID, "role": "VIEWER"})
+	if released, _ := demoted.json()["released_items"].(float64); released != 2 {
+		t.Errorf("demoting to viewer released %v items, want 2", demoted.json()["released_items"])
+	}
+	var held int
+	if err := h.db.Pool.QueryRow(ctx, `SELECT count(*) FROM responses WHERE assigned_to=$1`, helperID).Scan(&held); err != nil {
+		t.Fatal(err)
+	}
+	if held != 0 {
+		t.Errorf("%d items are still assigned to somebody who can only read", held)
+	}
+
+	// And removal does the same for whatever they hold at the time.
+	if res := requester.do(http.MethodPost, "/api/v1/review-requests/"+reviewID+"/participants", map[string]any{"user_id": helperID, "role": "CONTRIBUTOR"}); res.status != http.StatusOK && res.status != http.StatusNoContent {
+		t.Fatalf("re-adding the contributor: %d %s", res.status, res.body)
+	}
+	if res := requester.do(http.MethodPost, "/api/v1/review-requests/"+reviewID+"/responses/bulk",
+		map[string]any{"item_ids": []string{first}, "assigned_to": helperID, "assign_only": true}); res.status != http.StatusOK {
+		t.Fatalf("assigning again: %d %s", res.status, res.body)
+	}
+	removed := requester.do(http.MethodDelete, "/api/v1/review-requests/"+reviewID+"/participants/"+helperID, nil)
+	if removed.status != http.StatusOK {
+		t.Fatalf("removing the participant: %d %s", removed.status, removed.body)
+	}
+	if released, _ := removed.json()["released_items"].(float64); released != 1 {
+		t.Errorf("removal released %v items, want 1", removed.json()["released_items"])
+	}
+	if err := h.db.Pool.QueryRow(ctx, `SELECT count(*) FROM responses WHERE assigned_to=$1`, helperID).Scan(&held); err != nil {
+		t.Fatal(err)
+	}
+	if held != 0 {
+		t.Errorf("%d items are still assigned to somebody who was removed from the review", held)
+	}
+}

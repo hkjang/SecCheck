@@ -1763,8 +1763,26 @@ func (s *Server) removeParticipant(w http.ResponseWriter, r *http.Request) {
 		problem(w, 404, "NOT_FOUND", "참여자를 찾을 수 없습니다.", nil)
 		return
 	}
-	_ = s.Store.Audit(r.Context(), auditFrom(r, "REMOVE_PARTICIPANT", "REVIEW_REQUEST", id, map[string]string{"user_id": userID, "role": role}, nil))
-	w.WriteHeader(http.StatusNoContent)
+	// Items stayed assigned to somebody who can no longer open the review: the
+	// row still showed their name, so the work looked owned and nobody was
+	// doing it. Releasing them is the honest outcome, and the count is returned
+	// so the screen can say what just happened.
+	released := s.releaseItemsOf(r.Context(), id, userID)
+	_ = s.Store.Audit(r.Context(), auditFrom(r, "REMOVE_PARTICIPANT", "REVIEW_REQUEST", id, map[string]string{"user_id": userID, "role": role}, map[string]any{"released_items": released}))
+	jsonResponse(w, 200, map[string]any{"released_items": released})
+}
+
+// releaseItemsOf clears the checklist items assigned to somebody who can no
+// longer work on the review, and reports how many it let go.
+func (s *Server) releaseItemsOf(ctx context.Context, reviewID, userID string) int {
+	tag, err := s.Store.Pool.Exec(ctx, `UPDATE responses SET assigned_to=NULL,updated_at=now()
+                WHERE assigned_to=$2 AND submission_item_id IN (
+                  SELECT si.id FROM submission_items si JOIN submissions sub ON sub.id=si.submission_id
+                  WHERE sub.review_request_id=$1 AND sub.revision=(SELECT max(revision) FROM submissions WHERE review_request_id=$1))`, reviewID, userID)
+	if err != nil {
+		return 0
+	}
+	return int(tag.RowsAffected())
 }
 
 func (s *Server) addParticipant(w http.ResponseWriter, r *http.Request) {
@@ -1795,8 +1813,14 @@ func (s *Server) addParticipant(w http.ResponseWriter, r *http.Request) {
 		s.fault(w, r, "UPDATE_FAILED", "공동 작성자를 지정하지 못했습니다.", err)
 		return
 	}
-	_ = s.Store.Audit(r.Context(), auditFrom(r, "ADD_PARTICIPANT", "REVIEW_REQUEST", id, nil, in))
-	w.WriteHeader(204)
+	// A viewer cannot fill anything in, so items assigned to them are in the
+	// same position as items assigned to somebody who was removed.
+	released := 0
+	if in.Role == "VIEWER" {
+		released = s.releaseItemsOf(r.Context(), id, in.UserID)
+	}
+	_ = s.Store.Audit(r.Context(), auditFrom(r, "ADD_PARTICIPANT", "REVIEW_REQUEST", id, nil, map[string]any{"user_id": in.UserID, "role": in.Role, "released_items": released}))
+	jsonResponse(w, 200, map[string]any{"released_items": released})
 }
 
 func (s *Server) listRuleCandidates(w http.ResponseWriter, r *http.Request) {

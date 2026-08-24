@@ -1228,10 +1228,10 @@ func TestViewerParticipantsCanReadButNotWrite(t *testing.T) {
 	_ = h.db.Pool.QueryRow(ctx, `SELECT id FROM users WHERE username='part-writer'`).Scan(&writerID)
 	_ = h.db.Pool.QueryRow(ctx, `SELECT id FROM users WHERE username='part-viewer'`).Scan(&viewerID)
 
-	if res := owner.do(http.MethodPost, "/api/v1/review-requests/"+reviewID+"/participants", map[string]string{"user_id": writerID, "role": "CONTRIBUTOR"}); res.status != http.StatusNoContent {
+	if res := owner.do(http.MethodPost, "/api/v1/review-requests/"+reviewID+"/participants", map[string]string{"user_id": writerID, "role": "CONTRIBUTOR"}); res.status != http.StatusOK {
 		t.Fatalf("add contributor: %d %s", res.status, res.body)
 	}
-	if res := owner.do(http.MethodPost, "/api/v1/review-requests/"+reviewID+"/participants", map[string]string{"user_id": viewerID, "role": "VIEWER"}); res.status != http.StatusNoContent {
+	if res := owner.do(http.MethodPost, "/api/v1/review-requests/"+reviewID+"/participants", map[string]string{"user_id": viewerID, "role": "VIEWER"}); res.status != http.StatusOK {
 		t.Fatalf("add viewer: %d %s", res.status, res.body)
 	}
 	if res := owner.do(http.MethodPost, "/api/v1/review-requests/"+reviewID+"/participants", map[string]string{"user_id": viewerID, "role": "AUDITOR"}); res.status != http.StatusUnprocessableEntity {
@@ -1263,7 +1263,7 @@ func TestViewerParticipantsCanReadButNotWrite(t *testing.T) {
 		t.Errorf("items were assigned to a read-only participant: %d %s", res.status, res.body)
 	}
 	// Changing the role afterwards has to take effect.
-	if res := owner.do(http.MethodPost, "/api/v1/review-requests/"+reviewID+"/participants", map[string]string{"user_id": viewerID, "role": "CONTRIBUTOR"}); res.status != http.StatusNoContent {
+	if res := owner.do(http.MethodPost, "/api/v1/review-requests/"+reviewID+"/participants", map[string]string{"user_id": viewerID, "role": "CONTRIBUTOR"}); res.status != http.StatusOK {
 		t.Fatalf("promote viewer: %d %s", res.status, res.body)
 	}
 	if res := viewer.do(http.MethodPut, path, payload); res.status != http.StatusOK {
@@ -3516,7 +3516,7 @@ func TestReviewParticipantsCanBeSeenAndRemoved(t *testing.T) {
 	if res := owner.do(http.MethodGet, path, nil); res.status != http.StatusOK || strings.TrimSpace(res.body) != "[]" {
 		t.Fatalf("a review with no participants answered %d %s", res.status, res.body)
 	}
-	if res := owner.do(http.MethodPost, path, map[string]any{"user_id": helper, "role": "VIEWER"}); res.status != http.StatusNoContent {
+	if res := owner.do(http.MethodPost, path, map[string]any{"user_id": helper, "role": "VIEWER"}); res.status != http.StatusOK {
 		t.Fatalf("adding a participant: %d %s", res.status, res.body)
 	}
 	listed := owner.do(http.MethodGet, path, nil)
@@ -3543,7 +3543,7 @@ func TestReviewParticipantsCanBeSeenAndRemoved(t *testing.T) {
 		t.Errorf("somebody outside the review read its participants: %d %s", res.status, res.body)
 	}
 
-	if res := owner.do(http.MethodDelete, path+"/"+helper, nil); res.status != http.StatusNoContent {
+	if res := owner.do(http.MethodDelete, path+"/"+helper, nil); res.status != http.StatusOK {
 		t.Fatalf("removing a participant: %d %s", res.status, res.body)
 	}
 	if res := owner.do(http.MethodGet, path, nil); strings.TrimSpace(res.body) != "[]" {
