@@ -1303,3 +1303,118 @@ func TestWhatBlocksSubmissionCanBeSeenBeforeSubmitting(t *testing.T) {
 		t.Fatalf("after submitting the review is %s", status)
 	}
 }
+
+// The completion guard counted what was left -- twelve unjudged items, three
+// unverified change requests -- and left the reviewer to find them by
+// scrolling. The pre-flight names them, and it is the guard's own rules that
+// decide the list.
+func TestWhatBlocksCompletionIsNamedItemByItem(t *testing.T) {
+	h := newHarness(t)
+	ctx := context.Background()
+	requesterID := h.user("completion-requester", "REQUESTER")
+	h.user("completion-reviewer", "SECURITY_REVIEWER")
+	requester := h.login("completion-requester")
+	reviewer := h.login("completion-reviewer")
+	var reviewerID string
+	if err := h.db.Pool.QueryRow(ctx, `SELECT id FROM users WHERE username='completion-reviewer'`).Scan(&reviewerID); err != nil {
+		t.Fatal(err)
+	}
+
+	reviewID := requester.createReview("검토 완료 점검 서비스")
+	items := []map[string]any{}
+	if err := json.Unmarshal([]byte(requester.do(http.MethodGet, "/api/v1/review-requests/"+reviewID+"/items", nil).body), &items); err != nil {
+		t.Fatal(err)
+	}
+	ids := make([]string, 0, len(items))
+	for _, item := range items {
+		ids = append(ids, item["id"].(string))
+	}
+	if len(ids) < 3 {
+		t.Fatalf("the review only has %d items", len(ids))
+	}
+	if _, err := h.db.Pool.Exec(ctx, `UPDATE review_requests SET reviewer_id=$2 WHERE id=$1`, reviewID, reviewerID); err != nil {
+		t.Fatal(err)
+	}
+	if res := requester.do(http.MethodPost, "/api/v1/review-requests/"+reviewID+"/responses/bulk",
+		map[string]any{"item_ids": ids, "applicability": "N/A", "na_reason": "해당 없음", "self_assessment": "N/A"}); res.status != http.StatusOK {
+		t.Fatalf("bulk answer: %d %s", res.status, res.body)
+	}
+	if res := requester.do(http.MethodPost, "/api/v1/review-requests/"+reviewID+"/submit", map[string]any{}); res.status != http.StatusOK {
+		t.Fatalf("submit: %d %s", res.status, res.body)
+	}
+	if res := reviewer.do(http.MethodPost, "/api/v1/review-requests/"+reviewID+"/begin-review", map[string]any{}); res.status != http.StatusOK {
+		t.Fatalf("begin review: %d %s", res.status, res.body)
+	}
+
+	check := func() (bool, map[string][]string) {
+		t.Helper()
+		res := reviewer.do(http.MethodGet, "/api/v1/review-requests/"+reviewID+"/completion-check", nil)
+		if res.status != http.StatusOK {
+			t.Fatalf("completion check: %d %s", res.status, res.body)
+		}
+		payload := res.json()
+		out := map[string][]string{}
+		for _, raw := range payload["issues"].([]any) {
+			issue := raw.(map[string]any)
+			reasons := []string{}
+			for _, reason := range issue["reasons"].([]any) {
+				reasons = append(reasons, reason.(string))
+			}
+			out[issue["item_id"].(string)] = reasons
+		}
+		return payload["ready"].(bool), out
+	}
+
+	// Nothing judged yet: every item is named, not just counted.
+	ready, blocking := check()
+	if ready || len(blocking) != len(ids) {
+		t.Fatalf("before judging: ready=%v with %d of %d items named", ready, len(blocking), len(ids))
+	}
+
+	// Judge everything, then create exactly one of each kind of blocker: an
+	// item left unjudged, an open change request, and a verdict overtaken by a
+	// new answer.
+	if res := reviewer.do(http.MethodPost, "/api/v1/review-requests/"+reviewID+"/review-results/bulk",
+		map[string]any{"item_ids": ids, "result": "COMPLIANT", "opinion": "일괄 적합"}); res.status != http.StatusOK {
+		t.Fatalf("bulk judgement: %d %s", res.status, res.body)
+	}
+	if ready, left := check(); !ready || len(left) != 0 {
+		t.Fatalf("after judging everything: ready=%v with %d items left", ready, len(left))
+	}
+	if _, err := h.db.Pool.Exec(ctx, `UPDATE review_results SET result='' WHERE submission_item_id=$1`, ids[0]); err != nil {
+		t.Fatal(err)
+	}
+	if res := reviewer.do(http.MethodPost, "/api/v1/review-requests/"+reviewID+"/change-requests",
+		map[string]any{"item_id": ids[1], "reason": "증적을 보완하세요", "assignee_id": requesterID, "due_date": "2030-03-31"}); res.status != http.StatusCreated {
+		t.Fatalf("change request: %d %s", res.status, res.body)
+	}
+	if _, err := h.db.Pool.Exec(ctx, `UPDATE responses SET updated_at=now()+interval '1 minute' WHERE submission_item_id=$1`, ids[2]); err != nil {
+		t.Fatal(err)
+	}
+
+	ready, blocking = check()
+	if ready || len(blocking) != 3 {
+		t.Fatalf("three blockers were made, the check names %d (ready=%v)", len(blocking), ready)
+	}
+	for id, want := range map[string]string{ids[0]: "미검토", ids[1]: "미검증 보완 요청 1건", ids[2]: "판정 후 답변·증적 변경"} {
+		reasons, ok := blocking[id]
+		if !ok {
+			t.Fatalf("an item blocked by %q is not named by the check", want)
+		}
+		if len(reasons) != 1 || reasons[0] != want {
+			t.Fatalf("the item is reported as %v, want %q", reasons, want)
+		}
+	}
+
+	// The guard refuses on the same three, and its refusal now carries the
+	// same list rather than counts alone.
+	res := reviewer.do(http.MethodPost, "/api/v1/review-requests/"+reviewID+"/complete-review",
+		map[string]any{"final_result": "APPROVED", "final_opinion": "완료"})
+	if res.status != http.StatusUnprocessableEntity {
+		t.Fatalf("completing with three blockers: %d %s", res.status, res.body)
+	}
+	details := res.json()["error"].(map[string]any)["details"].(map[string]any)
+	if named := details["issues"].([]any); len(named) != 3 {
+		t.Fatalf("the refusal names %d items, want 3", len(named))
+	}
+}

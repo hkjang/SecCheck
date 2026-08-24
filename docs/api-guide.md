@@ -39,6 +39,7 @@ Authorization: Bearer sck_a1b2c3d4_xxxxxxxxxxxxxxxxxxxxxxxxxxxx
 | `GET` | `/review-requests/{id}/items` | 심의에 배정된 체크리스트 항목 및 답변 목록 | 담당자, 검토자, 승인자 |
 | `PUT` | `/review-requests/{id}/responses/{itemID}` | 체크리스트 항목 작성 및 자동 저장 | 해당 심의 참여자 |
 | `GET` | `/review-requests/{id}/submission-check` | 제출을 막는 미완료 항목 목록 (`ready`, `issues`). 제출 전에 미리 확인 | 담당자, 검토자, 승인자 |
+| `GET` | `/review-requests/{id}/completion-check` | 검토 완료를 막는 항목 목록 (`ready`, `issues`). 검토자용 | 담당자, 검토자, 승인자 |
 | `POST` | `/review-requests/{id}/submit` | 심의 제출 (서버 검증 실행) | 해당 심의 참여자 |
 | `POST` | `/review-requests/{id}/begin-review` | 보안 검토 시작 (`REVIEWING` 전환) | `SECURITY_REVIEWER` |
 | `PUT` | `/review-requests/{id}/review-results/{itemID}` | 항목별 검토 결과 및 의견 저장 | `SECURITY_REVIEWER` |

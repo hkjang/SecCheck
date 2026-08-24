@@ -1687,6 +1687,79 @@ func (s *Server) reviewBlockers(ctx context.Context, id string) (missing, open, 
 	return missing, open, stale, nil
 }
 
+// completionBlockingItems names the items behind the three counts the
+// completion guard refuses on. The counts told a reviewer how much was left;
+// on a checklist of a few hundred items they did not say where, so the last
+// twelve items had to be found by scrolling.
+func (s *Server) completionBlockingItems(ctx context.Context, id string) ([]map[string]any, error) {
+	rows, err := s.Store.Pool.Query(ctx, `SELECT si.id,si.item_code,si.title,
+                (rr.id IS NULL OR rr.result='') AS unreviewed,
+                (SELECT count(*) FROM change_requests c WHERE c.submission_item_id=si.id AND c.status<>'VERIFIED') AS open_changes,
+                COALESCE(`+staleVerdictSQL+`,false) AS stale
+                FROM submissions sub JOIN submission_items si ON si.submission_id=sub.id
+                LEFT JOIN review_results rr ON rr.submission_item_id=si.id
+                LEFT JOIN responses resp ON resp.submission_item_id=si.id
+                WHERE sub.review_request_id=$1 AND sub.revision=(SELECT max(revision) FROM submissions WHERE review_request_id=$1)
+                ORDER BY si.template_name,si.sort_order`, id)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	issues := []map[string]any{}
+	for rows.Next() {
+		var itemID, code, title string
+		var unreviewed, stale bool
+		var openChanges int
+		if err = rows.Scan(&itemID, &code, &title, &unreviewed, &openChanges, &stale); err != nil {
+			return nil, err
+		}
+		reasons := []string{}
+		if unreviewed {
+			reasons = append(reasons, "미검토")
+		}
+		if openChanges > 0 {
+			reasons = append(reasons, fmt.Sprintf("미검증 보완 요청 %d건", openChanges))
+		}
+		if stale {
+			reasons = append(reasons, "판정 후 답변·증적 변경")
+		}
+		if len(reasons) > 0 {
+			issues = append(issues, map[string]any{"item_id": itemID, "item_code": code, "title": title, "reasons": reasons})
+		}
+	}
+	if err = rows.Err(); err != nil {
+		return nil, err
+	}
+	// A change request that no longer hangs off an item of the current
+	// revision would otherwise be counted by the guard and named by nobody.
+	var orphaned int
+	if err = s.Store.Pool.QueryRow(ctx, `SELECT count(*) FROM change_requests c WHERE c.review_request_id=$1 AND c.status<>'VERIFIED'
+                AND NOT EXISTS(SELECT 1 FROM submissions sub JOIN submission_items si ON si.submission_id=sub.id
+                        WHERE sub.review_request_id=$1 AND sub.revision=(SELECT max(revision) FROM submissions WHERE review_request_id=$1) AND si.id=c.submission_item_id)`, id).Scan(&orphaned); err != nil {
+		return nil, err
+	}
+	if orphaned > 0 {
+		issues = append(issues, map[string]any{"item_id": "", "item_code": "-", "title": "보완 요청", "reasons": []string{fmt.Sprintf("이전 회차 항목의 미검증 보완 요청 %d건", orphaned)}})
+	}
+	return issues, nil
+}
+
+// completionCheck is the reviewer's side of the pre-flight the requester got:
+// what is still in the way, before the button is pressed.
+func (s *Server) completionCheck(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	if !s.canAccessReview(r.Context(), session(r), id) {
+		problem(w, 404, "NOT_FOUND", "심의를 찾을 수 없습니다.", nil)
+		return
+	}
+	issues, err := s.completionBlockingItems(r.Context(), id)
+	if err != nil {
+		s.fault(w, r, "QUERY_FAILED", "검토 완료 점검에 실패했습니다.", err)
+		return
+	}
+	jsonResponse(w, 200, map[string]any{"ready": len(issues) == 0, "issues": issues, "total": len(issues)})
+}
+
 func (s *Server) completeReview(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 	if !s.canReview(r.Context(), session(r), id) {
@@ -1712,7 +1785,11 @@ func (s *Server) completeReview(w http.ResponseWriter, r *http.Request) {
 				left = append(left, fmt.Sprintf("%s %d건", part.label, part.count))
 			}
 		}
-		problem(w, 422, "REVIEW_INCOMPLETE", strings.Join(left, ", ")+"이 남아 검토를 완료할 수 없습니다.", map[string]int{"unreviewed_items": missing, "unverified_changes": open, "stale_verdicts": stale})
+		details := map[string]any{"unreviewed_items": missing, "unverified_changes": open, "stale_verdicts": stale}
+		if items, itemErr := s.completionBlockingItems(r.Context(), id); itemErr == nil {
+			details["issues"] = items
+		}
+		problem(w, 422, "REVIEW_INCOMPLETE", strings.Join(left, ", ")+"이 남아 검토를 완료할 수 없습니다.", details)
 		return
 	}
 	var in struct {
