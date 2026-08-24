@@ -932,3 +932,36 @@ func TestAnExpiringAPIKeyWarnsItsOwner(t *testing.T) {
 		t.Errorf("a second sweep raised the count to %d", len(again))
 	}
 }
+
+// A restart in the middle of a job leaves the row RUNNING with a lock a few
+// seconds old. Both workers clear stale locks when they start, but only locks
+// older than the same window, so this one survives the restart that caused it
+// and nothing looks at it again: an evidence scan stuck this way blocks the
+// review's submission for ever, raises no alarm and cannot be retried.
+func TestJobsLeftRunningByAStoppedWorkerAreRequeued(t *testing.T) {
+	db := testdb.New(t)
+	ctx := context.Background()
+	worker := maintenance.New(db, nil)
+	abandoned, running := store.NewID(), store.NewID()
+	if _, err := db.Pool.Exec(ctx, `INSERT INTO jobs(id,type,status,locked_at) VALUES
+                ($1,'SCAN_EVIDENCE','RUNNING',now()-interval '30 minutes'),
+                ($2,'SCAN_EVIDENCE','RUNNING',now()-interval '1 minute')`, abandoned, running); err != nil {
+		t.Fatal(err)
+	}
+	worker.Sweep(ctx)
+	status := func(id string) string {
+		t.Helper()
+		var s string
+		if err := db.Pool.QueryRow(ctx, `SELECT status FROM jobs WHERE id=$1`, id).Scan(&s); err != nil {
+			t.Fatal(err)
+		}
+		return s
+	}
+	if got := status(abandoned); got != "PENDING" {
+		t.Errorf("a job whose worker stopped half an hour ago is %s, want PENDING", got)
+	}
+	// Work a live worker is holding must not be taken away from it.
+	if got := status(running); got != "RUNNING" {
+		t.Errorf("a job claimed a minute ago was requeued (%s) under a working worker", got)
+	}
+}

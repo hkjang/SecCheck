@@ -42,6 +42,9 @@ const (
 	// How long before an API key expires its owner is warned, and how long
 	// before they are warned again.
 	apiKeyWarningDays = 7
+	// How long a job may hold its lock before the worker holding it is assumed
+	// to be gone. Both workers use the same window when they start.
+	abandonedAfter = 15 * time.Minute
 )
 
 type Worker struct {
@@ -88,6 +91,7 @@ func (w *Worker) Sweep(ctx context.Context) map[string]int64 {
 	removed["stall_alerts"] = w.alertStalledQueue(ctx)
 	removed["failure_alerts"] = w.alertFailedJobs(ctx)
 	removed["storage_alerts"] = w.alertLowStorage(ctx)
+	removed["requeued_jobs"] = w.requeueAbandonedJobs(ctx)
 	removed["api_key_reminders"] = w.remindExpiringAPIKeys(ctx)
 	removed["purged_evidence_files"] = w.purgeDeletedEvidence(ctx)
 	total := int64(0)
@@ -98,6 +102,28 @@ func (w *Worker) Sweep(ctx context.Context) map[string]int64 {
 		w.Store.Log(ctx, "INFO", "", "maintenance", "retention sweep completed", map[string]any{"retention_days": retention, "removed": removed})
 	}
 	return removed
+}
+
+// requeueAbandonedJobs returns work whose worker went away to the queue. Both
+// workers reset stale RUNNING rows when they start, but only then and only for
+// locks older than the same window -- a restart in the middle of a job leaves a
+// lock a few seconds old, which that sweep skips and nothing ever looks at
+// again. The job then stays RUNNING for ever: for an evidence scan that means
+// the file stays PENDING, the review cannot be submitted, no alarm fires
+// (the queue alert counts PENDING work) and the console refuses to retry a
+// RUNNING job. This runs every sweep, so the trap closes by itself.
+func (w *Worker) requeueAbandonedJobs(ctx context.Context) int64 {
+	tag, err := w.Store.Pool.Exec(ctx, `UPDATE jobs SET status='PENDING',locked_at=NULL,available_at=now(),updated_at=now()
+                WHERE status='RUNNING' AND locked_at IS NOT NULL AND locked_at<now()-make_interval(mins=>$1)`, int(abandonedAfter.Minutes()))
+	if err != nil {
+		w.Store.Log(ctx, "ERROR", "", "maintenance", "abandoned job requeue failed", map[string]any{"error": err.Error()})
+		return 0
+	}
+	if n := tag.RowsAffected(); n > 0 {
+		w.Store.Log(ctx, "WARN", "", "maintenance", "jobs left running by a stopped worker were requeued", map[string]any{"jobs": n})
+		return n
+	}
+	return 0
 }
 
 // remindExpiringAPIKeys warns the owner before a key stops working. The expiry

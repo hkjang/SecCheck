@@ -777,11 +777,14 @@ func (s *Server) listJobs(w http.ResponseWriter, r *http.Request) {
 
 // retryJob puts a failed job back in the queue. Evidence stuck in ERROR is
 // returned to PENDING at the same time so the gate reopens once it clears.
+// A job still marked RUNNING long after its worker stopped counts as failed
+// here: the hourly sweep frees it anyway, and an administrator looking at a
+// blocked upload should not have to wait for that.
 func (s *Server) retryJob(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 	var jobType string
 	var payload []byte
-	err := s.Store.Pool.QueryRow(r.Context(), `UPDATE jobs SET status='PENDING',attempts=0,available_at=now(),locked_at=NULL,last_error='',updated_at=now() WHERE id=$1 AND status IN ('FAILED','PENDING') RETURNING type,payload`, id).Scan(&jobType, &payload)
+	err := s.Store.Pool.QueryRow(r.Context(), `UPDATE jobs SET status='PENDING',attempts=0,available_at=now(),locked_at=NULL,last_error='',updated_at=now() WHERE id=$1 AND (status IN ('FAILED','PENDING') OR (status='RUNNING' AND locked_at<now()-interval '15 minutes')) RETURNING type,payload`, id).Scan(&jobType, &payload)
 	if err != nil {
 		problem(w, 404, "NOT_FOUND", "재시도할 작업을 찾을 수 없습니다.", nil)
 		return

@@ -518,6 +518,23 @@ func TestFailedJobsAreVisibleAndRetryable(t *testing.T) {
 	if res := h.login("integration-admin").do(http.MethodGet, "/api/v1/admin/jobs", nil); res.status != http.StatusOK {
 		t.Errorf("job listing returned %d", res.status)
 	}
+
+	// A restart in the middle of a job leaves it RUNNING for ever, which used
+	// to be the one state the console could not clear -- while an evidence scan
+	// stuck that way blocks the review's submission.
+	abandoned, live := store.NewID(), store.NewID()
+	if _, err := h.db.Pool.Exec(ctx, `INSERT INTO jobs(id,type,status,locked_at) VALUES
+                ($1,'SCAN_EVIDENCE','RUNNING',now()-interval '30 minutes'),
+                ($2,'SCAN_EVIDENCE','RUNNING',now()-interval '1 minute')`, abandoned, live); err != nil {
+		t.Fatal(err)
+	}
+	if res := admin.do(http.MethodPost, "/api/v1/admin/jobs/"+abandoned+"/retry", nil); res.status != http.StatusNoContent {
+		t.Errorf("retrying a job abandoned half an hour ago returned %d %s", res.status, res.body)
+	}
+	// A job a working worker is holding is not the administrator's to take.
+	if res := admin.do(http.MethodPost, "/api/v1/admin/jobs/"+live+"/retry", nil); res.status != http.StatusNotFound {
+		t.Errorf("retrying a job claimed a minute ago returned %d, want 404", res.status)
+	}
 }
 
 // A dead worker leaves PENDING rows that look perfectly normal on the queue
