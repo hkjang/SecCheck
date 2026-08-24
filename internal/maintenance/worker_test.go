@@ -1042,4 +1042,29 @@ func TestStoredEvidenceIsReadBackAndFailuresAreReported(t *testing.T) {
 	if !strings.Contains(body, "증적.txt") {
 		t.Errorf("the alert does not name the file: %q", body)
 	}
+	// A notification is read once and swept away by retention; the state has to
+	// stay on the row so a screen can still say the volume is missing a file.
+	var reason string
+	if err = db.Pool.QueryRow(ctx, `SELECT verify_error FROM evidences WHERE id=$1`, evidenceID).Scan(&reason); err != nil {
+		t.Fatal(err)
+	}
+	if reason == "" {
+		t.Error("the failure was announced but not recorded on the evidence")
+	}
+
+	// Putting the file back clears it on the next round: a report that never
+	// goes green is one nobody trusts.
+	if _, _, err = blobs.Write(stored, userKey, vault.AAD(evidenceID, 1), strings.NewReader("증적 본문입니다")); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = db.Pool.Exec(ctx, `UPDATE evidences SET verified_at=NULL WHERE id=$1`, evidenceID); err != nil {
+		t.Fatal(err)
+	}
+	worker.Sweep(ctx)
+	if err = db.Pool.QueryRow(ctx, `SELECT verify_error FROM evidences WHERE id=$1`, evidenceID).Scan(&reason); err != nil {
+		t.Fatal(err)
+	}
+	if reason != "" {
+		t.Errorf("a restored file is still marked broken: %q", reason)
+	}
 }

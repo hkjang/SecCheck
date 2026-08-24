@@ -5,10 +5,11 @@ import { Badge, Button, formatBytes, formatDate, LoadFailed, Loading } from '../
 
 type Storage = { path: string; writable: boolean; free_bytes: number; total_bytes: number; detail?: string }
 type Coverage = { code: string; active: number; total: number }
+type Integrity = { checked: number; unchecked: number; failed: number; oldest_checked_at?: string; failures: { filename: string; review_number: string; reason: string; checked_at?: string }[] }
 type Info = {
   version: string; schema_version: number; go_version: string
   users: number; reviews: number; templates: number; evidences: number; logs: number
-  database_size: string; pdf_font: string; pdf_export_available: boolean; storage: Storage; role_coverage: Coverage[]; now: string
+  database_size: string; pdf_font: string; pdf_export_available: boolean; storage: Storage; role_coverage: Coverage[]; evidence_integrity: Integrity; now: string
 }
 
 const roleLabel: Record<string, string> = { SYSTEM_ADMIN: '서비스 관리자', SECURITY_REVIEWER: '보안 담당자', APPROVER: '승인자', TEMPLATE_ADMIN: '체크리스트 관리자', AUDITOR: '감사' }
@@ -25,6 +26,9 @@ export default function SystemPage() {
   if (!info) return <Loading />
   const free = info.storage.total_bytes > 0 ? info.storage.free_bytes / info.storage.total_bytes : 0
   const storageTone = !info.storage.writable ? 'red' : free < 0.1 ? 'amber' : 'green'
+  // An installation upgraded mid-cycle has no verification history yet, so the
+  // card has to read as "not checked", not as a failure.
+  const integrity: Integrity = info.evidence_integrity || { checked: 0, unchecked: 0, failed: 0, failures: [] }
   const rows: [string, React.ReactNode][] = [
     ['버전', info.version],
     ['스키마 버전', String(info.schema_version)],
@@ -48,6 +52,14 @@ export default function SystemPage() {
         <tr><th>남은 공간</th><td>{info.storage.total_bytes > 0 ? `${formatBytes(info.storage.free_bytes)} / ${formatBytes(info.storage.total_bytes)} (${(free * 100).toFixed(0)}%)` : '측정할 수 없습니다'}</td></tr>
       </tbody></table></div>
       {(!info.storage.writable || free < 0.1) && <div className="card-body"><p className="subtle">공간이 떨어지거나 볼륨에 쓸 수 없게 되면 증적 업로드가 실패합니다. 시스템 관리자에게 `저장 공간 부족` 알림이 발송됩니다.</p></div>}
+    </section>
+    <section className="card"><div className="card-header"><h2>증적 무결성</h2><Badge tone={integrity.failed > 0 ? 'red' : integrity.checked > 0 ? 'green' : 'amber'}>{integrity.failed > 0 ? `${integrity.failed}건 확인 실패` : integrity.checked > 0 ? '정상' : '확인 이력 없음'}</Badge></div>
+      <div className="table-wrap"><table><tbody>
+        <tr><th>확인한 증적</th><td>{integrity.checked.toLocaleString()}건 · 미확인 {integrity.unchecked.toLocaleString()}건</td></tr>
+        <tr><th>가장 오래된 확인</th><td>{integrity.oldest_checked_at ? formatDate(integrity.oldest_checked_at, true) : '-'}</td></tr>
+      </tbody></table></div>
+      {integrity.failures.length > 0 && <div className="table-wrap"><table><thead><tr><th>파일</th><th>심의</th><th>사유</th><th>확인 시각</th></tr></thead><tbody>{integrity.failures.map((f, i) => <tr key={i}><td>{f.filename}</td><td>{f.review_number || '-'}</td><td>{f.reason}</td><td>{formatDate(f.checked_at, true)}</td></tr>)}</tbody></table></div>}
+      <div className="card-body"><p className="subtle">유지보수 스윕이 매시 가장 오래 확인하지 않은 증적을 복호화해 크기와 해시를 대조합니다. 실패한 파일은 백업본 복구가 필요하며, 전체 점검은 <code>seccheck verify-evidence</code>로 실행합니다.</p></div>
     </section>
     <section className="card"><div className="card-header"><h2>역할 보유자</h2></div>
       <div className="card-body"><p className="subtle">본인이 신청한 심의는 본인이 검토·승인할 수 없으므로, 검토자와 승인자가 한 명뿐이면 그 사람이 신청한 건은 처리할 수 없습니다.</p></div>

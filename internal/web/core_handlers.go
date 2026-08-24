@@ -602,7 +602,30 @@ func (s *Server) systemInfo(w http.ResponseWriter, r *http.Request) {
 			coverage = counted
 		}
 	}
-	jsonResponse(w, 200, map[string]any{"version": s.Version, "schema_version": s.Store.SchemaVersion(r.Context()), "go_version": runtime.Version(), "users": users, "reviews": reviews, "templates": templates, "evidences": evidences, "logs": logs, "database_size": dbSize, "pdf_font": pdfFont, "pdf_export_available": pdfFont != "", "storage": storage, "role_coverage": coverage, "now": time.Now()})
+	// Whether the volume still holds what the database says is state somebody
+	// has to be able to look up, not only a notification that ages out. The
+	// sweep records the answer per file; this is the summary of it.
+	integrity := map[string]any{"checked": 0, "unchecked": 0, "failed": 0}
+	var checkedCount, uncheckedCount, failedCount int64
+	var oldest *time.Time
+	if err := s.Store.Pool.QueryRow(r.Context(), `SELECT count(*) FILTER (WHERE verified_at IS NOT NULL),count(*) FILTER (WHERE verified_at IS NULL),count(*) FILTER (WHERE verify_error<>''),min(verified_at)
+                FROM evidences WHERE deleted_at IS NULL AND purged_at IS NULL`).Scan(&checkedCount, &uncheckedCount, &failedCount, &oldest); err == nil {
+		integrity = map[string]any{"checked": checkedCount, "unchecked": uncheckedCount, "failed": failedCount, "oldest_checked_at": oldest}
+	}
+	broken := []map[string]any{}
+	if rows, err := s.Store.Pool.Query(r.Context(), `SELECT e.original_filename,COALESCE(r.review_number,''),e.verify_error,e.verified_at
+                FROM evidences e
+                LEFT JOIN submission_items si ON si.id=e.submission_item_id
+                LEFT JOIN submissions sub ON sub.id=si.submission_id
+                LEFT JOIN review_requests r ON r.id=sub.review_request_id
+                WHERE e.deleted_at IS NULL AND e.purged_at IS NULL AND e.verify_error<>''
+                ORDER BY e.verified_at DESC LIMIT 10`); err == nil {
+		if listed, scanErr := scanDynamic(rows, []string{"filename", "review_number", "reason", "checked_at"}); scanErr == nil {
+			broken = listed
+		}
+	}
+	integrity["failures"] = broken
+	jsonResponse(w, 200, map[string]any{"evidence_integrity": integrity, "version": s.Version, "schema_version": s.Store.SchemaVersion(r.Context()), "go_version": runtime.Version(), "users": users, "reviews": reviews, "templates": templates, "evidences": evidences, "logs": logs, "database_size": dbSize, "pdf_font": pdfFont, "pdf_export_available": pdfFont != "", "storage": storage, "role_coverage": coverage, "now": time.Now()})
 }
 
 func (s *Server) ensureUserDataKey(ctx context.Context, userID string) error {

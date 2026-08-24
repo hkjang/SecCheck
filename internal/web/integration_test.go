@@ -3671,6 +3671,60 @@ func TestNobodyReviewsTheirOwnRequest(t *testing.T) {
 	}
 }
 
+// The sweep records whether each stored file still matches its record, and an
+// administrator has to be able to look that up: the notification is read once
+// and swept away by retention, the state is not.
+func TestSystemInfoReportsEvidenceIntegrity(t *testing.T) {
+	h := newHarness(t)
+	admin := h.login(adminOf(h))
+	ctx := context.Background()
+	reviewID := admin.createReview("무결성 표시")
+	var items []map[string]any
+	if err := json.Unmarshal([]byte(admin.do(http.MethodGet, "/api/v1/review-requests/"+reviewID+"/items", nil).body), &items); err != nil {
+		t.Fatal(err)
+	}
+	itemID := items[0]["id"].(string)
+	if res := admin.upload(fmt.Sprintf("/api/v1/review-requests/%s/items/%s/evidences", reviewID, itemID), "증적.txt", "본문"); res.status != http.StatusCreated {
+		t.Fatalf("upload: %d %s", res.status, res.body)
+	}
+
+	read := func() map[string]any {
+		t.Helper()
+		res := admin.do(http.MethodGet, "/api/v1/admin/system", nil)
+		if res.status != http.StatusOK {
+			t.Fatalf("reading system info: %d %s", res.status, res.body)
+		}
+		out, _ := res.json()["evidence_integrity"].(map[string]any)
+		if out == nil {
+			t.Fatalf("system info carries no evidence_integrity: %s", res.body)
+		}
+		return out
+	}
+	// Nothing has been checked yet, which must read as "not checked" and not
+	// as a clean bill of health.
+	before := read()
+	if unchecked, _ := before["unchecked"].(float64); unchecked != 1 {
+		t.Errorf("unchecked = %v, want the one file nobody has read back", before["unchecked"])
+	}
+
+	// A file the volume has lost is reported with its name and reason.
+	if _, err := h.db.Pool.Exec(ctx, `UPDATE evidences SET verified_at=now(),verify_error='encrypted file is missing from the evidence volume'`); err != nil {
+		t.Fatal(err)
+	}
+	after := read()
+	if failed, _ := after["failed"].(float64); failed != 1 {
+		t.Errorf("failed = %v, want 1", after["failed"])
+	}
+	failures, _ := after["failures"].([]any)
+	if len(failures) != 1 {
+		t.Fatalf("the screen lists %d broken files, want 1", len(failures))
+	}
+	row, _ := failures[0].(map[string]any)
+	if row["filename"] != "증적.txt" || row["review_number"] == "" {
+		t.Errorf("the listed failure does not identify the file and its review: %v", row)
+	}
+}
+
 // With self-review refused, a role nobody holds is a workflow that never runs
 // and a role one person holds is one that stops the moment that person is the
 // one asking. The screen an administrator checks first now says so.

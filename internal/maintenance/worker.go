@@ -153,7 +153,7 @@ func (w *Worker) verifyEvidenceSample(ctx context.Context) int64 {
 		// The timestamp moves either way: a file that cannot be read must not
 		// be re-checked every sweep in place of files nobody has looked at yet,
 		// and the administrators have already been told about it.
-		_, _ = w.Store.Pool.Exec(ctx, `UPDATE evidences SET verified_at=now() WHERE id=$1`, b.id)
+		_, _ = w.Store.Pool.Exec(ctx, `UPDATE evidences SET verified_at=now(),verify_error=$2 WHERE id=$1`, b.id, reason)
 		checked++
 		if reason == "" {
 			continue
