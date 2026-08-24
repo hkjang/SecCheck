@@ -14,6 +14,7 @@ var auditEventLabels = map[string]string{
 	"CHANGE_PASSWORD":                "비밀번호 변경",
 	"RESET_PASSWORD":                 "비밀번호 재설정",
 	"UNLOCK_USER":                    "계정 잠금 해제",
+	"LOCK_INACTIVE_ACCOUNT":          "장기 미접속 계정 자동 잠금",
 	"REMOVE_PARTICIPANT":             "심의 참여자 해제",
 	"RECOVER_ADMIN":                  "관리자 계정 복구 (CLI)",
 	"PURGE_EVIDENCE":                 "증적 보존기간 만료 파기",

@@ -5,8 +5,10 @@ import (
 	"reflect"
 	"slices"
 	"sort"
+	"strings"
 	"testing"
 
+	"github.com/hkjang/SecCheck/internal/store"
 	"github.com/hkjang/SecCheck/internal/testdb"
 )
 
@@ -132,5 +134,54 @@ func TestDirectoryRoleChangesAreAudited(t *testing.T) {
 	}
 	if events != 1 {
 		t.Errorf("an unchanged sign-in wrote another audit event: %d", events)
+	}
+}
+
+// The service closes a privileged account on its own when the directory user
+// has stayed away too long. Every other way an account loses access is written
+// to the chain and visible to the other administrators; this one happened in
+// silence, so the log read as if nobody had ever disabled it.
+func TestAnAutomaticLockIsRecordedAndAnnounced(t *testing.T) {
+	db := testdb.New(t)
+	ctx := context.Background()
+	adminID := testdb.Bootstrap(t, db, "lock-admin")
+	svc := &Service{Store: db}
+	if _, err := db.Pool.Exec(ctx, `UPDATE settings SET value_json = value_json || '{"inactive_admin_lock_days":30}'::jsonb WHERE key='security'`); err != nil {
+		t.Fatal(err)
+	}
+	staleID := store.NewID()
+	if _, err := db.Pool.Exec(ctx, `INSERT INTO users(id,username,display_name,auth_source,active,last_login_at) VALUES($1,'lock-leaver','떠난 검토자','oidc',true,now()-interval '200 days')`, staleID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Pool.Exec(ctx, `INSERT INTO user_roles(user_id,role_code) VALUES($1,'SECURITY_REVIEWER')`, staleID); err != nil {
+		t.Fatal(err)
+	}
+	stale, err := db.GetUser(ctx, staleID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = svc.enforceInactiveAdminLock(ctx, stale); err == nil {
+		t.Fatal("a privileged account away for 200 days was allowed to sign in")
+	}
+	var active bool
+	if err = db.Pool.QueryRow(ctx, `SELECT active FROM users WHERE id=$1`, staleID).Scan(&active); err != nil {
+		t.Fatal(err)
+	}
+	if active {
+		t.Error("the account was not locked")
+	}
+	var events int
+	if err = db.Pool.QueryRow(ctx, `SELECT count(*) FROM audit_logs WHERE event_type='LOCK_INACTIVE_ACCOUNT' AND target_id=$1`, staleID).Scan(&events); err != nil {
+		t.Fatal(err)
+	}
+	if events != 1 {
+		t.Errorf("the automatic lock left %d audit events, want 1", events)
+	}
+	var body string
+	if err = db.Pool.QueryRow(ctx, `SELECT body FROM notifications WHERE recipient_id=$1 AND event_type='ACCOUNT_LOCKED'`, adminID).Scan(&body); err != nil {
+		t.Fatalf("no administrator was told about the lock: %v", err)
+	}
+	if !strings.Contains(body, "떠난 검토자") {
+		t.Errorf("the notice does not name the account: %q", body)
 	}
 }

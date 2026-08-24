@@ -756,7 +756,37 @@ func (a *Service) enforceInactiveAdminLock(ctx context.Context, u store.User) er
 	}
 	_, _ = a.Store.Pool.Exec(ctx, `UPDATE users SET active=false,updated_at=now() WHERE id=$1`, u.ID)
 	_, _ = a.Store.Pool.Exec(ctx, `DELETE FROM sessions WHERE user_id=$1`, u.ID)
+	// The service closes a privileged account by itself here. Every other way
+	// an account loses its access is written to the chain and every other
+	// administrator can see it; this one happened in silence, so the log said
+	// the account was simply never disabled by anyone.
+	_ = a.Store.Audit(ctx, store.AuditEvent{UserID: u.ID, UserName: u.DisplayName, EventType: "LOCK_INACTIVE_ACCOUNT", TargetType: "USER", TargetID: u.ID,
+		Before: map[string]any{"active": true}, After: map[string]any{"active": false, "inactive_days": cfg.InactiveAdminLockDays}})
+	a.tellAdmins(ctx, u, cfg.InactiveAdminLockDays)
 	return errors.New("privileged OIDC account locked after prolonged inactivity")
+}
+
+// tellAdmins reports an account the service closed on its own. Whoever has to
+// decide whether the person is coming back cannot decide it from a login error
+// the person alone sees.
+func (a *Service) tellAdmins(ctx context.Context, locked store.User, days int) {
+	rows, err := a.Store.Pool.Query(ctx, `SELECT ur.user_id FROM user_roles ur JOIN users u ON u.id=ur.user_id WHERE ur.role_code='SYSTEM_ADMIN' AND u.active AND ur.user_id<>$1`, locked.ID)
+	if err != nil {
+		return
+	}
+	var admins []string
+	for rows.Next() {
+		var id string
+		if rows.Scan(&id) == nil {
+			admins = append(admins, id)
+		}
+	}
+	rows.Close()
+	body := fmt.Sprintf("%s(%s) 계정이 %d일 이상 접속하지 않아 잠겼습니다. 권한 계정이므로 담당 업무가 남아 있는지 확인하고, 필요하면 사용자 관리에서 다시 활성화하세요.",
+		locked.DisplayName, locked.Username, days)
+	for _, admin := range admins {
+		_ = a.Store.Notify(ctx, admin, "ACCOUNT_LOCKED", "권한 계정 자동 잠금", body, "USER", locked.ID)
+	}
 }
 
 func IsNotFound(err error) bool { return errors.Is(err, pgx.ErrNoRows) }
