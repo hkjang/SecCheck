@@ -287,24 +287,45 @@ func (s *Server) dashboard(w http.ResponseWriter, r *http.Request) {
 		_ = rows.Scan(&status, &n)
 		counts[status] = n
 	}
-	var overdue int
-	args2 := append([]any{}, args...)
-	_ = s.Store.Pool.QueryRow(r.Context(), `SELECT count(*) FROM review_requests WHERE `+where+` AND planned_open_date BETWEEN display_today() AND display_today()+14`, args2...).Scan(&overdue)
+	// The first query of this handler fails loudly; these did not, so a database
+	// that started refusing mid-request answered "nothing opens soon, no launch
+	// is at risk, no change request is open" -- the three numbers people act on
+	// -- with the rest of the page intact.
+	count := func(query string, args ...any) (int, bool) {
+		var n int
+		if err := s.Store.Pool.QueryRow(r.Context(), query, args...).Scan(&n); err != nil {
+			s.fault(w, r, "QUERY_FAILED", "대시보드를 불러오지 못했습니다.", err)
+			return 0, false
+		}
+		return n, true
+	}
+	overdue, ok := count(`SELECT count(*) FROM review_requests WHERE `+where+` AND planned_open_date BETWEEN display_today() AND display_today()+14`, append([]any{}, args...)...)
+	if !ok {
+		return
+	}
 	// The number that matters is not how many services open soon but how many
 	// of them are opening with the review unfinished -- the count the alert
 	// mails are about.
-	var openingUnfinished int
-	args3 := append([]any{}, args...)
-	_ = s.Store.Pool.QueryRow(r.Context(), `SELECT count(*) FROM review_requests WHERE `+where+`
+	openingUnfinished, ok := count(`SELECT count(*) FROM review_requests WHERE `+where+`
                 AND planned_open_date IS NOT NULL AND planned_open_date <= display_today()+14
-                AND status NOT IN ('APPROVED','CLOSED','CANCELLED','REJECTED')`, args3...).Scan(&openingUnfinished)
-	var openChanges int
-	_ = s.Store.Pool.QueryRow(r.Context(), `SELECT count(*) FROM change_requests c JOIN review_requests r ON r.id=c.review_request_id WHERE `+strings.ReplaceAll(where, "review_requests.", "r.")+` AND c.status='OPEN'`, args...).Scan(&openChanges)
+                AND status NOT IN ('APPROVED','CLOSED','CANCELLED','REJECTED')`, append([]any{}, args...)...)
+	if !ok {
+		return
+	}
+	openChanges, ok := count(`SELECT count(*) FROM change_requests c JOIN review_requests r ON r.id=c.review_request_id WHERE `+strings.ReplaceAll(where, "review_requests.", "r.")+` AND c.status='OPEN'`, args...)
+	if !ok {
+		return
+	}
 	analytics := map[string]any{}
 	if admin {
-		var unassigned, longPending int
-		_ = s.Store.Pool.QueryRow(r.Context(), `SELECT count(*) FROM review_requests WHERE reviewer_id IS NULL AND status IN ('SUBMITTED','RESUBMITTED')`).Scan(&unassigned)
-		_ = s.Store.Pool.QueryRow(r.Context(), `SELECT count(*) FROM review_requests WHERE status IN ('SUBMITTED','RESUBMITTED','REVIEWING') AND updated_at<now()-interval '7 days'`).Scan(&longPending)
+		unassigned, ok := count(`SELECT count(*) FROM review_requests WHERE reviewer_id IS NULL AND status IN ('SUBMITTED','RESUBMITTED')`)
+		if !ok {
+			return
+		}
+		longPending, ok := count(`SELECT count(*) FROM review_requests WHERE status IN ('SUBMITTED','RESUBMITTED','REVIEWING') AND updated_at<now()-interval '7 days'`)
+		if !ok {
+			return
+		}
 		rows, err := s.Store.Pool.Query(r.Context(), `SELECT si.category,rr.result,count(*) FROM review_results rr JOIN submission_items si ON si.id=rr.submission_item_id WHERE rr.result IN ('INSUFFICIENT','NON_COMPLIANT','CONDITIONAL') GROUP BY si.category,rr.result ORDER BY count(*) DESC LIMIT 20`)
 		if err == nil {
 			if grouped, groupErr := scanDynamic(rows, []string{"category", "result", "count"}); groupErr == nil {

@@ -741,3 +741,32 @@ func TestAnAttemptRefusedOnPermissionIsWrittenDown(t *testing.T) {
 		t.Errorf("an allowed action recorded %d denials", after2-before)
 	}
 }
+
+// The dashboard's first query fails loudly and the counts beside it did not, so
+// a database refusing mid-request produced a page that said "nothing opens
+// soon, no change request is open" -- the numbers people act on -- next to
+// status counts that were real.
+func TestTheDashboardRefusesRatherThanReportZero(t *testing.T) {
+	h := newHarness(t)
+	admin := h.login(adminOf(h))
+	ctx := context.Background()
+	if res := admin.do(http.MethodGet, "/api/v1/dashboard", nil); res.status != http.StatusOK {
+		t.Fatalf("a healthy dashboard returned %d %s", res.status, res.body)
+	}
+	// Taking one table out from under the handler is what a statement timeout
+	// or a permission change looks like to it.
+	if _, err := h.db.Pool.Exec(ctx, `ALTER TABLE change_requests RENAME TO change_requests_hidden`); err != nil {
+		t.Fatal(err)
+	}
+	res := admin.do(http.MethodGet, "/api/v1/dashboard", nil)
+	if _, err := h.db.Pool.Exec(ctx, `ALTER TABLE change_requests_hidden RENAME TO change_requests`); err != nil {
+		t.Fatal(err)
+	}
+	if res.status == http.StatusOK {
+		body := res.json()
+		t.Fatalf("the dashboard answered 200 with open_change_requests=%v while the table was unreadable", body["open_change_requests"])
+	}
+	if res.errorCode() != "QUERY_FAILED" {
+		t.Errorf("the failure is reported as %s", res.errorCode())
+	}
+}
