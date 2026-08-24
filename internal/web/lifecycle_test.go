@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/hkjang/SecCheck/internal/store"
+	api "github.com/hkjang/SecCheck/internal/web"
 )
 
 // The whole point of the service, driven once from end to end by four
@@ -1416,5 +1417,103 @@ func TestWhatBlocksCompletionIsNamedItemByItem(t *testing.T) {
 	details := res.json()["error"].(map[string]any)["details"].(map[string]any)
 	if named := details["issues"].([]any); len(named) != 3 {
 		t.Fatalf("the refusal names %d items, want 3", len(named))
+	}
+}
+
+// Pressing 제출 means "start reviewing" the first time and "look at what
+// moved" the second. Which one it is used to be read outside the transaction
+// that writes it, with the error discarded, so an unreadable status became a
+// first submission: the reviewer was told to start over on a checklist they
+// had already judged, and the audit log recorded SUBMIT for a resubmission.
+func TestAnUnreadableStatusIsNotTreatedAsAFirstSubmission(t *testing.T) {
+	for _, c := range []struct {
+		current, next, event string
+		allowed              bool
+	}{
+		{"DRAFT", "SUBMITTED", "SUBMIT", true},
+		{"CHANGE_REQUESTED", "RESUBMITTED", "RESUBMIT", true},
+		{"", "", "", false},
+		{"REVIEWING", "", "", false},
+		{"APPROVED", "", "", false},
+		{"CANCELLED", "", "", false},
+	} {
+		next, event, ok := api.NextSubmissionState(c.current)
+		if ok != c.allowed || next != c.next || event != c.event {
+			t.Errorf("submitting a %q review gives (%q,%q,%v), want (%q,%q,%v)", c.current, next, event, ok, c.next, c.event, c.allowed)
+		}
+	}
+}
+
+// The same rule end to end: a review that comes back from a change request is
+// resubmitted, and the reviewer is told what moved rather than to start over.
+func TestAReviewComingBackIsAlwaysARresubmission(t *testing.T) {
+	h := newHarness(t)
+	ctx := context.Background()
+	requesterID := h.user("resubmit-requester", "REQUESTER")
+	reviewerID := h.user("resubmit-reviewer", "SECURITY_REVIEWER")
+	requester := h.login("resubmit-requester")
+	reviewer := h.login("resubmit-reviewer")
+
+	reviewID := requester.createReview("재제출 서비스")
+	items := []map[string]any{}
+	if err := json.Unmarshal([]byte(requester.do(http.MethodGet, "/api/v1/review-requests/"+reviewID+"/items", nil).body), &items); err != nil {
+		t.Fatal(err)
+	}
+	ids := make([]string, 0, len(items))
+	for _, item := range items {
+		ids = append(ids, item["id"].(string))
+	}
+	if _, err := h.db.Pool.Exec(ctx, `UPDATE review_requests SET reviewer_id=$2 WHERE id=$1`, reviewID, reviewerID); err != nil {
+		t.Fatal(err)
+	}
+	post := func(c *client, path string, body any, want int, what string) map[string]any {
+		t.Helper()
+		res := c.do(http.MethodPost, path, body)
+		if res.status != want {
+			t.Fatalf("%s: %d %s", what, res.status, res.body)
+		}
+		return res.json()
+	}
+	post(requester, "/api/v1/review-requests/"+reviewID+"/responses/bulk",
+		map[string]any{"item_ids": ids, "applicability": "N/A", "na_reason": "해당 없음", "self_assessment": "N/A"}, http.StatusOK, "bulk answer")
+	if out := post(requester, "/api/v1/review-requests/"+reviewID+"/submit", map[string]any{}, http.StatusOK, "submit"); out["status"] != "SUBMITTED" {
+		t.Fatalf("the first submission reports %v", out["status"])
+	}
+	post(reviewer, "/api/v1/review-requests/"+reviewID+"/begin-review", map[string]any{}, http.StatusOK, "begin review")
+	post(reviewer, "/api/v1/review-requests/"+reviewID+"/review-results/bulk",
+		map[string]any{"item_ids": ids, "result": "COMPLIANT", "opinion": "일괄 적합"}, http.StatusOK, "bulk judgement")
+	post(reviewer, "/api/v1/review-requests/"+reviewID+"/change-requests",
+		map[string]any{"item_id": ids[0], "reason": "증적을 보완하세요", "assignee_id": requesterID, "due_date": "2030-03-31"}, http.StatusCreated, "change request")
+
+	var changeID string
+	if err := h.db.Pool.QueryRow(ctx, `SELECT id FROM change_requests WHERE review_request_id=$1`, reviewID).Scan(&changeID); err != nil {
+		t.Fatal(err)
+	}
+	if res := requester.do(http.MethodPatch, "/api/v1/change-requests/"+changeID, map[string]any{"answer": "보완했습니다", "status": "DONE"}); res.status != http.StatusOK {
+		t.Fatalf("answer the change request: %d %s", res.status, res.body)
+	}
+	if res := reviewer.do(http.MethodPatch, "/api/v1/change-requests/"+changeID, map[string]any{"answer": "", "status": "VERIFIED"}); res.status != http.StatusOK {
+		t.Fatalf("verify the change request: %d %s", res.status, res.body)
+	}
+	if out := post(requester, "/api/v1/review-requests/"+reviewID+"/submit", map[string]any{}, http.StatusOK, "resubmit"); out["status"] != "RESUBMITTED" {
+		t.Fatalf("coming back from a change request reports %v", out["status"])
+	}
+	// The audit log has to agree: a resubmission recorded as a first
+	// submission is a hole in the record of what happened.
+	var events []string
+	rows, err := h.db.Pool.Query(ctx, `SELECT event_type FROM audit_logs WHERE target_id=$1 AND event_type IN ('SUBMIT','RESUBMIT') ORDER BY chain_sequence`, reviewID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var event string
+		if err := rows.Scan(&event); err != nil {
+			t.Fatal(err)
+		}
+		events = append(events, event)
+	}
+	if len(events) != 2 || events[0] != "SUBMIT" || events[1] != "RESUBMIT" {
+		t.Fatalf("the audit log records %v, want [SUBMIT RESUBMIT]", events)
 	}
 }

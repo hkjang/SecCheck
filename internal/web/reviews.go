@@ -895,6 +895,19 @@ func (s *Server) reviewResultConflict(r *http.Request, itemID, expected string) 
 	return map[string]any{"updated_at": current, "updated_by": by, "result": result, "opinion": opinion, "evidence_adequacy": adequacy, "follow_up": followUp}, true
 }
 
+// nextSubmissionState maps the status a review is in to what pressing 제출
+// makes of it. An unknown status -- including the empty string a failed read
+// leaves behind -- is not a first submission; it is a refusal.
+func nextSubmissionState(current string) (next, event string, ok bool) {
+	switch current {
+	case "DRAFT":
+		return "SUBMITTED", "SUBMIT", true
+	case "CHANGE_REQUESTED":
+		return "RESUBMITTED", "RESUBMIT", true
+	}
+	return "", "", false
+}
+
 func (s *Server) submitReview(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 	if !s.canEditReview(r.Context(), session(r), id) {
@@ -910,14 +923,6 @@ func (s *Server) submitReview(w http.ResponseWriter, r *http.Request) {
 		problem(w, 422, "SUBMISSION_INCOMPLETE", "누락된 항목을 확인하세요.", issues)
 		return
 	}
-	var current string
-	_ = s.Store.Pool.QueryRow(r.Context(), `SELECT status FROM review_requests WHERE id=$1`, id).Scan(&current)
-	next := "SUBMITTED"
-	event := "SUBMIT"
-	if current == "CHANGE_REQUESTED" {
-		next = "RESUBMITTED"
-		event = "RESUBMIT"
-	}
 	// The submission carries who submitted and when, which the cycle-time
 	// report measures from. It used to be written after the status had already
 	// committed, with its error discarded, so a failure left a review marked
@@ -928,7 +933,24 @@ func (s *Server) submitReview(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer tx.Rollback(r.Context())
-	tag, err := tx.Exec(r.Context(), `UPDATE review_requests SET status=$2,first_submitted_at=COALESCE(first_submitted_at,now()),final_submitted_at=now(),updated_at=now() WHERE id=$1 AND status IN ('DRAFT','CHANGE_REQUESTED')`, id, next)
+	// First submission and resubmission are the same button and different
+	// events: one asks the reviewer to start, the other asks them to look at
+	// what moved. Which it is was read outside this transaction with the error
+	// thrown away, so a read that failed -- or a status that changed in the
+	// meantime -- quietly turned a resubmission into a first submission: the
+	// reviewer was told to start over and the audit log said SUBMIT. The
+	// decision now comes from the row this transaction is about to write.
+	var current string
+	if err = tx.QueryRow(r.Context(), `SELECT status FROM review_requests WHERE id=$1 FOR UPDATE`, id).Scan(&current); err != nil {
+		s.fault(w, r, "SUBMIT_FAILED", "심의 상태를 확인하지 못해 제출을 중단했습니다.", err)
+		return
+	}
+	next, event, ok := nextSubmissionState(current)
+	if !ok {
+		problem(w, 409, "STATE_CONFLICT", "현재 상태에서는 제출할 수 없습니다.", map[string]string{"status": current})
+		return
+	}
+	tag, err := tx.Exec(r.Context(), `UPDATE review_requests SET status=$2,first_submitted_at=COALESCE(first_submitted_at,now()),final_submitted_at=now(),updated_at=now() WHERE id=$1 AND status=$3`, id, next, current)
 	if err != nil || tag.RowsAffected() == 0 {
 		problem(w, 409, "STATE_CONFLICT", "현재 상태에서는 제출할 수 없습니다.", nil)
 		return
