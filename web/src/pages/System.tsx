@@ -9,6 +9,7 @@ type Integrity = { checked: number; unchecked: number; failed: number; oldest_ch
 type Info = {
   version: string; schema_version: number; go_version: string
   users: number; reviews: number; templates: number; evidences: number; logs: number
+  evidence_bytes: number
   database_size: string; pdf_font: string; pdf_export_available: boolean; storage: Storage; role_coverage: Coverage[]; evidence_integrity: Integrity; now: string
 }
 
@@ -49,6 +50,7 @@ export default function SystemPage() {
       <div className="table-wrap"><table><tbody>
         <tr><th>경로</th><td><code>{info.storage.path}</code></td></tr>
         <tr><th>쓰기 가능</th><td>{info.storage.writable ? '예' : `아니오${info.storage.detail ? ` · ${info.storage.detail}` : ''}`}</td></tr>
+        <tr><th>저장된 증적</th><td>{info.evidences.toLocaleString()}건 · {formatBytes(info.evidence_bytes || 0)} (파기된 버전 제외)</td></tr>
         <tr><th>남은 공간</th><td>{info.storage.total_bytes > 0 ? `${formatBytes(info.storage.free_bytes)} / ${formatBytes(info.storage.total_bytes)} (${(free * 100).toFixed(0)}%)` : '측정할 수 없습니다'}</td></tr>
       </tbody></table></div>
       {(!info.storage.writable || free < 0.1) && <div className="card-body"><p className="subtle">공간이 떨어지거나 볼륨에 쓸 수 없게 되면 증적 업로드가 실패합니다. 시스템 관리자에게 `저장 공간 부족` 알림이 발송됩니다.</p></div>}

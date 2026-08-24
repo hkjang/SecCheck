@@ -3727,6 +3727,24 @@ func TestScanFailureMetricCountsOnlyWhatSomebodyCanFix(t *testing.T) {
 	if got := gauge("seccheck_evidence_unverified"); got != 0 {
 		t.Errorf("seccheck_evidence_unverified = %v, want 0 once the file has been checked", got)
 	}
+
+	// Retention frees the bytes but keeps the row for the audit trail. A volume
+	// figure that counts purged versions only ever grows, and an operator
+	// sizing the disk from it is reading a number that cannot fall.
+	stored := gauge("seccheck_evidence_version_bytes")
+	if stored <= 0 {
+		t.Fatalf("seccheck_evidence_version_bytes = %v with a file on the volume", stored)
+	}
+	if _, err := h.db.Pool.Exec(ctx, `UPDATE evidence_versions SET purged_at=now()`); err != nil {
+		t.Fatal(err)
+	}
+	if after := gauge("seccheck_evidence_version_bytes"); after != 0 {
+		t.Errorf("seccheck_evidence_version_bytes = %v after every version was purged, want 0", after)
+	}
+	info := admin.do(http.MethodGet, "/api/v1/admin/system", nil).json()
+	if bytes, _ := info["evidence_bytes"].(float64); bytes != 0 {
+		t.Errorf("the system screen still reports %v bytes of purged evidence", bytes)
+	}
 }
 
 // The sweep records whether each stored file still matches its record, and an
