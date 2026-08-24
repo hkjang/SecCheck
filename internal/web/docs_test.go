@@ -551,3 +551,45 @@ func TestTheUpgradeTableKeepsUpWithTheReleases(t *testing.T) {
 			current[1], current[2], newest, version)
 	}
 }
+
+// The upgrade table keeps telling integrators their scripts need changing, and
+// those scripts branch on error.code -- which was written down nowhere, so the
+// only way to learn the codes was to read the server. Every code the server
+// returns has to be in the guide, and the guide must not invent any.
+func TestEveryErrorCodeIsInTheApiGuide(t *testing.T) {
+	guide := repoFile(t, "docs/api-guide.md")
+	emitted := map[string]bool{}
+	for _, dir := range []string{filepath.Join("..", "..", "internal"), filepath.Join("..", "..", "cmd")} {
+		err := filepath.WalkDir(dir, func(path string, entry os.DirEntry, err error) error {
+			if err != nil || entry.IsDir() || !strings.HasSuffix(path, ".go") || strings.HasSuffix(path, "_test.go") {
+				return nil
+			}
+			body, readErr := os.ReadFile(path)
+			if readErr != nil {
+				return nil
+			}
+			for _, m := range regexp.MustCompile(`problem\(w,\s*(?:http\.Status\w+|\d+),\s*"([A-Z_]{3,})"`).FindAllStringSubmatch(string(body), -1) {
+				emitted[m[1]] = true
+			}
+			for _, m := range regexp.MustCompile(`\bfault\(w, r, "([A-Z_]{3,})"`).FindAllStringSubmatch(string(body), -1) {
+				emitted[m[1]] = true
+			}
+			return nil
+		})
+		if err != nil {
+			t.Fatalf("walk %s: %v", dir, err)
+		}
+	}
+	if len(emitted) < 30 {
+		t.Fatalf("only %d error codes found; the handlers must have changed shape", len(emitted))
+	}
+	documented := map[string]bool{}
+	for _, m := range regexp.MustCompile("`([A-Z_]{3,})`").FindAllStringSubmatch(guide, -1) {
+		documented[m[1]] = true
+	}
+	for code := range emitted {
+		if !documented[code] {
+			t.Errorf("the server returns %s and docs/api-guide.md never mentions it, so an integration cannot branch on it", code)
+		}
+	}
+}

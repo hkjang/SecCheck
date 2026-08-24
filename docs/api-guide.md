@@ -60,6 +60,83 @@ Authorization: Bearer sck_a1b2c3d4_xxxxxxxxxxxxxxxxxxxxxxxxxxxx
 
 ---
 
+## 2-1. 오류 응답과 코드
+
+실패 응답은 모두 같은 형태입니다. 연계 스크립트는 HTTP 상태보다 `error.code`로 분기하십시오. 문구(`message`)는 사용자에게 보여 주기 위한 것이라 릴리즈마다 다듬어지지만, **코드는 계약**입니다.
+
+```json
+{ "error": { "code": "REVIEW_INCOMPLETE", "message": "미검토 항목 2건이 남아 검토를 완료할 수 없습니다.", "details": { "unreviewed_items": 2 } } }
+```
+
+`details`는 코드마다 다르며 없을 수도 있습니다(`null`).
+
+### 인증·권한
+
+| 코드 | 뜻 |
+| :--- | :--- |
+| `AUTHENTICATION_REQUIRED` | 세션이나 API 키가 없습니다 |
+| `SESSION_REQUIRED` | 이 작업은 브라우저 세션에서만 가능합니다 |
+| `INVALID_CREDENTIALS` | 아이디 또는 비밀번호가 틀렸습니다 |
+| `LOGIN_RATE_LIMITED` | 로그인 시도가 제한 횟수를 넘었습니다 |
+| `ACCOUNT_LOCKED` | 로그인 실패가 누적되어 잠긴 계정입니다 |
+| `TOTP_REQUIRED` / `TOTP_INVALID` / `TOTP_FAILED` | 2단계 인증 코드가 필요·불일치·처리 실패 |
+| `TOTP_ENROLLMENT_REQUIRED` | 정책상 2단계 인증 등록이 먼저 필요합니다 |
+| `CSRF_INVALID` | CSRF 토큰이 없거나 일치하지 않습니다 |
+| `RATE_LIMITED` | 요청 빈도 제한을 넘었습니다 |
+| `API_SCOPE_FORBIDDEN` | API 키의 scope로는 허용되지 않는 작업입니다 |
+| `FORBIDDEN` | 권한이 없거나 대상 심의에 참여하지 않습니다 |
+| `SELF_REVIEW_FORBIDDEN` | 본인이 신청한 심의는 본인이 검토·승인할 수 없습니다 |
+| `EXTERNAL_ACCOUNT` | 외부(OIDC) 계정에는 적용할 수 없는 작업입니다 |
+| `SELF_LOCKOUT` / `LAST_ADMIN_PROTECTION` | 자기 계정 비활성화·관리자 역할 제거는 막습니다 |
+| `CURRENT_SESSION` | 지금 사용 중인 세션은 종료 대상에서 제외됩니다 |
+
+### 요청 내용
+
+| 코드 | 뜻 |
+| :--- | :--- |
+| `INVALID_JSON` | 본문을 JSON으로 읽을 수 없습니다 |
+| `VALIDATION_FAILED` | 필드 값이 규칙에 맞지 않습니다(`details`에 필드별 사유) |
+| `NA_REASON_REQUIRED` | `N/A` 선택 시 사유가 필요합니다 |
+| `DUE_DATE_REQUIRED` / `FOLLOW_UP_DUE_REQUIRED` | 보완 요청·후속조치에는 기한이 필요합니다 |
+| `NOT_FOUND` | 대상이 없거나 접근 범위 밖입니다 |
+| `FORMAT_NOT_SUPPORTED` | 지원하지 않는 내보내기 형식입니다 |
+| `UPLOAD_REJECTED` | 확장자·크기·MIME 검증에 걸렸습니다 |
+| `DUPLICATE_ITEM_CODE` | 같은 버전에 같은 항목코드가 이미 있습니다 |
+| `NOT_A_PARTICIPANT` | 심의에 참여하지 않는 사용자에게는 배정할 수 없습니다 |
+
+### 상태 충돌 (409·422)
+
+| 코드 | 뜻 |
+| :--- | :--- |
+| `STATE_CONFLICT` | 현재 상태에서 허용되지 않는 전이입니다 |
+| `SUBMISSION_INCOMPLETE` | 제출 전 검증에 걸렸습니다(`details`에 항목별 사유) |
+| `REVIEW_INCOMPLETE` | 미검토 항목·미검증 보완 요청·판정 후 변경 항목이 남았습니다 |
+| `RESPONSE_CONFLICT` / `REVIEW_RESULT_CONFLICT` | 다른 사용자가 먼저 저장했습니다(최신 값이 `details`에) |
+| `ALREADY_ASSIGNED` / `ITEM_ALREADY_USED` | 이미 배정·사용 중이라 다시 적용할 수 없습니다 |
+| `IMMUTABLE_VERSION` | 게시된 템플릿 버전은 수정할 수 없습니다 |
+| `EMPTY_VERSION` | 항목이 없는 버전은 게시할 수 없습니다 |
+| `TEMPLATE_IN_USE` / `CONTROL_IN_USE` | 사용 중이라 삭제할 수 없습니다 |
+| `SCAN_NOT_CLEARED` | 악성코드 검사가 끝나지 않은 증적입니다 |
+| `EVIDENCE_PURGED` | 보존기간이 지나 파기된 증적입니다 |
+| `VERIFY_IN_PROGRESS` | 같은 검증이 이미 실행 중입니다 |
+
+### 서버·인프라 (5xx)
+
+| 코드 | 뜻 |
+| :--- | :--- |
+| `QUERY_FAILED` / `SEARCH_FAILED` | 데이터베이스 조회에 실패했습니다 |
+| `CREATE_FAILED` / `UPDATE_FAILED` / `DELETE_FAILED` / `COPY_FAILED` | 저장에 실패했습니다 |
+| `SUBMIT_FAILED` / `SNAPSHOT_FAILED` | 제출·스냅샷 처리에 실패했습니다 |
+| `UPLOAD_FAILED` / `STORAGE_FAILED` | 증적 저장에 실패했습니다 |
+| `KEY_UNAVAILABLE` / `ENCRYPTION_FAILED` / `ROTATE_FAILED` | 암호화 키를 쓸 수 없습니다 |
+| `EXPORT_FAILED` / `FONT_MISSING` | 내보내기에 실패했습니다(PDF는 한글 폰트 필요) |
+| `IMPORT_FAILED` / `DIFF_FAILED` | Excel 가져오기·버전 비교에 실패했습니다 |
+| `VERIFY_FAILED` | 감사 체인 검증을 수행하지 못했습니다 |
+| `SMTP_FAILED` / `OIDC_DISCOVERY_FAILED` / `OIDC_INVALID` | 외부 연동 설정 확인에 실패했습니다 |
+| `NOT_READY` | 데이터베이스에 연결할 수 없어 지표·준비 상태를 제공할 수 없습니다 |
+
+---
+
 ## 3. Model Context Protocol (MCP) 엔드포인트
 
 - **엔드포인트**: `POST /mcp`
