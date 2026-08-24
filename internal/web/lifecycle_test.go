@@ -661,3 +661,41 @@ func TestTheOperatorNamedOnAReviewCanOpenIt(t *testing.T) {
 		t.Fatalf("the operator cannot answer the item assigned to them: %d %s", res.status, res.body)
 	}
 }
+
+// The audit log's result column defaults to SUCCESS, so an attempt the service
+// refused was written down as if it had happened. A refused password change --
+// what somebody probing a hijacked session leaves behind -- read as an ordinary
+// password change, and there was no way to ask the screen for refusals at all.
+func TestARefusedPasswordChangeIsRecordedAsRefused(t *testing.T) {
+	h := newHarness(t)
+	admin := h.login(adminOf(h))
+	ctx := context.Background()
+
+	if res := admin.do(http.MethodPut, "/api/v1/me/password", map[string]string{"current_password": "완전히-틀린-비밀번호", "new_password": "새로운비밀번호12자이상"}); res.status != http.StatusForbidden {
+		t.Fatalf("a wrong current password returned %d %s", res.status, res.body)
+	}
+	var result, after string
+	if err := h.db.Pool.QueryRow(ctx, `SELECT result,after_value FROM audit_logs WHERE event_type='CHANGE_PASSWORD' ORDER BY timestamp DESC LIMIT 1`).Scan(&result, &after); err != nil {
+		t.Fatal(err)
+	}
+	if result != "FAILURE" {
+		t.Errorf("the refused attempt is recorded as %s: an auditor counting password changes counts it as one", result)
+	}
+	if !strings.Contains(after, "mismatch") {
+		t.Errorf("the record does not say why it was refused: %s", after)
+	}
+
+	// And the screen can be asked for refusals, which is the question an
+	// auditor opens it with.
+	listed := admin.do(http.MethodGet, "/api/v1/admin/audit?result=FAILURE&limit=50", nil).json()
+	rows, _ := listed["items"].([]any)
+	if len(rows) == 0 {
+		t.Fatal("filtering the audit log by result returned nothing")
+	}
+	for _, raw := range rows {
+		row, _ := raw.(map[string]any)
+		if row["result"] != "FAILURE" {
+			t.Errorf("the failure filter returned a %v row", row["result"])
+		}
+	}
+}

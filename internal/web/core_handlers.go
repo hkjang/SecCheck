@@ -232,7 +232,14 @@ func (s *Server) changePassword(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if !verifyPassword(sess.User.PasswordHash, in.CurrentPassword) {
-		_ = s.Store.Audit(r.Context(), auditFrom(r, "CHANGE_PASSWORD", "USER", sess.User.ID, nil, map[string]any{"reason": "current password mismatch"}))
+		// Recorded as what it is. The result column defaults to SUCCESS, so a
+		// refused attempt used to sit in the log looking exactly like a
+		// password that was changed -- and a burst of them, which is what
+		// somebody probing a hijacked session leaves behind, looked like a
+		// burst of ordinary changes.
+		refused := auditFrom(r, "CHANGE_PASSWORD", "USER", sess.User.ID, nil, map[string]any{"reason": "current password mismatch"})
+		refused.Result = "FAILURE"
+		_ = s.Store.Audit(r.Context(), refused)
 		problem(w, 403, "INVALID_CREDENTIALS", "현재 비밀번호가 올바르지 않습니다.", nil)
 		return
 	}

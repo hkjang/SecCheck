@@ -445,6 +445,12 @@ func (s *Server) listAudit(w http.ResponseWriter, r *http.Request) {
 		args = append(args, eventID)
 		where += ` AND event_id=$` + intString(len(args))
 	}
+	// "Show me what was refused" is the question an auditor opens this screen
+	// with, and the column was there to read but not to filter by.
+	if result := strings.ToUpper(strings.TrimSpace(query.Get("result"))); result != "" {
+		args = append(args, result)
+		where += ` AND result=$` + intString(len(args))
+	}
 	if from := strings.TrimSpace(query.Get("from")); from != "" {
 		args = append(args, from)
 		where += ` AND timestamp >= display_day_start($` + intString(len(args)) + `::date)`
