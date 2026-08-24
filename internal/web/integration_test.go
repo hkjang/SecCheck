@@ -2423,6 +2423,16 @@ func TestTheReportCollectsOutstandingFollowUps(t *testing.T) {
 	if number, _ := entry["review_number"].(string); number == "" {
 		t.Error("the register entry does not name its review")
 	}
+	// The register is the list of work that is still owed, and every line of it
+	// used to be a dead end: the review number was text, so following it up
+	// meant copying the number into the search box.
+	registerTarget, _ := entry["review_id"].(string)
+	if registerTarget == "" {
+		t.Fatalf("the register entry carries no link to its review: %v", entry)
+	}
+	if res := admin.do(http.MethodGet, "/api/v1/review-requests/"+registerTarget, nil); res.status != http.StatusOK {
+		t.Errorf("the review the register points at cannot be opened: %d %s", res.status, res.body)
+	}
 	// A date in the past has to read as late, or "outstanding" carries no
 	// urgency and the register is just a list.
 	if due, _ := entry["due_on"].(string); due != "2020-01-31" {

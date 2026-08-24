@@ -153,7 +153,7 @@ func (s *Server) buildReport(r *http.Request, scope reportScope) (reportData, er
 	if !scope.includeDone {
 		done = " AND rr.follow_up_done_at IS NULL"
 	}
-	if data.FollowUps, err = s.reportRows(ctx, `SELECT rr.id,r.review_number,r.service_name,r.department,si.item_code,si.title,rr.result,rr.follow_up,
+	if data.FollowUps, err = s.reportRows(ctx, `SELECT rr.id,r.id AS review_id,r.review_number,r.service_name,r.department,si.item_code,si.title,rr.result,rr.follow_up,
                 to_char(display_date(COALESCE(r.approved_at,r.updated_at)),'YYYY-MM-DD') AS decided_on,
                 to_char(rr.follow_up_due_date,'YYYY-MM-DD') AS due_on,
                 (rr.follow_up_done_at IS NULL AND rr.follow_up_due_date IS NOT NULL AND rr.follow_up_due_date < display_today()) AS overdue,
@@ -169,7 +169,7 @@ func (s *Server) buildReport(r *http.Request, scope reportScope) (reportData, er
                 LEFT JOIN users ru ON ru.id=rr.follow_up_reported_by
                 WHERE `+scope.where+` AND btrim(rr.follow_up)<>''`+done+`
                 ORDER BY rr.follow_up_done_at NULLS FIRST,rr.follow_up_due_date NULLS LAST,COALESCE(r.approved_at,r.updated_at) DESC,r.review_number,si.item_code LIMIT `+intString(scope.followUpLimit),
-		scope.args, "id", "review_number", "service_name", "department", "item_code", "title", "result", "follow_up", "decided_on", "due_on", "overdue", "reported_on", "reported_by", "done_on", "done_by", "follow_up_note"); err != nil {
+		scope.args, "id", "review_id", "review_number", "service_name", "department", "item_code", "title", "result", "follow_up", "decided_on", "due_on", "overdue", "reported_on", "reported_by", "done_on", "done_by", "follow_up_note"); err != nil {
 		return data, err
 	}
 	// The register is capped, so the count is fetched too: a screen that shows

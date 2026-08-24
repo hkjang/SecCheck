@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from 'react'
+import { Link } from 'react-router-dom'
 import { BarChart3, CalendarRange, Check, Download, Timer } from 'lucide-react'
 import { errorMessage, get, post } from '../lib/api'
 import { Badge, Button, Empty, Field, Loading, Modal, StatusBadge, useDownload, useToast } from '../components/ui'
@@ -26,6 +27,9 @@ export default function Reports() {
   const reload = () => get<Report>(`/api/v1/reports/reviews?${params}`).then(setData).catch(e => toast.push(errorMessage(e), 'error'))
   useEffect(() => { setData(undefined); const timer = window.setTimeout(reload, 200); return () => clearTimeout(timer) }, [params])
   const set = (key: keyof typeof filter, value: string) => setFilter(v => ({ ...v, [key]: value }))
+  // The list filters the same period the report does -- both read created_at --
+  // so a row can open exactly the reviews it counted.
+  const periodQuery = `&from=${filter.from}&to=${filter.to}`
   const preset = (months: number) => { const d = new Date(); const start = new Date(d.getFullYear(), d.getMonth() - months + 1, 1); setFilter(v => ({ ...v, from: start.toISOString().slice(0, 10), to: today() })) }
 
   return <div className="page">
@@ -55,10 +59,10 @@ export default function Reports() {
         </div> : <Empty title="이 기간에 완료된 심의가 없습니다." description="처리 기간은 제출부터 최종 승인까지를 측정합니다." />}</div></section>
 
       <div className="grid two">
-        <ReportTable title="상태별" rows={data.by_status} columns={[['status', '상태'], ['count', '건수']]} render={{ status: v => <StatusBadge status={String(v)} /> }} />
+        <ReportTable title="상태별" rows={data.by_status} columns={[['status', '상태'], ['count', '건수']]} render={{ status: v => <Link className="table-link" to={`/reviews?status=${encodeURIComponent(String(v))}${periodQuery}`}><StatusBadge status={String(v)} /></Link> }} />
         <ReportTable title="검토 결과 분포" rows={data.by_result} columns={[['result', '판정'], ['count', '항목 수']]} render={{ result: v => <>{resultLabel[String(v)] || String(v)}</> }} />
       </div>
-      <ReportTable title="부서별 현황" rows={data.by_department} columns={[['department', '부서'], ['created', '신규'], ['completed', '완료'], ['average_days', '평균 처리일']]} />
+      <ReportTable title="부서별 현황" rows={data.by_department} columns={[['department', '부서'], ['created', '신규'], ['completed', '완료'], ['average_days', '평균 처리일']]} render={{ department: v => <Link className="table-link" to={`/reviews?department=${encodeURIComponent(String(v))}${periodQuery}`}>{String(v)}</Link> }} />
       <ReportTable title="반복 미흡·부적합 항목" rows={data.recurring_findings} columns={[['item_code', '항목코드'], ['title', '보안요건'], ['category', '분류'], ['count', '발생 건수']]} empty="이 기간에 미흡·부적합 판정이 없습니다." />
       <FollowUpTable rows={data.follow_ups} total={data.follow_ups_total} includeDone={includeDone} onToggleScope={() => setIncludeDone(v => !v)} onChanged={reload} />
       <ReportTable title="진행 중 심의 경과" rows={data.aging} columns={[['bucket', '최근 변경 이후'], ['count', '건수']]} empty="진행 중인 심의가 없습니다." />
@@ -99,7 +103,7 @@ function FollowUpTable({ rows, total, includeDone, onToggleScope, onChanged }: {
     {rows.length ? <div className="table-wrap"><table><caption className="sr-only">미조치 항목</caption>
       <thead><tr><th scope="col">심의</th><th scope="col">항목</th><th scope="col">판정</th><th scope="col">조치 사항</th><th scope="col">상태</th><th scope="col"><span className="sr-only">작업</span></th></tr></thead>
       <tbody>{rows.map(row => <tr key={String(row.id)}>
-        <td>{String(row.review_number)}<div className="subtle">{String(row.service_name)}{row.department ? ` · ${row.department}` : ''}</div></td>
+        <td>{row.review_id ? <Link className="table-link" to={`/reviews/${row.review_id}`}>{String(row.review_number)}</Link> : String(row.review_number)}<div className="subtle">{String(row.service_name)}{row.department ? ` · ${row.department}` : ''}</div></td>
         <td>{String(row.item_code)}<div className="subtle">{String(row.title)}</div></td>
         <td>{resultLabel[String(row.result)] || String(row.result)}</td>
         <td>{String(row.follow_up)}<div className="subtle">{String(row.decided_on)} 판정{row.due_on ? ` · 기한 ${row.due_on}` : ''}</div></td>
