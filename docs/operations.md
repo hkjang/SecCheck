@@ -128,6 +128,8 @@ Reverse Proxy 뒤에 배치하는 구성에서는 `trusted_proxies`를 반드시
 
 ## 접근 검토 (Access Review)
 
+계정을 비활성화하면 **진행 중인 심의에서 그 계정에 배정돼 있던 체크리스트 항목의 담당자가 비워지고**(끝난 심의는 그대로 둡니다) 몇 개가 풀렸는지 응답에 담깁니다. 그 계정이 검토자였던 심의는 자동으로 검토자 대기열로 돌아갑니다.
+
 사용자 목록은 서버에서 검색·필터·페이지 처리됩니다(`q`, `only=LOCKED|INACTIVE|OIDC|LOCAL|STALE`). 계정이 수천 개인 설치에서도 화면이 전체를 내려받지 않으며, `잠긴 계정` 경고 수는 보이는 페이지가 아니라 **전체 계정** 기준입니다.
 
 관리자 > 사용자·역할의 `마지막 접속` 열에 계정별 최근 로그인 일시와 경과 일수가 표시됩니다. `장기 미접속 관리자 잠금`(`inactive_admin_lock_days`, 기본 90일)에 근접한 권한 계정은 경고로, 기준을 넘긴 계정은 `잠금 대상`으로 표시됩니다. `N일 이상 미접속` 필터는 한 번도 로그인하지 않은 활성 계정까지 함께 보여 주므로, 정기 접근 검토에서 회수 대상을 한 번에 확인할 수 있습니다.
@@ -320,6 +322,7 @@ docker compose exec seccheck /app/seccheck selftest --username admin --password 
 | v1.0.42~43 | 유지보수 스윕이 매시 증적 20건을 되읽어 검증합니다. I/O가 조금 늘고, 실패 시 `증적 무결성 확인 실패` 알림이 발생합니다 |
 | v1.0.44 | **`seccheck_scan_failures`의 의미가 바뀝니다.** 격리·검사 중 파일을 제외하고 `ERROR`만 셉니다. 기존 알람 임계값을 다시 보십시오 |
 | v1.0.45 | `seccheck_evidence_version_bytes`가 파기된 버전을 제외합니다. 용량 추이 그래프가 한 번 내려갑니다 |
+| v1.0.61 | 계정 비활성화 API가 204 대신 **200과 `{active, released_items}`**를 반환하고, 진행 중 심의의 해당 담당 항목을 비웁니다 |
 | v1.0.60 | 참여자 추가·해제 API가 204 대신 **200과 `{released_items}`**를 반환합니다. 해제·열람전용 전환 시 그 사람에게 배정된 항목의 담당자가 비워집니다 |
 | v1.0.59 | `GET /api/v1/admin/users`가 배열 대신 `{items, total, locked, ...}` 봉투를 반환하고 **기본 100건씩** 페이지로 나옵니다. `q`·`only`(LOCKED·INACTIVE·OIDC·LOCAL·STALE)·`limit`·`offset`을 지원합니다. **연계 스크립트 수정 필요** |
 | v1.0.56 | `/api/v1/dashboard`의 `security_analytics`에서 `category_findings`·`recurring_controls`가 제거됩니다(리포트 화면에 동일 정보 존재). 연계 스크립트가 이 필드를 읽는다면 리포트 API로 옮기십시오 |

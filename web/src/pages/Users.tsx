@@ -26,7 +26,7 @@ export default function UsersPage() {
   }).catch(() => undefined) }, [])
   const shown = users || []
   const lockedCount = page.locked
-  const active = async (user: User) => { try { await post(`/api/v1/admin/users/${user.id}/active`, { active: !user.active }); forgetDirectory(); toast.push(user.active ? '계정을 비활성화했습니다.' : '계정을 활성화했습니다.'); load() } catch (e) { toast.push(errorMessage(e), 'error') } }
+  const active = async (user: User) => { try { const out = await post<{ released_items?: number }>(`/api/v1/admin/users/${user.id}/active`, { active: !user.active }); forgetDirectory(); const released = Number(out?.released_items || 0); toast.push(user.active ? (released ? `계정을 비활성화하고 담당 항목 ${released}개의 담당자를 비웠습니다.` : '계정을 비활성화했습니다.') : '계정을 활성화했습니다.'); load() } catch (e) { toast.push(errorMessage(e), 'error') } }
   const unlock = async (user: User) => { try { await post(`/api/v1/admin/users/${user.id}/unlock`); toast.push('로그인 잠금을 해제했습니다.'); load() } catch (e) { toast.push(errorMessage(e), 'error') } }
   const resetTotp = async (user: User) => { if (!confirm(`${user.display_name} 계정의 일회용 코드를 초기화할까요? 해당 사용자의 모든 세션이 종료됩니다.`)) return; try { await post(`/api/v1/admin/users/${user.id}/totp/reset`); toast.push('일회용 코드를 초기화했습니다.'); load() } catch (e) { toast.push(errorMessage(e), 'error') } }
   return <div className="page"><div className="page-header"><div><h1 className="page-title">사용자 및 역할</h1><p className="page-description">RBAC 역할을 조합하고 비활성 계정의 세션을 즉시 종료하며, 로그인 실패로 잠긴 계정을 해제하거나 임시 비밀번호를 발급합니다.</p></div><Button variant="primary" onClick={() => setCreate(true)}><Plus size={15} /> 로컬 사용자</Button></div>

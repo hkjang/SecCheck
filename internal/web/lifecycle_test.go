@@ -1013,3 +1013,52 @@ func TestRemovingAParticipantReleasesTheItemsTheyHeld(t *testing.T) {
 		t.Errorf("%d items are still assigned to somebody who was removed from the review", held)
 	}
 }
+
+// Closing an account leaves whatever it was holding behind. The reviews it was
+// reviewing come back to the queue on their own, but checklist items kept the
+// name of an account the directory no longer returns: the row read as assigned
+// to somebody and nobody was coming.
+func TestDeactivatingAnAccountReleasesTheItemsItHeld(t *testing.T) {
+	h := newHarness(t)
+	admin := h.login(adminOf(h))
+	ctx := context.Background()
+	h.user("leaving-requester", "REQUESTER")
+	leaverID := h.user("leaving-helper", "CONTRIBUTOR")
+	requester := h.login("leaving-requester")
+
+	reviewID := requester.createReview("퇴사자 담당 서비스")
+	var items []map[string]any
+	if err := json.Unmarshal([]byte(requester.do(http.MethodGet, "/api/v1/review-requests/"+reviewID+"/items", nil).body), &items); err != nil {
+		t.Fatal(err)
+	}
+	if res := requester.do(http.MethodPost, "/api/v1/review-requests/"+reviewID+"/participants", map[string]any{"user_id": leaverID, "role": "CONTRIBUTOR"}); res.status != http.StatusOK {
+		t.Fatalf("adding the helper: %d %s", res.status, res.body)
+	}
+	if res := requester.do(http.MethodPost, "/api/v1/review-requests/"+reviewID+"/responses/bulk",
+		map[string]any{"item_ids": []string{items[0]["id"].(string), items[1]["id"].(string)}, "assigned_to": leaverID, "assign_only": true}); res.status != http.StatusOK {
+		t.Fatalf("assigning items: %d %s", res.status, res.body)
+	}
+
+	closed := admin.do(http.MethodPost, "/api/v1/admin/users/"+leaverID+"/active", map[string]any{"active": false})
+	if closed.status != http.StatusOK {
+		t.Fatalf("deactivating the account: %d %s", closed.status, closed.body)
+	}
+	if released, _ := closed.json()["released_items"].(float64); released != 2 {
+		t.Errorf("deactivation released %v items, want 2", closed.json()["released_items"])
+	}
+	var held int
+	if err := h.db.Pool.QueryRow(ctx, `SELECT count(*) FROM responses WHERE assigned_to=$1`, leaverID).Scan(&held); err != nil {
+		t.Fatal(err)
+	}
+	if held != 0 {
+		t.Errorf("%d items are still assigned to a closed account", held)
+	}
+	// What the account did stays on the record; only the assignment moves.
+	var audited int
+	if err := h.db.Pool.QueryRow(ctx, `SELECT count(*) FROM audit_logs WHERE event_type='CHANGE_PERMISSION' AND target_id=$1 AND after_value ? 'released_items'`, leaverID).Scan(&audited); err != nil {
+		t.Fatal(err)
+	}
+	if audited != 1 {
+		t.Errorf("the deactivation left %d records naming what it released", audited)
+	}
+}

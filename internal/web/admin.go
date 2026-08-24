@@ -16,6 +16,7 @@ import (
 	"github.com/hkjang/SecCheck/internal/auth"
 	"github.com/hkjang/SecCheck/internal/notify"
 	"github.com/hkjang/SecCheck/internal/store"
+	"github.com/jackc/pgx/v5/pgconn"
 )
 
 func (s *Server) listUsers(w http.ResponseWriter, r *http.Request) {
@@ -177,11 +178,28 @@ func (s *Server) setUserActive(w http.ResponseWriter, r *http.Request) {
 		problem(w, 404, "NOT_FOUND", "사용자를 찾을 수 없습니다.", nil)
 		return
 	}
+	released := 0
 	if !in.Active {
 		_, _ = s.Store.Pool.Exec(r.Context(), `DELETE FROM sessions WHERE user_id=$1`, id)
+		// Checklist items stay assigned to a closed account otherwise: the row
+		// carries a name the directory no longer returns, so the work reads as
+		// owned by nobody in particular and nobody picks it up. Reviews the
+		// account was reviewing already return to the queue on their own.
+		var tag pgconn.CommandTag
+		tag, err = s.Store.Pool.Exec(r.Context(), `UPDATE responses SET assigned_to=NULL,updated_at=now()
+                WHERE assigned_to=$1 AND submission_item_id IN (
+                  SELECT si.id FROM submission_items si
+                  JOIN submissions sub ON sub.id=si.submission_id
+                  JOIN review_requests rq ON rq.id=sub.review_request_id
+                  WHERE rq.status NOT IN ('APPROVED','CLOSED','CANCELLED','REJECTED'))`, id)
+		if err != nil {
+			s.fault(w, r, "UPDATE_FAILED", "담당 항목을 정리하지 못했습니다.", err)
+			return
+		}
+		released = int(tag.RowsAffected())
 	}
-	_ = s.Store.Audit(r.Context(), auditFrom(r, "CHANGE_PERMISSION", "USER", id, nil, in))
-	w.WriteHeader(204)
+	_ = s.Store.Audit(r.Context(), auditFrom(r, "CHANGE_PERMISSION", "USER", id, nil, map[string]any{"active": in.Active, "released_items": released}))
+	jsonResponse(w, 200, map[string]any{"active": in.Active, "released_items": released})
 }
 
 // resetUserPassword gives administrators a recovery path for local accounts.
