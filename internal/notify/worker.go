@@ -71,7 +71,10 @@ func (w *Worker) Run(ctx context.Context) {
 				w.Store.Log(ctx, "ERROR", "", "notification", "job claim failed", map[string]any{"error": err.Error()})
 				break
 			}
-			if err = w.deliver(ctx, j); err != nil {
+			var stop undeliverable
+			if err = w.deliver(ctx, j); errors.As(err, &stop) {
+				w.giveUp(ctx, j, stop)
+			} else if err != nil {
 				w.fail(ctx, j, err)
 			} else {
 				_, _ = w.Store.Pool.Exec(ctx, `UPDATE jobs SET status='COMPLETED',locked_at=NULL,last_error='',updated_at=now() WHERE id=$1`, j.ID)
@@ -218,15 +221,27 @@ func (w *Worker) claim(ctx context.Context) (job, error) {
 	return j, err
 }
 
+// undeliverable marks a failure no retry can fix: the recipient has no address,
+// e-mail is switched off, or the notification the job points at is gone.
+// Retrying those five times ends in a FAILED job, and a FAILED job raises the
+// "a job exhausted its retries" alarm -- an alarm about an unfixable condition
+// teaches administrators to ignore the alarm that matters.
+type undeliverable struct{ reason string }
+
+func (u undeliverable) Error() string { return u.reason }
+
 func (w *Worker) deliver(ctx context.Context, j job) error {
 	var payload struct {
 		NotificationID string `json:"notification_id"`
 	}
 	if err := json.Unmarshal(j.Payload, &payload); err != nil || payload.NotificationID == "" {
-		return errors.New("invalid email job payload")
+		return undeliverable{"invalid email job payload"}
 	}
 	var to, title, body, targetType, targetID string
 	err := w.Store.Pool.QueryRow(ctx, `SELECT u.email,n.title,n.body,n.target_type,n.target_id FROM notifications n JOIN users u ON u.id=n.recipient_id WHERE n.id=$1`, payload.NotificationID).Scan(&to, &title, &body, &targetType, &targetID)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return undeliverable{"the notification this job refers to no longer exists"}
+	}
 	if err != nil {
 		return err
 	}
@@ -236,7 +251,7 @@ func (w *Worker) deliver(ctx context.Context, j job) error {
 		}
 	}
 	if _, err = mail.ParseAddress(to); err != nil {
-		return errors.New("recipient has no valid email address")
+		return undeliverable{"recipient has no valid email address"}
 	}
 	var cfg emailSettings
 	encrypted, err := w.Store.Setting(ctx, "notification", &cfg)
@@ -244,7 +259,7 @@ func (w *Worker) deliver(ctx context.Context, j job) error {
 		return err
 	}
 	if !cfg.Enabled {
-		return errors.New("email adapter is disabled")
+		return undeliverable{"email delivery is switched off"}
 	}
 	if encrypted != "" {
 		plain, decryptErr := w.Box.Decrypt(encrypted, []byte("setting:notification"))
@@ -264,6 +279,15 @@ func (w *Worker) deliver(ctx context.Context, j job) error {
 	}
 	w.Store.Log(ctx, "INFO", "", "notification", "email notification delivered", map[string]any{"notification_id": payload.NotificationID})
 	return nil
+}
+
+// giveUp closes a job that will never succeed. The notification itself stays in
+// the recipient's list -- the in-app record is the one that always exists -- and
+// the reason is kept on the job so the administrator can see why no mail went
+// out without being paged about it.
+func (w *Worker) giveUp(ctx context.Context, j job, cause undeliverable) {
+	_, _ = w.Store.Pool.Exec(ctx, `UPDATE jobs SET status='COMPLETED',locked_at=NULL,last_error=$2,updated_at=now() WHERE id=$1`, j.ID, "not sent: "+cause.reason)
+	w.Store.Log(ctx, "WARN", "", "notification", "email notification skipped", map[string]any{"job_id": j.ID, "reason": cause.reason})
 }
 
 func (w *Worker) fail(ctx context.Context, j job, cause error) {
