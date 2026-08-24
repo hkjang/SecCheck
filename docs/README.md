@@ -40,7 +40,10 @@
 ## 🚀 빠른 시작 (Quick Start)
 
 ```bash
-# 1. 패키지 이미지 로드
+# 0. 받은 아카이브가 릴리즈 노트의 SHA-256과 같은지 먼저 확인
+sha256sum seccheck-v0.1.0.tar.gz
+
+# 1. 패키지 이미지 로드 (로드 후 image id도 릴리즈 노트와 대조할 수 있습니다)
 gzip -dc seccheck-v0.1.0.tar.gz | docker load
 
 # 2. 필수 환경변수 4개로 컨테이너 실행

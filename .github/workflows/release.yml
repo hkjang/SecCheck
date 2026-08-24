@@ -135,7 +135,16 @@ jobs:
           ignore-unfixed: true
           exit-code: 1
       - name: Package the only release asset
-        run: bash scripts/package-image.sh "${{ steps.version.outputs.version }}"
+        id: package
+        run: |
+          bash scripts/package-image.sh "${{ steps.version.outputs.version }}"
+          archive="seccheck-v${{ steps.version.outputs.version }}.tar.gz"
+          # The archive is carried into a closed network on removable media, so
+          # the digest has to travel where the recipient can read it without a
+          # network: the release notes. Provenance attestation needs GitHub to
+          # verify, which is exactly what an offline site does not have.
+          echo "archive_sha256=$(sha256sum "$archive" | cut -d' ' -f1)" >> "$GITHUB_OUTPUT"
+          echo "image_id=$(docker image inspect "seccheck:v${{ steps.version.outputs.version }}" --format '{{.Id}}')" >> "$GITHUB_OUTPUT"
       - name: Attest archive provenance
         uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
         with:
@@ -145,13 +154,26 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           notes=$(mktemp)
+          # Verifiable on arrival, before the archive is loaded.
+          {
+            echo "### 무결성 확인"
+            echo
+            echo '```'
+            echo "sha256  seccheck-v${{ steps.version.outputs.version }}.tar.gz"
+            echo "${{ steps.package.outputs.archive_sha256 }}"
+            echo
+            echo "docker image id (docker load 후 확인)"
+            echo "${{ steps.package.outputs.image_id }}"
+            echo '```'
+            echo
+          } > "$notes"
           # The curated upgrade notes for this version, followed by the
           # generated commit list.
           awk -v want="## $GITHUB_REF_NAME" '
             $0 == want {found=1; next}
             found && /^## v/ {exit}
             found {print}
-          ' CHANGELOG.md > "$notes"
+          ' CHANGELOG.md >> "$notes"
           gh release create "$GITHUB_REF_NAME" \
             "seccheck-v${{ steps.version.outputs.version }}.tar.gz" \
             --repo hkjang/SecCheck \
