@@ -176,7 +176,18 @@ func (s *Server) oidcCallback(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) me(w http.ResponseWriter, r *http.Request) {
 	sess := session(r)
-	jsonResponse(w, 200, map[string]any{"user": publicUser(sess.User), "csrf_token": sess.CSRF, "version": s.Version, "totp_enrollment_required": sess.EnrollTOTP, "timezone": s.Store.Location(r.Context()).String()})
+	// The upload rules the server enforces, so the screen can refuse a file
+	// that is too large or of the wrong kind before spending minutes sending it
+	// over a slow link only to be told no.
+	var upload struct {
+		MaxSizeMB         int      `json:"max_size_mb"`
+		AllowedExtensions []string `json:"allowed_extensions"`
+	}
+	_, _ = s.Store.Setting(r.Context(), "upload", &upload)
+	if upload.AllowedExtensions == nil {
+		upload.AllowedExtensions = []string{}
+	}
+	jsonResponse(w, 200, map[string]any{"user": publicUser(sess.User), "csrf_token": sess.CSRF, "version": s.Version, "totp_enrollment_required": sess.EnrollTOTP, "upload": map[string]any{"max_size_mb": upload.MaxSizeMB, "allowed_extensions": upload.AllowedExtensions}, "timezone": s.Store.Location(r.Context()).String()})
 }
 func (s *Server) updateMe(w http.ResponseWriter, r *http.Request) {
 	var in struct {

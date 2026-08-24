@@ -118,9 +118,12 @@ export type TemplateVersion = {
   items?: Record<string, unknown>[]
 }
 
+export type UploadRules = { max_size_mb: number; allowed_extensions: string[] }
+
 export type AuthValue = {
   user: User
   version: string
+  upload?: UploadRules
   refresh: () => Promise<void>
   logout: () => Promise<void>
   enrolling?: boolean

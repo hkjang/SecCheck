@@ -4657,3 +4657,43 @@ func TestTheClamAVSettingCanBeTestedBeforeItBlocksUploads(t *testing.T) {
 		t.Errorf("%d connection tests were recorded, want 2", attempts)
 	}
 }
+
+// The screen could not tell a file that will be refused from one that will be
+// accepted, so somebody on a slow link spent minutes uploading a file the
+// server was always going to reject. The rules it enforces travel with the
+// session.
+func TestTheSessionCarriesTheUploadRules(t *testing.T) {
+	h := newHarness(t)
+	admin := h.login(adminOf(h))
+	rules := func() map[string]any {
+		t.Helper()
+		body := admin.do(http.MethodGet, "/api/v1/me", nil).json()
+		out, _ := body["upload"].(map[string]any)
+		if out == nil {
+			t.Fatalf("the session carries no upload rules: %v", body)
+		}
+		return out
+	}
+	first := rules()
+	if size, _ := first["max_size_mb"].(float64); size <= 0 {
+		t.Errorf("max_size_mb = %v", first["max_size_mb"])
+	}
+	if kinds, _ := first["allowed_extensions"].([]any); len(kinds) == 0 {
+		t.Error("the session carries no allowed extensions, so the file picker cannot filter")
+	}
+
+	// What the administrator changes is what the screen is told.
+	if res := admin.do(http.MethodPut, "/api/v1/admin/settings/upload", map[string]any{
+		"max_size_mb": 7, "allowed_extensions": []string{".pdf"}, "clamav_enabled": false, "clamav_address": "", "deleted_evidence_retention_days": 30,
+	}); res.status != http.StatusOK {
+		t.Fatalf("saving the upload settings: %d %s", res.status, res.body)
+	}
+	after := rules()
+	if size, _ := after["max_size_mb"].(float64); size != 7 {
+		t.Errorf("max_size_mb = %v after the setting changed, want 7", after["max_size_mb"])
+	}
+	kinds, _ := after["allowed_extensions"].([]any)
+	if len(kinds) != 1 || kinds[0] != ".pdf" {
+		t.Errorf("allowed_extensions = %v", kinds)
+	}
+}
