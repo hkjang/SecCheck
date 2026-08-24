@@ -4751,3 +4751,104 @@ func TestTheSessionCarriesTheUploadRules(t *testing.T) {
 		t.Errorf("allowed_extensions = %v", kinds)
 	}
 }
+
+// Verifying a change request has always required being this review's own
+// reviewer. Closing the follow-up -- the last act of the register -- asked
+// only for the role, so any security reviewer could sign off work on a service
+// they had never seen.
+func TestOnlyTheReviewsOwnReviewerClosesAFollowUp(t *testing.T) {
+	h := newHarness(t)
+	ctx := context.Background()
+	h.user("closer-author", "REQUESTER")
+	ownerID := h.user("closer-reviewer", "SECURITY_REVIEWER")
+	h.user("closer-other", "SECURITY_REVIEWER")
+	author := h.login("closer-author")
+	owner := h.login("closer-reviewer")
+	other := h.login("closer-other")
+
+	reviewID := author.createReview("조치 종결 서비스")
+	items := []map[string]any{}
+	if err := json.Unmarshal([]byte(author.do(http.MethodGet, "/api/v1/review-requests/"+reviewID+"/items", nil).body), &items); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := h.db.Pool.Exec(ctx, `UPDATE review_requests SET reviewer_id=$2,status='REVIEWING' WHERE id=$1`, reviewID, ownerID); err != nil {
+		t.Fatal(err)
+	}
+	itemID := items[0]["id"].(string)
+	if res := owner.do(http.MethodPut, "/api/v1/review-requests/"+reviewID+"/review-results/"+itemID,
+		map[string]any{"result": "CONDITIONAL", "opinion": "조건부", "follow_up": "접근제어 정책 보완", "follow_up_due_date": "2030-05-31", "expected_updated_at": ""}); res.status != http.StatusOK {
+		t.Fatalf("saving a verdict with a follow-up: %d %s", res.status, res.body)
+	}
+	var resultID string
+	if err := h.db.Pool.QueryRow(ctx, `SELECT id FROM review_results WHERE submission_item_id=$1`, itemID).Scan(&resultID); err != nil {
+		t.Fatal(err)
+	}
+	followUp := func(c *client, action string) int {
+		t.Helper()
+		return c.do(http.MethodPost, "/api/v1/review-results/"+resultID+"/follow-up", map[string]any{"action": action, "note": ""}).status
+	}
+	closedBy := func() string {
+		t.Helper()
+		var by string
+		if err := h.db.Pool.QueryRow(ctx, `SELECT COALESCE(follow_up_done_by,'') FROM review_results WHERE id=$1`, resultID).Scan(&by); err != nil {
+			t.Fatal(err)
+		}
+		return by
+	}
+
+	// The register says so up front, so the button is not offered to somebody
+	// the server will refuse.
+	canClose := func(c *client) bool {
+		t.Helper()
+		res := c.do(http.MethodGet, "/api/v1/reports/reviews", nil)
+		if res.status != http.StatusOK {
+			t.Fatalf("report: %d %s", res.status, res.body)
+		}
+		for _, raw := range res.json()["follow_ups"].([]any) {
+			row := raw.(map[string]any)
+			if row["id"] == resultID {
+				return row["can_close"] == true
+			}
+		}
+		t.Fatal("the follow-up is missing from the register")
+		return false
+	}
+	if !canClose(owner) {
+		t.Fatal("the register hides the action from the review's own reviewer")
+	}
+	if canClose(other) {
+		t.Fatal("the register offers the action to an unrelated reviewer")
+	}
+
+	// A security reviewer with nothing to do with this review is refused both
+	// the sign-off and the undo.
+	if got := followUp(other, "confirm"); got != http.StatusForbidden {
+		t.Fatalf("an unrelated reviewer confirming the follow-up: %d", got)
+	}
+	if got := followUp(other, "reopen"); got != http.StatusForbidden {
+		t.Fatalf("an unrelated reviewer reopening the follow-up: %d", got)
+	}
+	if by := closedBy(); by != "" {
+		t.Fatalf("the follow-up was closed by %s", by)
+	}
+
+	// The reviewer who owns the review does both.
+	if got := followUp(owner, "confirm"); got != http.StatusOK {
+		t.Fatalf("the review's own reviewer confirming: %d", got)
+	}
+	if by := closedBy(); by != ownerID {
+		t.Fatalf("the follow-up was closed by %q, want the review's reviewer", by)
+	}
+	if got := followUp(owner, "reopen"); got != http.StatusOK {
+		t.Fatalf("the review's own reviewer reopening: %d", got)
+	}
+
+	// The one thing that must not happen is a follow-up nobody can close:
+	// when the assigned reviewer can no longer act, another one may step in.
+	if _, err := h.db.Pool.Exec(ctx, `UPDATE users SET active=false WHERE id=$1`, ownerID); err != nil {
+		t.Fatal(err)
+	}
+	if got := followUp(other, "confirm"); got != http.StatusOK {
+		t.Fatalf("stepping in for a reviewer who cannot act: %d", got)
+	}
+}

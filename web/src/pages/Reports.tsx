@@ -4,7 +4,7 @@ import { BarChart3, CalendarRange, Check, Download, Timer } from 'lucide-react'
 import { errorMessage, get, post } from '../lib/api'
 import { Badge, Button, Empty, Field, Loading, Modal, StatusBadge, useDownload, useToast } from '../components/ui'
 
-type Row = Record<string, string | number>
+type Row = Record<string, string | number | boolean>
 type Report = {
   from: string; to: string
   totals: { created: number; submitted: number; completed: number; rejected: number; in_progress: number }
@@ -112,9 +112,11 @@ function FollowUpTable({ rows, total, includeDone, onToggleScope, onChanged }: {
           : row.reported_on
             ? <><Badge tone="blue">조치 보고됨</Badge><div className="subtle">{String(row.reported_on)} · {String(row.reported_by)}</div>{row.follow_up_note ? <div className="subtle">{String(row.follow_up_note)}</div> : null}</>
             : row.overdue ? <><Badge tone="red">기한 초과</Badge><div className="subtle">{String(row.due_on)}까지</div></> : <><Badge tone="amber">미조치</Badge>{!row.due_on && <div className="subtle">기한 없음 · 알림이 가지 않습니다</div>}</>}</td>
-        <td>{row.done_on
-          ? <Button small disabled={busy === String(row.id)} onClick={() => mark(row, false)}>해제</Button>
-          : <Button small variant="primary" disabled={busy === String(row.id)} onClick={() => { setClosing(row); setNote('') }}><Check size={13} /> {row.reported_on ? '이행 확인' : '이행 확인'}</Button>}</td>
+        <td>{row.can_close === false
+          ? <span className="subtle" title="이 심의의 담당 보안 담당자만 이행 확인과 해제를 할 수 있습니다.">담당 검토자만 처리</span>
+          : row.done_on
+            ? <Button small disabled={busy === String(row.id)} onClick={() => mark(row, false)}>해제</Button>
+            : <Button small variant="primary" disabled={busy === String(row.id)} onClick={() => { setClosing(row); setNote('') }}><Check size={13} /> 이행 확인</Button>}</td>
       </tr>)}</tbody></table></div>
       : <Empty title={includeDone ? '조치 사항이 기록된 항목이 없습니다.' : '미조치 항목이 없습니다.'} description="검토자가 판정과 함께 남긴 조치 사항이 여기 모입니다." />}
     {closing && <Modal title={closing.reported_on ? '보고된 조치 확인' : '이행 확인 처리'} onClose={() => setClosing(undefined)}

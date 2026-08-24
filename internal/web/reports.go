@@ -87,6 +87,12 @@ func (s *Server) reviewReport(w http.ResponseWriter, r *http.Request) {
 func (s *Server) buildReport(r *http.Request, scope reportScope) (reportData, error) {
 	ctx := r.Context()
 	data := reportData{From: scope.from, To: scope.to, Totals: map[string]any{}, CycleTime: map[string]any{}}
+	sess := session(r)
+	var workflow struct {
+		AllowSelfReview bool `json:"allow_self_review"`
+	}
+	_, _ = s.Store.Setting(ctx, "workflow", &workflow)
+	allowSelfReview := workflow.AllowSelfReview
 
 	var created, submitted, completed, rejected, open int64
 	err := s.Store.Pool.QueryRow(ctx, `SELECT count(*),
@@ -153,7 +159,18 @@ func (s *Server) buildReport(r *http.Request, scope reportScope) (reportData, er
 	if !scope.includeDone {
 		done = " AND rr.follow_up_done_at IS NULL"
 	}
-	if data.FollowUps, err = s.reportRows(ctx, `SELECT rr.id,r.id AS review_id,r.review_number,r.service_name,r.department,si.item_code,si.title,rr.result,rr.follow_up,
+	// Whether this reader may close an entry is part of the row: the register
+	// gathers actions from every review, and only the reviewer who owns one --
+	// or anyone, once that reviewer can no longer act -- may sign it off. A
+	// button that always looked live and answered 403 taught nothing.
+	followArgs := append(append([]any{}, scope.args...), sess.User.ID, allowSelfReview)
+	canClose := "false"
+	if containsRole(sess.User, "SECURITY_REVIEWER") {
+		viewer, self := len(followArgs)-1, len(followArgs)
+		canClose = fmt.Sprintf(`(r.reviewer_id=$%d OR NOT (COALESCE(r.reviewer_id,'')<>'' AND %s)) AND ($%d::bool OR r.requester_id<>$%d)`,
+			viewer, stillHolds("r.reviewer_id", "SECURITY_REVIEWER"), self, viewer)
+	}
+	if data.FollowUps, err = s.reportRows(ctx, `SELECT rr.id,`+canClose+` AS can_close,r.id AS review_id,r.review_number,r.service_name,r.department,si.item_code,si.title,rr.result,rr.follow_up,
                 to_char(display_date(COALESCE(r.approved_at,r.updated_at)),'YYYY-MM-DD') AS decided_on,
                 to_char(rr.follow_up_due_date,'YYYY-MM-DD') AS due_on,
                 (rr.follow_up_done_at IS NULL AND rr.follow_up_due_date IS NOT NULL AND rr.follow_up_due_date < display_today()) AS overdue,
@@ -169,7 +186,7 @@ func (s *Server) buildReport(r *http.Request, scope reportScope) (reportData, er
                 LEFT JOIN users ru ON ru.id=rr.follow_up_reported_by
                 WHERE `+scope.where+` AND btrim(rr.follow_up)<>''`+done+`
                 ORDER BY rr.follow_up_done_at NULLS FIRST,rr.follow_up_due_date NULLS LAST,COALESCE(r.approved_at,r.updated_at) DESC,r.review_number,si.item_code LIMIT `+intString(scope.followUpLimit),
-		scope.args, "id", "review_id", "review_number", "service_name", "department", "item_code", "title", "result", "follow_up", "decided_on", "due_on", "overdue", "reported_on", "reported_by", "done_on", "done_by", "follow_up_note"); err != nil {
+		followArgs, "id", "can_close", "review_id", "review_number", "service_name", "department", "item_code", "title", "result", "follow_up", "decided_on", "due_on", "overdue", "reported_on", "reported_by", "done_on", "done_by", "follow_up_note"); err != nil {
 		return data, err
 	}
 	// The register is capped, so the count is fetched too: a screen that shows

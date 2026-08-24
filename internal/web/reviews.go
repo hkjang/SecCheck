@@ -1299,16 +1299,16 @@ func (s *Server) markFollowUp(w http.ResponseWriter, r *http.Request) {
 		args = []any{id, sess.User.ID, strings.TrimSpace(in.Note)}
 		action = "FOLLOW_UP_REPORTED"
 	case "confirm":
-		if !reviewer {
-			problem(w, 403, "FORBIDDEN", "이행 확인은 보안 담당자만 할 수 있습니다.", nil)
+		if !s.canCloseFollowUp(r.Context(), sess, reviewID) {
+			problem(w, 403, "FORBIDDEN", "이행 확인은 이 심의의 담당 보안 담당자만 할 수 있습니다.", nil)
 			return
 		}
 		query = `UPDATE review_results SET follow_up_done_at=now(),follow_up_done_by=$2,follow_up_note=COALESCE(NULLIF($3,''),follow_up_note) WHERE id=$1 AND btrim(follow_up)<>''`
 		args = []any{id, sess.User.ID, strings.TrimSpace(in.Note)}
 		action = "FOLLOW_UP_DONE"
 	case "reopen":
-		if !reviewer {
-			problem(w, 403, "FORBIDDEN", "이행 완료 해제는 보안 담당자만 할 수 있습니다.", nil)
+		if !s.canCloseFollowUp(r.Context(), sess, reviewID) {
+			problem(w, 403, "FORBIDDEN", "이행 완료 해제는 이 심의의 담당 보안 담당자만 할 수 있습니다.", nil)
 			return
 		}
 		query = `UPDATE review_results SET follow_up_done_at=NULL,follow_up_done_by=NULL,follow_up_reported_at=NULL,follow_up_reported_by=NULL,follow_up_note='' WHERE id=$1 AND btrim(follow_up)<>''`
@@ -1333,6 +1333,31 @@ func (s *Server) markFollowUp(w http.ResponseWriter, r *http.Request) {
 	// same silence the due-date reminders were added to break.
 	s.notifyFollowUpStep(r.Context(), in.Action, id, reviewID, strings.TrimSpace(in.Note))
 	jsonResponse(w, 200, map[string]any{"id": id, "action": in.Action})
+}
+
+// canCloseFollowUp decides who may accept or undo a follow-up. Verifying a
+// change request already required being this review's own reviewer, but the
+// last act of the register -- confirming that the follow-up was carried out --
+// asked only for the SECURITY_REVIEWER role, so anybody holding it could close
+// out, or reopen, work on a service they had never seen, and the register
+// carried their name as the person who checked it.
+//
+// The one case that must not deadlock is a review whose reviewer is gone: the
+// follow-up would then be impossible to close by anyone. When nobody able to
+// act holds the review, any security reviewer may step in -- except on their
+// own request, which is the rule self-review already follows.
+func (s *Server) canCloseFollowUp(ctx context.Context, sess auth.Session, reviewID string) bool {
+	if !containsRole(sess.User, "SECURITY_REVIEWER") {
+		return false
+	}
+	if s.canReview(ctx, sess, reviewID) {
+		return true
+	}
+	var held bool
+	if err := s.Store.Pool.QueryRow(ctx, `SELECT COALESCE(r.reviewer_id,'')<>'' AND `+stillHolds("r.reviewer_id", "SECURITY_REVIEWER")+` FROM review_requests r WHERE r.id=$1`, reviewID).Scan(&held); err != nil {
+		return false
+	}
+	return !held && !s.selfReviewBlocked(ctx, reviewID, sess.User.ID)
 }
 
 func (s *Server) notifyFollowUpStep(ctx context.Context, action, resultID, reviewID, note string) {
