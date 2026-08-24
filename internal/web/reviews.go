@@ -1378,6 +1378,10 @@ func (s *Server) saveReviewResult(w http.ResponseWriter, r *http.Request) {
 		problem(w, 422, "FOLLOW_UP_DUE_REQUIRED", "후속조치에는 조치 기한이 필요합니다. 기한이 없으면 알림도 지연 판정도 동작하지 않습니다.", map[string]string{"follow_up_due_date": "필수 입력 항목입니다."})
 		return
 	}
+	if s.pastDueDate(r.Context(), in.FollowUpDueDate) {
+		problem(w, 422, "VALIDATION_FAILED", "조치 기한이 오늘보다 이전입니다. 지난 날짜로 약속하면 등록하자마자 지연으로 집계됩니다.", map[string]string{"follow_up_due_date": "오늘 이후 날짜를 입력하세요."})
+		return
+	}
 	// Two reviewers can hold the same review open, so the same protection the
 	// author side has applies here.
 	if conflict, ok := s.reviewResultConflict(r, itemID, in.ExpectedUpdatedAt); ok {
@@ -1426,6 +1430,10 @@ func (s *Server) bulkChangeRequests(w http.ResponseWriter, r *http.Request) {
 		problem(w, 422, "DUE_DATE_REQUIRED", "보완 요청에는 완료 예정일이 필요합니다. 기한이 없으면 알림도 지연 판정도 동작하지 않습니다.", map[string]string{"due_date": "필수 입력 항목입니다."})
 		return
 	}
+	if s.pastDueDate(r.Context(), in.DueDate) {
+		problem(w, 422, "VALIDATION_FAILED", "완료 예정일이 오늘보다 이전입니다. 지난 날짜로 요청하면 등록하자마자 기한 초과로 집계됩니다.", map[string]string{"due_date": "오늘 이후 날짜를 입력하세요."})
+		return
+	}
 	tx, err := s.Store.Pool.Begin(r.Context())
 	if err != nil {
 		s.fault(w, r, "CREATE_FAILED", "보완 요청을 만들지 못했습니다.", err)
@@ -1470,6 +1478,23 @@ func (s *Server) bulkChangeRequests(w http.ResponseWriter, r *http.Request) {
 	jsonResponse(w, 201, map[string]any{"created": created, "requested": len(in.ItemIDs), "skipped": int64(len(in.ItemIDs)) - created})
 }
 
+// pastDueDate reports a deadline that has already gone by in the installation's
+// own calendar. A mistyped year -- last year instead of this one -- created a
+// correction that was born overdue: red in the register, an "already late"
+// mail to somebody who had just been asked, and a number on the dashboard that
+// nobody could explain.
+func (s *Server) pastDueDate(ctx context.Context, value string) bool {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return false
+	}
+	var past bool
+	if err := s.Store.Pool.QueryRow(ctx, `SELECT $1::date < display_today()`, value).Scan(&past); err != nil {
+		return false
+	}
+	return past
+}
+
 func (s *Server) createChangeRequest(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 	if !s.canReview(r.Context(), session(r), id) {
@@ -1498,6 +1523,10 @@ func (s *Server) createChangeRequest(w http.ResponseWriter, r *http.Request) {
 	}
 	if strings.TrimSpace(in.DueDate) == "" {
 		problem(w, 422, "DUE_DATE_REQUIRED", "보완 요청에는 완료 예정일이 필요합니다. 기한이 없으면 알림도 지연 판정도 동작하지 않습니다.", map[string]string{"due_date": "필수 입력 항목입니다."})
+		return
+	}
+	if s.pastDueDate(r.Context(), in.DueDate) {
+		problem(w, 422, "VALIDATION_FAILED", "완료 예정일이 오늘보다 이전입니다. 지난 날짜로 요청하면 등록하자마자 기한 초과로 집계됩니다.", map[string]string{"due_date": "오늘 이후 날짜를 입력하세요."})
 		return
 	}
 	if !s.itemBelongsToLatestSubmission(r.Context(), in.ItemID, id) {

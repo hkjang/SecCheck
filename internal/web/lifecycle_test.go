@@ -1141,3 +1141,70 @@ func TestOneCorrectionCanBeRaisedOnManyItemsAtOnce(t *testing.T) {
 		t.Errorf("the repeat left %d change requests, want the original 3", open)
 	}
 }
+
+// A mistyped year made a correction that was born overdue: red in the register,
+// an "already late" notice to somebody who had just been asked, and a number on
+// the dashboard nobody could account for. Today is fine; yesterday is not.
+func TestADeadlineThatHasAlreadyPassedIsRefused(t *testing.T) {
+	h := newHarness(t)
+	ctx := context.Background()
+	requesterID := h.user("late-requester", "REQUESTER")
+	reviewerID := h.user("late-reviewer", "SECURITY_REVIEWER")
+	requester, reviewer := h.login("late-requester"), h.login("late-reviewer")
+
+	reviewID := requester.createReview("지난 기한 서비스")
+	var items []map[string]any
+	if err := json.Unmarshal([]byte(requester.do(http.MethodGet, "/api/v1/review-requests/"+reviewID+"/items", nil).body), &items); err != nil {
+		t.Fatal(err)
+	}
+	ids := make([]string, 0, len(items))
+	for _, item := range items {
+		ids = append(ids, item["id"].(string))
+	}
+	if _, err := h.db.Pool.Exec(ctx, `UPDATE review_requests SET reviewer_id=$2 WHERE id=$1`, reviewID, reviewerID); err != nil {
+		t.Fatal(err)
+	}
+	if res := requester.do(http.MethodPost, "/api/v1/review-requests/"+reviewID+"/responses/bulk",
+		map[string]any{"item_ids": ids, "applicability": "N/A", "na_reason": "해당 없음", "self_assessment": "N/A"}); res.status != http.StatusOK {
+		t.Fatalf("bulk answer: %d %s", res.status, res.body)
+	}
+	if res := requester.do(http.MethodPost, "/api/v1/review-requests/"+reviewID+"/submit", map[string]any{}); res.status != http.StatusOK {
+		t.Fatalf("submit: %d %s", res.status, res.body)
+	}
+	if res := reviewer.do(http.MethodPost, "/api/v1/review-requests/"+reviewID+"/begin-review", map[string]any{}); res.status != http.StatusOK {
+		t.Fatalf("begin review: %d %s", res.status, res.body)
+	}
+
+	// The dates are the installation's own calendar, not the container's.
+	var yesterday, today string
+	if err := h.db.Pool.QueryRow(ctx, `SELECT (display_today()-1)::text,display_today()::text`).Scan(&yesterday, &today); err != nil {
+		t.Fatal(err)
+	}
+	late := reviewer.do(http.MethodPost, "/api/v1/review-requests/"+reviewID+"/change-requests",
+		map[string]any{"item_id": ids[0], "reason": "지난 날짜로 요청", "assignee_id": requesterID, "due_date": yesterday})
+	if late.status != http.StatusUnprocessableEntity {
+		t.Errorf("a change request due yesterday returned %d %s", late.status, late.body)
+	}
+	bulkLate := reviewer.do(http.MethodPost, "/api/v1/review-requests/"+reviewID+"/change-requests/bulk",
+		map[string]any{"item_ids": ids[:2], "reason": "지난 날짜로 일괄 요청", "due_date": yesterday})
+	if bulkLate.status != http.StatusUnprocessableEntity {
+		t.Errorf("a batch due yesterday returned %d %s", bulkLate.status, bulkLate.body)
+	}
+	// A same-day deadline is a real thing to ask for.
+	if res := reviewer.do(http.MethodPost, "/api/v1/review-requests/"+reviewID+"/change-requests",
+		map[string]any{"item_id": ids[0], "reason": "오늘까지", "assignee_id": requesterID, "due_date": today}); res.status != http.StatusCreated {
+		t.Errorf("a change request due today returned %d %s", res.status, res.body)
+	}
+	// The same rule holds for an action promised at review time.
+	if res := reviewer.do(http.MethodPut, "/api/v1/review-requests/"+reviewID+"/review-results/"+ids[1],
+		map[string]any{"result": "CONDITIONAL", "opinion": "조건부", "follow_up": "3개월 내 개선", "follow_up_due_date": yesterday}); res.status != http.StatusUnprocessableEntity {
+		t.Errorf("a follow-up due yesterday returned %d %s", res.status, res.body)
+	}
+	var born int
+	if err := h.db.Pool.QueryRow(ctx, `SELECT count(*) FROM change_requests WHERE review_request_id=$1 AND due_date < display_today()`, reviewID).Scan(&born); err != nil {
+		t.Fatal(err)
+	}
+	if born != 0 {
+		t.Errorf("%d change requests exist that were overdue the moment they were made", born)
+	}
+}

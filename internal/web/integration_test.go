@@ -2404,9 +2404,15 @@ func TestTheReportCollectsOutstandingFollowUps(t *testing.T) {
 		t.Fatal(err)
 	}
 	withAction := items[0]["id"].(string)
+	// The deadline is promised for a future date, as the service now requires,
+	// and then aged in the database: an overdue action is one whose date passed
+	// while nobody acted, not one that was recorded already late.
 	if res := admin.do(http.MethodPut, "/api/v1/review-requests/"+reviewID+"/review-results/"+withAction,
-		map[string]any{"result": "CONDITIONAL", "opinion": "조건부", "follow_up": "3개월 내 WAF 규칙 보완", "follow_up_due_date": "2020-01-31", "expected_updated_at": ""}); res.status != http.StatusOK {
+		map[string]any{"result": "CONDITIONAL", "opinion": "조건부", "follow_up": "3개월 내 WAF 규칙 보완", "follow_up_due_date": "2030-01-31", "expected_updated_at": ""}); res.status != http.StatusOK {
 		t.Fatalf("saving a verdict with a follow-up: %d %s", res.status, res.body)
+	}
+	if _, err := h.db.Pool.Exec(ctx, `UPDATE review_results SET follow_up_due_date='2020-01-31' WHERE submission_item_id=$1`, withAction); err != nil {
+		t.Fatal(err)
 	}
 	// An item judged without a commitment must not appear in the register.
 	if res := admin.do(http.MethodPut, "/api/v1/review-requests/"+reviewID+"/review-results/"+items[1]["id"].(string),
@@ -2735,8 +2741,14 @@ func TestTheDashboardShowsARequesterTheirOwnActions(t *testing.T) {
 		t.Fatal(err)
 	}
 	if res := admin.do(http.MethodPut, "/api/v1/review-requests/"+reviewID+"/review-results/"+items[0]["id"].(string),
-		map[string]any{"result": "CONDITIONAL", "opinion": "조건부", "follow_up": "로그 보존 기간 연장", "follow_up_due_date": "2020-03-01", "expected_updated_at": ""}); res.status != http.StatusOK {
+		map[string]any{"result": "CONDITIONAL", "opinion": "조건부", "follow_up": "로그 보존 기간 연장", "follow_up_due_date": "2030-03-01", "expected_updated_at": ""}); res.status != http.StatusOK {
 		t.Fatalf("recording the action: %d %s", res.status, res.body)
+	}
+	// Promised for a future date and then aged: the service refuses to record a
+	// deadline that has already passed, and this test is about what happens
+	// after one passes.
+	if _, err := h.db.Pool.Exec(ctx, `UPDATE review_results SET follow_up_due_date='2020-03-01' WHERE submission_item_id=$1`, items[0]["id"].(string)); err != nil {
+		t.Fatal(err)
 	}
 
 	// The report is closed to a requester, so the dashboard has to carry it.
@@ -3041,8 +3053,14 @@ func TestOverdueIsDecidedInTheDisplayTimezone(t *testing.T) {
 		t.Fatal(err)
 	}
 	if res := admin.do(http.MethodPut, "/api/v1/review-requests/"+reviewID+"/review-results/"+itemID,
-		map[string]any{"result": "CONDITIONAL", "opinion": "기한 확인", "follow_up": "기한 내 보완", "follow_up_due_date": due, "expected_updated_at": ""}); res.status != http.StatusOK {
+		map[string]any{"result": "CONDITIONAL", "opinion": "기한 확인", "follow_up": "기한 내 보완", "follow_up_due_date": "2030-01-31", "expected_updated_at": ""}); res.status != http.StatusOK {
 		t.Fatalf("recording the verdict: %d %s", res.status, res.body)
+	}
+	// The date under test is written directly: recording a deadline that has
+	// already gone by is refused now, and what this test measures is which
+	// calendar decides that "already".
+	if _, err := h.db.Pool.Exec(ctx, `UPDATE review_results SET follow_up_due_date=$2::date WHERE submission_item_id=$1`, itemID, due); err != nil {
+		t.Fatal(err)
 	}
 	if _, err := h.db.Pool.Exec(ctx, `UPDATE review_requests SET status='APPROVED',approved_at=now() WHERE id=$1`, reviewID); err != nil {
 		t.Fatal(err)
