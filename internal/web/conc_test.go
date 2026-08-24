@@ -187,20 +187,25 @@ func TestEveryColumnTheAccessFilterUsesIsIndexed(t *testing.T) {
 	if len(columns) < 5 {
 		t.Fatalf("only %d owner columns found in accessFilter: %v", len(columns), columns)
 	}
+	// Only the leading column of an index can serve a lookup on its own. The
+	// catalogue is read through pg_index rather than the pg_indexes view: the
+	// view renders a definition for every schema on the server, and this suite
+	// runs each test in its own schema that is dropped when it ends.
 	indexed := map[string]bool{}
-	rows, err := h.db.Pool.Query(context.Background(), `SELECT indexdef FROM pg_indexes WHERE tablename='review_requests'`)
+	rows, err := h.db.Pool.Query(context.Background(), `SELECT a.attname
+                FROM pg_index i
+                JOIN pg_class c ON c.oid=i.indrelid
+                JOIN pg_namespace n ON n.oid=c.relnamespace
+                JOIN pg_attribute a ON a.attrelid=c.oid AND a.attnum=i.indkey[0]
+                WHERE n.nspname=current_schema() AND c.relname='review_requests'`)
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer rows.Close()
 	for rows.Next() {
-		var def string
-		if rows.Scan(&def) != nil {
-			continue
-		}
-		// Only the leading column of an index can serve a lookup on its own.
-		if m := regexp.MustCompile(`\(([a-z_]+)`).FindStringSubmatch(def[strings.Index(def, "USING"):]); m != nil {
-			indexed[m[1]] = true
+		var column string
+		if rows.Scan(&column) == nil {
+			indexed[column] = true
 		}
 	}
 	for column := range columns {

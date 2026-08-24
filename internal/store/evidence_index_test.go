@@ -2,7 +2,6 @@ package store_test
 
 import (
 	"context"
-	"strings"
 	"testing"
 
 	"github.com/hkjang/SecCheck/internal/testdb"
@@ -18,15 +17,26 @@ import (
 func TestTheEvidenceLookupBehindStaleVerdictsHasAnIndex(t *testing.T) {
 	db := testdb.New(t)
 	ctx := context.Background()
-	var definition string
-	if err := db.Pool.QueryRow(ctx, `SELECT indexdef FROM pg_indexes WHERE tablename='evidences' AND indexname='idx_evidences_item_all'`).Scan(&definition); err != nil {
+	// The catalogue is read through pg_index rather than the pg_indexes view:
+	// the view renders a definition for every schema on the server, and the
+	// suite runs each test in its own schema that is dropped when it ends, so
+	// rendering one that is going away fails the query for everybody else.
+	var column string
+	var partial bool
+	if err := db.Pool.QueryRow(ctx, `SELECT a.attname,i.indpred IS NOT NULL
+                FROM pg_index i
+                JOIN pg_class c ON c.oid=i.indrelid
+                JOIN pg_class ic ON ic.oid=i.indexrelid
+                JOIN pg_namespace n ON n.oid=c.relnamespace
+                JOIN pg_attribute a ON a.attrelid=c.oid AND a.attnum=i.indkey[0]
+                WHERE n.nspname=current_schema() AND c.relname='evidences' AND ic.relname='idx_evidences_item_all'`).Scan(&column, &partial); err != nil {
 		t.Fatalf("evidence_touched_at has no index that includes deleted rows: %v", err)
 	}
-	if strings.Contains(definition, "WHERE") {
-		t.Errorf("the index is conditional, so the lookup that reads deleted rows still cannot use it: %s", definition)
+	if partial {
+		t.Error("the index is conditional, so the lookup that reads deleted rows still cannot use it")
 	}
-	if !strings.Contains(definition, "submission_item_id") {
-		t.Errorf("the index is not on the column the lookup filters by: %s", definition)
+	if column != "submission_item_id" {
+		t.Errorf("the index leads with %s, not the column the lookup filters by", column)
 	}
 
 	// And the function still answers the question it exists to answer.
