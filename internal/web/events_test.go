@@ -291,3 +291,43 @@ func TestTheOpenAPIDocumentDescribesRequestBodies(t *testing.T) {
 		t.Errorf("%d bodies reached the document, %d are in the table", described, len(requestPayloads))
 	}
 }
+
+// Three people are named as owners of the service under review -- builder,
+// developer and operator -- and the code decides in a dozen SQL statements who
+// a review belongs to. Two of them listed the builder and the developer and
+// forgot the operator, so the person who runs the service could not open the
+// review they were named on, nor hear a question asked about it. Every
+// statement that names one of the three has to name all three.
+func TestEveryOwnerCheckNamesAllThreeServiceOwners(t *testing.T) {
+	roots := []string{filepath.Join("..", "..", "internal"), filepath.Join("..", "..", "cmd")}
+	// A statement is the unit: SQL here is written as one backquoted string,
+	// and the three columns always appear within a few characters of each
+	// other when they appear at all.
+	window := regexp.MustCompile(`(?s)builder_id[^;]{0,400}?developer_id`)
+	for _, root := range roots {
+		err := filepath.WalkDir(root, func(path string, entry os.DirEntry, err error) error {
+			if err != nil || entry.IsDir() || !strings.HasSuffix(path, ".go") || strings.HasSuffix(path, "_test.go") {
+				return nil
+			}
+			body, readErr := os.ReadFile(path)
+			if readErr != nil {
+				return nil
+			}
+			for _, line := range strings.Split(string(body), "\n") {
+				// An INSERT lists every column of the table, and a request
+				// payload names the fields the form sends. Neither decides who
+				// the review belongs to; the operator is optional on the form.
+				if strings.Contains(line, "INSERT INTO review_requests") || strings.Contains(line, `"builder_id":`) || strings.Contains(line, "json:") {
+					continue
+				}
+				if window.MatchString(line) && !strings.Contains(line, "operator_id") {
+					t.Errorf("%s names the builder and the developer but not the operator:\n%s", path, strings.TrimSpace(line))
+				}
+			}
+			return nil
+		})
+		if err != nil {
+			t.Fatalf("walk %s: %v", root, err)
+		}
+	}
+}

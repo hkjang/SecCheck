@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"strings"
 	"testing"
 	"time"
@@ -568,8 +569,8 @@ func TestTheOperatorNamedOnAReviewCanOpenIt(t *testing.T) {
 	h := newHarness(t)
 	ctx := context.Background()
 	h.user("ops-requester", "REQUESTER")
-	operatorID := h.user("ops-operator", "REQUESTER")
-	requester, operator := h.login("ops-requester"), h.login("ops-operator")
+	operatorID := h.user("운영담당-ops", "REQUESTER")
+	requester, operator := h.login("ops-requester"), h.login("운영담당-ops")
 
 	reviewID := requester.createReview("운영 담당자 서비스")
 	if _, err := h.db.Pool.Exec(ctx, `UPDATE review_requests SET operator_id=$2 WHERE id=$1`, reviewID, operatorID); err != nil {
@@ -595,6 +596,20 @@ func TestTheOperatorNamedOnAReviewCanOpenIt(t *testing.T) {
 	// A draft is work for the people who run the service, so it is their turn.
 	if !listed("mine=1&limit=100") {
 		t.Error("a draft the operator can fill in is not in their queue")
+	}
+
+	// Searching by the operator's name has to find the service they run: the
+	// search reads every other owner's name.
+	found := operator.do(http.MethodGet, "/api/v1/search?q="+url.QueryEscape("운영담당"), nil).json()
+	reviews, _ := found["reviews"].([]any)
+	hit := false
+	for _, row := range reviews {
+		if item, _ := row.(map[string]any); item != nil && item["id"] == reviewID {
+			hit = true
+		}
+	}
+	if !hit {
+		t.Errorf("searching for the operator's name did not find their review: %v", found["reviews"])
 	}
 
 	// Assignment already believed the operator was a participant; opening the

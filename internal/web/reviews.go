@@ -722,12 +722,12 @@ func (s *Server) addComment(w http.ResponseWriter, r *http.Request) {
 // until the author happened to open it.
 func (s *Server) notifyComment(r *http.Request, reviewID, itemID, body string) {
 	author := session(r).User
-	var number, service, requester, reviewer, builder, developer string
+	var number, service, requester, reviewer, builder, developer, operator string
 	var assignee *string
-	err := s.Store.Pool.QueryRow(r.Context(), `SELECT rq.review_number,rq.service_name,rq.requester_id,COALESCE(rq.reviewer_id,''),rq.builder_id,rq.developer_id,
+	err := s.Store.Pool.QueryRow(r.Context(), `SELECT rq.review_number,rq.service_name,rq.requester_id,COALESCE(rq.reviewer_id,''),rq.builder_id,rq.developer_id,COALESCE(rq.operator_id,''),
                 (SELECT resp.assigned_to FROM responses resp WHERE resp.submission_item_id=$2)
                 FROM review_requests rq WHERE rq.id=$1`, reviewID, itemID).
-		Scan(&number, &service, &requester, &reviewer, &builder, &developer, &assignee)
+		Scan(&number, &service, &requester, &reviewer, &builder, &developer, &operator, &assignee)
 	if err != nil {
 		return
 	}
@@ -741,6 +741,7 @@ func (s *Server) notifyComment(r *http.Request, reviewID, itemID, body string) {
 		recipients[requester] = true
 		recipients[builder] = true
 		recipients[developer] = true
+		recipients[operator] = true
 	} else {
 		recipients[reviewer] = true
 	}
