@@ -107,10 +107,15 @@ export function errorMessage(error: unknown) {
 // so opening a large review meant a hundred identical requests for the same
 // few hundred rows. One request per page load is shared by all of them.
 let directoryRequest: Promise<unknown[]> | undefined
+let directoryTruncated = false
 export function directory<T>(): Promise<T[]> {
-  if (!directoryRequest) directoryRequest = get<unknown[]>('/api/v1/users/directory').catch(e => { directoryRequest = undefined; throw e })
+  if (!directoryRequest) directoryRequest = get<{ items: unknown[]; has_more: boolean }>('/api/v1/users/directory').then(page => { directoryTruncated = Boolean(page.has_more); return page.items }).catch(e => { directoryRequest = undefined; throw e })
   return directoryRequest as Promise<T[]>
 }
+// A directory of thousands cannot be a dropdown. The shared copy is capped, so
+// the pickers ask by name when it was.
+export const directoryWasTruncated = () => directoryTruncated
+export const searchDirectory = <T>(q: string) => get<{ items: T[] }>(`/api/v1/users/directory?q=${encodeURIComponent(q)}`).then(page => page.items)
 // A newly created account has to show up without a reload, so the pages that
 // add people clear the shared copy.
 export function forgetDirectory() { directoryRequest = undefined }

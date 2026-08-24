@@ -322,6 +322,7 @@ docker compose exec seccheck /app/seccheck selftest --username admin --password 
 | v1.0.42~43 | 유지보수 스윕이 매시 증적 20건을 되읽어 검증합니다. I/O가 조금 늘고, 실패 시 `증적 무결성 확인 실패` 알림이 발생합니다 |
 | v1.0.44 | **`seccheck_scan_failures`의 의미가 바뀝니다.** 격리·검사 중 파일을 제외하고 `ERROR`만 셉니다. 기존 알람 임계값을 다시 보십시오 |
 | v1.0.45 | `seccheck_evidence_version_bytes`가 파기된 버전을 제외합니다. 용량 추이 그래프가 한 번 내려갑니다 |
+| v1.0.63 | `GET /api/v1/users/directory`가 배열 대신 `{items, total, has_more}` 봉투를 반환하고 **200명까지만** 내려줍니다. 그 이상은 `q`로 검색합니다 |
 | v1.0.61 | 계정 비활성화 API가 204 대신 **200과 `{active, released_items}`**를 반환하고, 진행 중 심의의 해당 담당 항목을 비웁니다 |
 | v1.0.60 | 참여자 추가·해제 API가 204 대신 **200과 `{released_items}`**를 반환합니다. 해제·열람전용 전환 시 그 사람에게 배정된 항목의 담당자가 비워집니다 |
 | v1.0.59 | `GET /api/v1/admin/users`가 배열 대신 `{items, total, locked, ...}` 봉투를 반환하고 **기본 100건씩** 페이지로 나옵니다. `q`·`only`(LOCKED·INACTIVE·OIDC·LOCAL·STALE)·`limit`·`offset`을 지원합니다. **연계 스크립트 수정 필요** |

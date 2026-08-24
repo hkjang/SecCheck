@@ -3,7 +3,7 @@ import { Link, useNavigate, useParams } from 'react-router-dom'
 import { AlertTriangle, ArrowLeft, Check, CheckCircle2, CheckSquare, ChevronDown, ChevronRight, ChevronUp, Copy, Download, FileCheck2, FilePlus2, Filter, ListChecks, MessageSquareWarning, Paperclip, Play, RefreshCw, History, Save, Search, Send, ShieldCheck, SlidersHorizontal, Trash2, UserRound, Upload, ZoomIn } from 'lucide-react'
 import { api, del, directory, errorMessage, get, post, put, upload, ApiError } from '../lib/api'
 import { ChangeRequest, ChecklistItem, DirectoryUser, Review } from '../lib/types'
-import { Badge, Button, Empty, Field, formatBytes, formatDate, LoadFailed, Loading, Modal, StatusBadge, Toggle, useDownload, useToast } from '../components/ui'
+import { Badge, Button, Empty, Field, PeopleField, formatBytes, formatDate, LoadFailed, Loading, Modal, StatusBadge, Toggle, useDownload, useToast } from '../components/ui'
 import { useAuth } from '../main'
 
 type ResponseDraft = { answer: unknown; applicability: string; self_assessment: string; current_state: string; na_reason: string; action_plan: string; assigned_to: string }
@@ -248,7 +248,7 @@ function BulkModal({ reviewID, itemIDs, count, people, onClose, onSaved }: { rev
     <div className="tabs"><button className={`tab ${mode === 'ANSWER' ? 'active' : ''}`} onClick={() => setMode('ANSWER')}>일괄 작성</button><button className={`tab ${mode === 'ASSIGN' ? 'active' : ''}`} onClick={() => setMode('ASSIGN')}>담당자 배정</button></div>
     {mode === 'ASSIGN' ? <>
       <div className="guide-block">긴 체크리스트를 팀에 나눠 맡깁니다. 답변은 건드리지 않고 담당자만 지정하며, 배정된 사람에게 알림이 한 번 발송됩니다.</div>
-      <Field label="담당자" required help="심의에 참여하지 않는 사용자에게는 배정할 수 없습니다."><select className="select" value={form.assigned_to} onChange={e => setForm(v => ({ ...v, assigned_to: e.target.value }))}><option value="">지정 해제</option>{people.map(p => <option key={p.id} value={p.id}>{p.display_name}{p.department ? ` · ${p.department}` : ''}</option>)}</select></Field>
+      <Field label="담당자" required help="심의에 참여하지 않는 사용자에게는 배정할 수 없습니다."><PeopleField value={form.assigned_to} people={people} onChange={id => setForm(v => ({ ...v, assigned_to: id }))} emptyLabel="지정 해제" withDepartment /></Field>
     </> : <>
     <div className="guide-block">같은 답변이 반복되는 항목을 한 번에 채웁니다. 결과는 감사로그에 일괄 작업으로 기록되며 개별 항목에서 다시 수정할 수 있습니다.</div>
     <div className="form-grid">
@@ -256,7 +256,7 @@ function BulkModal({ reviewID, itemIDs, count, people, onClose, onSaved }: { rev
       <Field label="자체 판단"><select className="select" value={form.self_assessment} onChange={e => setForm(v => ({ ...v, self_assessment: e.target.value }))}><option value="">선택</option><option value="COMPLIANT">적합</option><option value="INSUFFICIENT">미흡</option><option value="N/A">N/A</option></select></Field>
       {form.applicability === 'N/A' && <Field label="공통 N/A 사유" required className="span-2"><textarea className="textarea" value={form.na_reason} onChange={e => setForm(v => ({ ...v, na_reason: e.target.value }))} /></Field>}
       <Field label="공통 현황" className="span-2"><textarea className="textarea" value={form.current_state} onChange={e => setForm(v => ({ ...v, current_state: e.target.value }))} /></Field>
-      <Field label="담당자" help="함께 지정하려면 선택"><select className="select" value={form.assigned_to} onChange={e => setForm(v => ({ ...v, assigned_to: e.target.value }))}><option value="">변경 안 함</option>{people.map(p => <option key={p.id} value={p.id}>{p.display_name}</option>)}</select></Field>
+      <Field label="담당자" help="함께 지정하려면 선택"><PeopleField value={form.assigned_to} people={people} onChange={id => setForm(v => ({ ...v, assigned_to: id }))} emptyLabel="변경 안 함" /></Field>
       <div className="span-2"><Toggle label="이미 작성된 항목도 덮어쓰기" value={form.overwrite} onChange={v => setForm(f => ({ ...f, overwrite: v }))} /></div>
     </div></>}
   </Modal>
@@ -434,7 +434,7 @@ function ReviewParticipants({ reviewID, editable, onSaved }: { reviewID: string;
       : <div className="card-body"><p className="subtle">이 심의에는 신청자 외의 참여자가 없습니다.</p></div>}
     {adding && <Modal title="참여자 추가" onClose={() => setAdding(false)} footer={<><Button onClick={() => setAdding(false)}>취소</Button><Button variant="primary" disabled={!choice.user_id} onClick={add}>추가</Button></>}>
       <div className="form-grid">
-        <Field label="사용자" required className="span-2"><select className="select" value={choice.user_id} onChange={e => setChoice(v => ({ ...v, user_id: e.target.value }))}><option value="">선택</option>{directoryUsers.map(u => <option key={u.id} value={u.id}>{u.display_name} · {u.department || u.username}</option>)}</select></Field>
+        <Field label="사용자" required className="span-2"><PeopleField value={choice.user_id} people={directoryUsers} onChange={id => setChoice(v => ({ ...v, user_id: id }))} emptyLabel="선택" withDepartment /></Field>
         <Field label="권한" help="열람 전용 참여자는 심의와 증적을 볼 수 있지만 체크리스트를 수정하거나 항목을 배정받을 수 없습니다."><select className="select" value={choice.role} onChange={e => setChoice(v => ({ ...v, role: e.target.value }))}><option value="CONTRIBUTOR">작성 가능</option><option value="VIEWER">열람 전용</option></select></Field>
       </div></Modal>}
   </section>

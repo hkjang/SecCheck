@@ -1,9 +1,33 @@
 import { PropsWithChildren, ReactElement, ReactNode, cloneElement, createContext, isValidElement, useCallback, useContext, useEffect, useId, useRef, useState } from 'react'
 import { AlertCircle, Inbox, RefreshCw } from 'lucide-react'
-import { download, errorMessage } from '../lib/api'
+import { directoryWasTruncated, download, errorMessage, searchDirectory } from '../lib/api'
 
 export function Button({ children, variant = '', small, ...props }: PropsWithChildren<React.ButtonHTMLAttributes<HTMLButtonElement> & { variant?: 'primary' | 'danger' | 'success' | 'ghost' | ''; small?: boolean }>) {
   return <button className={`button ${variant} ${small ? 'small' : ''}`} {...props}>{children}</button>
+}
+
+// PeopleField is the person picker. A directory of a few hundred fits in a
+// dropdown; one of several thousand does not, and the server caps what it
+// sends. When it was capped the field asks for a name instead of quietly
+// offering the first two hundred people as if they were everybody.
+export function PeopleField({ value, people, onChange, emptyLabel, withDepartment }: { value: string; people: { id: string; display_name: string; department?: string }[]; onChange: (id: string) => void; emptyLabel?: string; withDepartment?: boolean }) {
+  const [term, setTerm] = useState('')
+  const [found, setFound] = useState<{ id: string; display_name: string; department?: string }[]>()
+  const truncated = directoryWasTruncated()
+  useEffect(() => {
+    if (!truncated || term.trim().length < 2) { setFound(undefined); return }
+    const timer = window.setTimeout(() => { searchDirectory<{ id: string; display_name: string; department?: string }>(term.trim()).then(setFound).catch(() => setFound([])) }, 250)
+    return () => window.clearTimeout(timer)
+  }, [term, truncated])
+  const options = found ?? people
+  return <>
+    {truncated && <input className="input" placeholder="이름으로 검색 (2자 이상)" value={term} onChange={e => setTerm(e.target.value)} aria-label="담당자 검색" />}
+    <select className="select" value={value} onChange={e => onChange(e.target.value)}>
+      {emptyLabel !== undefined && <option value="">{emptyLabel}</option>}
+      {options.map(p => <option key={p.id} value={p.id}>{p.display_name}{withDepartment && p.department ? ` · ${p.department}` : ''}</option>)}
+    </select>
+    {truncated && !found && <span className="subtle">전체 목록이 길어 일부만 표시합니다. 찾는 사람이 없으면 이름으로 검색하세요.</span>}
+  </>
 }
 
 export function Badge({ children, tone = '' }: PropsWithChildren<{ tone?: 'blue' | 'green' | 'amber' | 'red' | 'purple' | '' }>) {

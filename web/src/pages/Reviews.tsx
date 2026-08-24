@@ -3,7 +3,7 @@ import { Link } from 'react-router-dom'
 import { AlertTriangle, CalendarClock, ChevronLeft, ChevronRight, Download, Filter, Hourglass, Plus, RotateCcw, Search, ShieldCheck, UserRound } from 'lucide-react'
 import { directory, get } from '../lib/api'
 import { DirectoryUser, Page, Review } from '../lib/types'
-import { Badge, Button, Empty, Field, Loading, StatusBadge, formatDate, useDownload } from '../components/ui'
+import { Badge, Button, Empty, Field, Loading, PeopleField, StatusBadge, formatDate, useDownload } from '../components/ui'
 
 const emptyFilter = { q: '', status: '', department: '', reviewer_id: '', from: '', to: '', overdue: '', open_at_risk: '', unassigned: '', stalled: '', mine: '' }
 const sorts: [string, string][] = [['updated', '최근 변경순'], ['created', '생성일순'], ['open_date', '오픈 예정일순'], ['number', '심의번호순'], ['service', '서비스명순'], ['status', '상태순']]
@@ -40,7 +40,7 @@ export default function Reviews({ security = false }: { security?: boolean }) {
       </div>
       <div className="form-grid compact">
         <Field label="담당 부서"><input className="input" value={filter.department} onChange={e => set('department', e.target.value)} /></Field>
-        <Field label="보안 담당자"><select className="select" value={filter.reviewer_id} onChange={e => set('reviewer_id', e.target.value)}><option value="">전체</option>{people.map(p => <option key={p.id} value={p.id}>{p.display_name}</option>)}</select></Field>
+        <Field label="보안 담당자"><PeopleField value={filter.reviewer_id} people={people} onChange={id => set('reviewer_id', id)} emptyLabel="전체" /></Field>
         <Field label="생성일 시작"><input type="date" className="input" max={filter.to || undefined} value={filter.from} onChange={e => set('from', e.target.value)} /></Field>
         <Field label="생성일 종료"><input type="date" className="input" min={filter.from || undefined} value={filter.to} onChange={e => set('to', e.target.value)} /></Field>
       </div>

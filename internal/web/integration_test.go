@@ -3309,16 +3309,47 @@ func TestTheUserDirectoryCanBeNarrowed(t *testing.T) {
 		if res.status != http.StatusOK {
 			t.Fatalf("reading the directory%s: %d %s", query, res.status, res.body)
 		}
-		var rows []map[string]any
-		if err := json.Unmarshal([]byte(res.body), &rows); err != nil {
+		var page struct {
+			Items   []map[string]any `json:"items"`
+			Total   int64            `json:"total"`
+			HasMore bool             `json:"has_more"`
+		}
+		if err := json.Unmarshal([]byte(res.body), &page); err != nil {
 			t.Fatal(err)
 		}
 		var out []string
-		for _, row := range rows {
+		for _, row := range page.Items {
 			name, _ := row["display_name"].(string)
 			out = append(out, name)
 		}
 		return out
+	}
+
+	// A directory of thousands cannot be a dropdown, so the list is capped and
+	// the caller is told when the cap hid people; otherwise the picker offers
+	// the first two hundred names as if they were everybody.
+	var many struct {
+		Items   []map[string]any `json:"items"`
+		Total   int64            `json:"total"`
+		HasMore bool             `json:"has_more"`
+	}
+	if _, err := h.db.Pool.Exec(ctx, `INSERT INTO users(id,username,display_name,auth_source,active)
+              SELECT gen_random_uuid()::text,'bulk-'||n,'대량 사용자 '||n,'local',true FROM generate_series(1,205) AS n`); err != nil {
+		t.Fatal(err)
+	}
+	res := admin.do(http.MethodGet, "/api/v1/users/directory", nil)
+	if err := json.Unmarshal([]byte(res.body), &many); err != nil {
+		t.Fatal(err)
+	}
+	if len(many.Items) > 200 {
+		t.Errorf("the picker was handed %d names in one response", len(many.Items))
+	}
+	if !many.HasMore || many.Total <= int64(len(many.Items)) {
+		t.Errorf("the directory hid people without saying so (total %d, returned %d, has_more %v)", many.Total, len(many.Items), many.HasMore)
+	}
+	// Searching still reaches somebody the cap left out.
+	if got := names("?q=" + url.QueryEscape("대량 사용자 205")); len(got) != 1 {
+		t.Errorf("searching for a name past the cap returned %v", got)
 	}
 
 	if got := names("?q=박보안"); len(got) != 1 || got[0] != "박보안" {
