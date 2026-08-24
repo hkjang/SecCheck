@@ -699,3 +699,45 @@ func TestARefusedPasswordChangeIsRecordedAsRefused(t *testing.T) {
 		}
 	}
 }
+
+// "Somebody asked for something their role does not allow" is the one refusal
+// the chain did not hold: a failed login is written down, a download of
+// somebody else's evidence is written down, and an account walking the admin
+// endpoints was refused and forgotten.
+func TestAnAttemptRefusedOnPermissionIsWrittenDown(t *testing.T) {
+	h := newHarness(t)
+	ctx := context.Background()
+	h.user("denied-requester", "REQUESTER")
+	requester := h.login("denied-requester")
+
+	if res := requester.do(http.MethodGet, "/api/v1/admin/users", nil); res.status != http.StatusForbidden {
+		t.Fatalf("a requester reading the user list returned %d %s", res.status, res.body)
+	}
+	var result, target, after string
+	if err := h.db.Pool.QueryRow(ctx, `SELECT result,target_id,after_value FROM audit_logs WHERE event_type='ACCESS_DENIED' ORDER BY timestamp DESC LIMIT 1`).Scan(&result, &target, &after); err != nil {
+		t.Fatalf("the refused request left no audit event: %v", err)
+	}
+	if result != "FAILURE" {
+		t.Errorf("the refusal is recorded as %s", result)
+	}
+	if target != "/api/v1/admin/users" {
+		t.Errorf("the record does not name what was asked for: %q", target)
+	}
+	if !strings.Contains(after, "SYSTEM_ADMIN") {
+		t.Errorf("the record does not say what the endpoint required: %s", after)
+	}
+
+	// Work the person is allowed to do must not fill the log with denials.
+	before := 0
+	if err := h.db.Pool.QueryRow(ctx, `SELECT count(*) FROM audit_logs WHERE event_type='ACCESS_DENIED'`).Scan(&before); err != nil {
+		t.Fatal(err)
+	}
+	requester.createReview("권한 있는 작업")
+	after2 := 0
+	if err := h.db.Pool.QueryRow(ctx, `SELECT count(*) FROM audit_logs WHERE event_type='ACCESS_DENIED'`).Scan(&after2); err != nil {
+		t.Fatal(err)
+	}
+	if after2 != before {
+		t.Errorf("an allowed action recorded %d denials", after2-before)
+	}
+}

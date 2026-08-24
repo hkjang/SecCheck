@@ -233,6 +233,7 @@ func (s *Server) require(roles []string, next http.Handler) http.Handler {
 			return
 		}
 		if len(roles) > 0 && !auth.HasRole(sess, roles...) {
+			s.recordDenial(r, sess, "role", roles)
 			problem(w, http.StatusForbidden, "FORBIDDEN", "이 작업을 수행할 권한이 없습니다.", nil)
 			return
 		}
@@ -245,6 +246,7 @@ func (s *Server) require(roles []string, next http.Handler) http.Handler {
 		// /mcp is exempt because JSON-RPC reads travel by POST; the write
 		// scope is enforced against the named tool in callMCPTool instead.
 		if sess.APIKey && r.Method != http.MethodGet && r.Method != http.MethodHead && r.Method != http.MethodOptions && r.URL.Path != "/mcp" && !contains(sess.Scopes, "read:write") {
+			s.recordDenial(r, sess, "api_scope", nil)
 			problem(w, http.StatusForbidden, "API_SCOPE_FORBIDDEN", "이 API 키에는 쓰기 범위가 없습니다.", nil)
 			return
 		}
@@ -535,6 +537,27 @@ func trustedAddr(value string, trusted []netip.Prefix) bool {
 	return false
 }
 func requestID(r *http.Request) string { return r.Header.Get("X-Request-ID") }
+
+// recordDenial writes down an attempt the service refused on permission. Every
+// other refusal that matters -- a failed login, a download of somebody else's
+// evidence -- is in the chain; this one, "somebody asked for an endpoint their
+// role does not allow", was refused and forgotten, so an account probing what
+// it can reach left no trace at all.
+func (s *Server) recordDenial(r *http.Request, sess auth.Session, reason string, required []string) {
+	after := map[string]any{"reason": reason, "method": r.Method}
+	if len(required) > 0 {
+		after["required_roles"] = required
+	}
+	if sess.APIKey {
+		after["api_key"] = true
+	}
+	_ = s.Store.Audit(r.Context(), store.AuditEvent{
+		UserID: sess.User.ID, UserName: sess.User.DisplayName, SourceIP: clientIP(r), SessionID: sess.ID,
+		EventType: "ACCESS_DENIED", TargetType: "ENDPOINT", TargetID: r.URL.Path,
+		RequestID: requestID(r), Result: "FAILURE", After: after,
+	})
+}
+
 func auditFrom(r *http.Request, event, targetType, targetID string, before, after any) store.AuditEvent {
 	sess := session(r)
 	return store.AuditEvent{UserID: sess.User.ID, UserName: sess.User.DisplayName, SourceIP: clientIP(r), SessionID: sess.ID, EventType: event, TargetType: targetType, TargetID: targetID, RequestID: requestID(r), Before: before, After: after}
