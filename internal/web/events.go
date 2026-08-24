@@ -18,6 +18,7 @@ var auditEventLabels = map[string]string{
 	"REMOVE_PARTICIPANT":             "심의 참여자 해제",
 	"RECOVER_ADMIN":                  "관리자 계정 복구 (CLI)",
 	"PURGE_EVIDENCE":                 "증적 보존기간 만료 파기",
+	"QUARANTINE_EVIDENCE":            "증적 악성코드 격리",
 	"REASSIGN_APPROVER":              "최종 승인자 변경",
 	"SYNC_OIDC_ROLES":                "디렉터리 역할 동기화",
 	"TOTP_ENROLLMENT_STARTED":        "일회용 코드 등록 시작",

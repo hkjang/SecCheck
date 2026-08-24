@@ -149,9 +149,9 @@ func (w *Worker) finish(ctx context.Context, evidenceID, filename, status, detai
 // quarantine marks the evidence infected, removes it from the checklist and
 // tells the uploader, all in the same transaction as the status change.
 func (w *Worker) quarantine(ctx context.Context, evidenceID, filename, detail string) error {
-	var uploader string
+	var uploader, digest string
 	if err := pgx.BeginFunc(ctx, w.Store.Pool, func(tx pgx.Tx) error {
-		if err := tx.QueryRow(ctx, `UPDATE evidences SET scan_status='INFECTED',scan_detail=$2,deleted_at=now() WHERE id=$1 RETURNING uploaded_by`, evidenceID, truncate(detail, 500)).Scan(&uploader); err != nil {
+		if err := tx.QueryRow(ctx, `UPDATE evidences SET scan_status='INFECTED',scan_detail=$2,deleted_at=now() WHERE id=$1 RETURNING uploaded_by,sha256`, evidenceID, truncate(detail, 500)).Scan(&uploader, &digest); err != nil {
 			return err
 		}
 		_, err := tx.Exec(ctx, `UPDATE evidence_versions SET scan_status='INFECTED' WHERE evidence_id=$1`, evidenceID)
@@ -159,6 +159,12 @@ func (w *Worker) quarantine(ctx context.Context, evidenceID, filename, detail st
 	}); err != nil {
 		return err
 	}
+	// Deleting a file from a checklist is written to the chain when a person
+	// does it. The scanner does the same thing to the same row, and left the
+	// log with an item that quietly has one fewer file and no reason why.
+	_ = w.Store.Audit(ctx, store.AuditEvent{UserName: "system", EventType: "QUARANTINE_EVIDENCE", TargetType: "EVIDENCE", TargetID: evidenceID,
+		Before: map[string]any{"filename": filename, "sha256": digest}, After: map[string]any{"deleted": true, "scan_status": "INFECTED", "detail": truncate(detail, 300)}})
+
 	// The file is already gone from the checklist, so this cannot be retried
 	// without quarantining twice; but somebody whose upload was found to carry
 	// malware has to be told, and losing that quietly is not acceptable.
