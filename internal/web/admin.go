@@ -15,6 +15,7 @@ import (
 
 	"github.com/hkjang/SecCheck/internal/auth"
 	"github.com/hkjang/SecCheck/internal/notify"
+	"github.com/hkjang/SecCheck/internal/scanner"
 	"github.com/hkjang/SecCheck/internal/store"
 	"github.com/jackc/pgx/v5/pgconn"
 )
@@ -778,6 +779,39 @@ func intString(v int) string {
 // never cleared has to be findable and retryable from the console.
 // testSMTP sends one message with the saved settings so an administrator can
 // confirm the path before the first real notification depends on it.
+// testClamAV answers the question an administrator has at the moment they turn
+// the scanner on: is anything listening there? The other two integrations have
+// had this button from the start; this one was checked for a non-empty address
+// and nothing else.
+func (s *Server) testClamAV(w http.ResponseWriter, r *http.Request) {
+	var in struct {
+		Address string `json:"address"`
+	}
+	if !decodeOptionalJSON(w, r, &in) {
+		return
+	}
+	address := strings.TrimSpace(in.Address)
+	if address == "" {
+		var cfg struct {
+			Address string `json:"clamav_address"`
+		}
+		_, _ = s.Store.Setting(r.Context(), "upload", &cfg)
+		address = strings.TrimSpace(cfg.Address)
+	}
+	if address == "" {
+		problem(w, 422, "VALIDATION_FAILED", "clamd 주소를 입력하거나 업로드 설정에 저장하세요.", nil)
+		return
+	}
+	reply, err := scanner.Ping(address, 5*time.Second)
+	if err != nil {
+		_ = s.Store.Audit(r.Context(), auditFrom(r, "TEST_CLAMAV", "SETTING", "upload", nil, map[string]any{"address": address, "error": err.Error()}))
+		problem(w, 502, "CLAMAV_FAILED", "clamd에 연결하지 못했습니다: "+err.Error(), nil)
+		return
+	}
+	_ = s.Store.Audit(r.Context(), auditFrom(r, "TEST_CLAMAV", "SETTING", "upload", nil, map[string]any{"address": address}))
+	jsonResponse(w, 200, map[string]any{"address": address, "reply": reply})
+}
+
 func (s *Server) testSMTP(w http.ResponseWriter, r *http.Request) {
 	var in struct {
 		Recipient string `json:"recipient"`

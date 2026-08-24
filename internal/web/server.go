@@ -199,6 +199,7 @@ func (s *Server) routes() {
 	s.handle("PUT", "/api/v1/admin/settings/{key}", "관리", "관리 설정 저장. 비밀값은 Master Key로 암호화", []string{"SYSTEM_ADMIN"}, false, s.updateSetting)
 	s.handle("POST", "/api/v1/admin/settings/oidc/test", "관리", "OIDC Discovery 연결 테스트", []string{"SYSTEM_ADMIN"}, false, s.testOIDC)
 	s.handle("POST", "/api/v1/admin/settings/notification/test", "관리", "SMTP 설정 테스트 메일 발송", []string{"SYSTEM_ADMIN"}, false, s.testSMTP)
+	s.handle("POST", "/api/v1/admin/settings/upload/test", "관리", "ClamAV 연결 테스트(clamd PING)", []string{"SYSTEM_ADMIN"}, false, s.testClamAV)
 	s.handle("GET", "/api/v1/admin/audit", "관리", "해시 체인 감사로그. 이벤트, 사용자, 기간 필터와 format=csv", []string{"SYSTEM_ADMIN", "AUDITOR"}, false, s.listAudit)
 	s.handle("GET", "/api/v1/admin/audit/verify", "관리", "해시 체인 검증. full=1이면 전체 재검증", []string{"SYSTEM_ADMIN", "AUDITOR"}, false, s.verifyAudit)
 	s.handle("GET", "/api/v1/admin/logs", "관리", "구조화 서버 로그. 메시지, 요청 ID, 필드 통합 검색", []string{"SYSTEM_ADMIN"}, false, s.listLogs)

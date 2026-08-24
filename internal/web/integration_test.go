@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"mime/multipart"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -4577,5 +4578,51 @@ func TestTheAccountListIsSearchedAndPagedByTheServer(t *testing.T) {
 	}
 	if names["paging-user-0"] {
 		t.Error("the stale filter returned an account with no privileged role")
+	}
+}
+
+// The other two integrations have had a connection test from the start. This
+// one was checked for a non-empty address, so a wrong host or port was found by
+// uploads that never cleared -- which blocks submission -- rather than by the
+// administrator who had just typed it.
+func TestTheClamAVSettingCanBeTestedBeforeItBlocksUploads(t *testing.T) {
+	h := newHarness(t)
+	admin := h.login(adminOf(h))
+
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer listener.Close()
+	go func() {
+		conn, acceptErr := listener.Accept()
+		if acceptErr != nil {
+			return
+		}
+		defer conn.Close()
+		buf := make([]byte, 16)
+		_, _ = conn.Read(buf)
+		_, _ = conn.Write([]byte("PONG\x00"))
+	}()
+	ok := admin.do(http.MethodPost, "/api/v1/admin/settings/upload/test", map[string]string{"address": listener.Addr().String()})
+	if ok.status != http.StatusOK {
+		t.Fatalf("a clamd that answered PONG was reported as %d %s", ok.status, ok.body)
+	}
+	if reply, _ := ok.json()["reply"].(string); !strings.EqualFold(reply, "PONG") {
+		t.Errorf("the test reports reply=%q", reply)
+	}
+
+	// A wrong address says so, with the reason, instead of saving quietly.
+	bad := admin.do(http.MethodPost, "/api/v1/admin/settings/upload/test", map[string]string{"address": "127.0.0.1:1"})
+	if bad.status != http.StatusBadGateway || bad.errorCode() != "CLAMAV_FAILED" {
+		t.Errorf("an unreachable clamd returned %d %s", bad.status, bad.body)
+	}
+	// And the attempt is on the record either way.
+	var attempts int
+	if err := h.db.Pool.QueryRow(context.Background(), `SELECT count(*) FROM audit_logs WHERE event_type='TEST_CLAMAV'`).Scan(&attempts); err != nil {
+		t.Fatal(err)
+	}
+	if attempts != 2 {
+		t.Errorf("%d connection tests were recorded, want 2", attempts)
 	}
 }

@@ -207,6 +207,34 @@ func truncate(v string, n int) string {
 	return v[:n]
 }
 
+// Ping asks clamd whether it is there. Turning the scanner on used to be
+// checked only for a non-empty address: a wrong host or port was discovered by
+// uploads piling up unscanned, which blocks submission, and then by the queue
+// alarm -- long after the setting was saved.
+func Ping(address string, timeout time.Duration) (string, error) {
+	if strings.TrimSpace(address) == "" {
+		return "", errors.New("ClamAV address is not configured")
+	}
+	conn, err := net.DialTimeout("tcp", address, timeout)
+	if err != nil {
+		return "", err
+	}
+	defer conn.Close()
+	_ = conn.SetDeadline(time.Now().Add(timeout))
+	if _, err = conn.Write([]byte("zPING\x00")); err != nil {
+		return "", err
+	}
+	reply, err := io.ReadAll(io.LimitReader(conn, 64))
+	if err != nil {
+		return "", err
+	}
+	text := strings.TrimRight(string(reply), "\x00\n ")
+	if !strings.EqualFold(text, "PONG") {
+		return text, fmt.Errorf("unexpected reply: %s", truncateText(text, 60))
+	}
+	return text, nil
+}
+
 // Scan streams the plaintext to clamd with the INSTREAM protocol, so a
 // large evidence file is never held in memory to be scanned.
 func Scan(src io.Reader, address string, timeout time.Duration) (bool, string, error) {

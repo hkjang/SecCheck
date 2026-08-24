@@ -18,6 +18,7 @@ var requestPayloads = map[string][]payloadField{
 	"PATCH /api/v1/templates/{id}":                                     {{"name", "string"}, {"description", "string"}, {"active", "bool"}},
 	"PATCH /api/v1/templates/{id}/versions/{versionID}/items/{itemID}": {{"section", "string"}, {"control_id", "string"}, {"item_code", "string"}, {"category", "string"}, {"title", "string"}, {"question", "string"}, {"guide", "string"}, {"legal_basis", "string"}, {"example", "string"}, {"severity", "string"}, {"answer_type", "string"}, {"required", "bool"}, {"evidence_required", "bool"}, {"applicability_rule", "any"}, {"options", "any"}, {"sort_order", "int"}},
 	"POST /api/v1/admin/settings/notification/test":                    {{"recipient", "string"}},
+	"POST /api/v1/admin/settings/upload/test":                          {{"address", "string"}},
 	"POST /api/v1/admin/settings/oidc/test":                            {{"issuer", "string"}},
 	"POST /api/v1/admin/users":                                         {{"username", "string"}, {"display_name", "string"}, {"email", "string"}, {"department", "string"}, {"password", "string"}, {"roles", "[]string"}},
 	"POST /api/v1/admin/users/{id}/active":                             {{"active", "bool"}},

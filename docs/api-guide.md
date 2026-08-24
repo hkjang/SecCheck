@@ -54,6 +54,7 @@ Authorization: Bearer sck_a1b2c3d4_xxxxxxxxxxxxxxxxxxxxxxxxxxxx
 ### 🛡️ 통합 Security Controls & 템플릿
 | 메서드 | 경로 | 설명 | 권한 |
 | :--- | :--- | :--- | :--- |
+| `POST` | `/admin/settings/upload/test` | ClamAV(clamd) 연결 테스트 | `SYSTEM_ADMIN` |
 | `GET` | `/security-controls` | 통합 Security Control 목록 및 영향 통계 | 전체 |
 | `GET` | `/security-controls/{id}/impact` | 특정 Control 변경 시 영향 받는 템플릿/심의 조회 | 전체 |
 | `GET` | `/templates` | 체크리스트 템플릿 목록 및 게시 버전 조회 | 전체 |
@@ -132,7 +133,7 @@ Authorization: Bearer sck_a1b2c3d4_xxxxxxxxxxxxxxxxxxxxxxxxxxxx
 | `EXPORT_FAILED` / `FONT_MISSING` | 내보내기에 실패했습니다(PDF는 한글 폰트 필요) |
 | `IMPORT_FAILED` / `DIFF_FAILED` | Excel 가져오기·버전 비교에 실패했습니다 |
 | `VERIFY_FAILED` | 감사 체인 검증을 수행하지 못했습니다 |
-| `SMTP_FAILED` / `OIDC_DISCOVERY_FAILED` / `OIDC_INVALID` | 외부 연동 설정 확인에 실패했습니다 |
+| `SMTP_FAILED` / `OIDC_DISCOVERY_FAILED` / `OIDC_INVALID` / `CLAMAV_FAILED` | 외부 연동 설정 확인에 실패했습니다 |
 | `NOT_READY` | 데이터베이스에 연결할 수 없어 지표·준비 상태를 제공할 수 없습니다 |
 
 ---
