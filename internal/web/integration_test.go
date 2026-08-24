@@ -2034,10 +2034,14 @@ func TestUserListCarriesTheLastSignIn(t *testing.T) {
 	h := newHarness(t)
 	admin := h.login(adminOf(h))
 	h.user("never-signed-in", "REQUESTER")
-	users := []map[string]any{}
-	if err := json.Unmarshal([]byte(admin.do(http.MethodGet, "/api/v1/admin/users", nil).body), &users); err != nil {
+	var page struct {
+		Items []map[string]any `json:"items"`
+		Total int64            `json:"total"`
+	}
+	if err := json.Unmarshal([]byte(admin.do(http.MethodGet, "/api/v1/admin/users", nil).body), &page); err != nil {
 		t.Fatal(err)
 	}
+	users := page.Items
 	seen := map[string]any{}
 	for _, u := range users {
 		if name, _ := u["username"].(string); name != "" {
@@ -4501,5 +4505,77 @@ func TestTheReviewListCanShowOnlyLaunchesAtRisk(t *testing.T) {
 	all := owner.do(http.MethodGet, "/api/v1/review-requests", nil).json()
 	if everything, _ := all["items"].([]any); len(everything) < 3 {
 		t.Errorf("the unfiltered list holds %d reviews, fewer than were created", len(everything))
+	}
+}
+
+// The account screen used to download every account and filter in the browser,
+// which an installation that syncs a staff directory cannot afford -- and a
+// filter that only sees what was downloaded answers a different question from
+// the one it was asked.
+func TestTheAccountListIsSearchedAndPagedByTheServer(t *testing.T) {
+	h := newHarness(t)
+	admin := h.login(adminOf(h))
+	ctx := context.Background()
+	for i := 0; i < 6; i++ {
+		h.user(fmt.Sprintf("paging-user-%d", i), "REQUESTER")
+	}
+	locked := h.user("locked-account", "REQUESTER")
+	if _, err := h.db.Pool.Exec(ctx, `UPDATE users SET locked_until=now()+interval '1 hour' WHERE id=$1`, locked); err != nil {
+		t.Fatal(err)
+	}
+	stale := h.user("stale-reviewer", "SECURITY_REVIEWER")
+	if _, err := h.db.Pool.Exec(ctx, `UPDATE users SET last_login_at=now()-interval '400 days' WHERE id=$1`, stale); err != nil {
+		t.Fatal(err)
+	}
+
+	read := func(query string) (items []map[string]any, total, lockedCount float64, more bool) {
+		t.Helper()
+		body := admin.do(http.MethodGet, "/api/v1/admin/users?"+query, nil).json()
+		rows, _ := body["items"].([]any)
+		for _, raw := range rows {
+			if row, _ := raw.(map[string]any); row != nil {
+				items = append(items, row)
+			}
+		}
+		total, _ = body["total"].(float64)
+		lockedCount, _ = body["locked"].(float64)
+		more, _ = body["has_more"].(bool)
+		return
+	}
+
+	// A page is a page, and the total says how much is behind it.
+	first, total, lockedCount, more := read("limit=3")
+	if len(first) != 3 || total < 8 || !more {
+		t.Fatalf("first page returned %d of %v (has_more=%v)", len(first), total, more)
+	}
+	// The locked-account warning counts every account, not the page.
+	if lockedCount != 1 {
+		t.Errorf("the screen would warn about %v locked accounts", lockedCount)
+	}
+	second, _, _, _ := read("limit=3&offset=3")
+	if len(second) != 3 || second[0]["id"] == first[0]["id"] {
+		t.Errorf("the second page repeats the first")
+	}
+
+	// Searching reaches accounts that are not on the first page.
+	found, foundTotal, _, _ := read("q=locked-account")
+	if foundTotal != 1 || len(found) != 1 || found[0]["username"] != "locked-account" {
+		t.Errorf("searching for an account returned %v (total %v)", found, foundTotal)
+	}
+	onlyLocked, _, _, _ := read("only=LOCKED")
+	if len(onlyLocked) != 1 || onlyLocked[0]["username"] != "locked-account" {
+		t.Errorf("the locked filter returned %v", onlyLocked)
+	}
+	// The access review question: a privileged account nobody has signed into.
+	onlyStale, _, _, _ := read("only=STALE")
+	names := map[string]bool{}
+	for _, row := range onlyStale {
+		names[fmt.Sprint(row["username"])] = true
+	}
+	if !names["stale-reviewer"] {
+		t.Errorf("the stale filter missed the reviewer who has not signed in for a year: %v", names)
+	}
+	if names["paging-user-0"] {
+		t.Error("the stale filter returned an account with no privileged role")
 	}
 }

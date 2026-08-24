@@ -19,7 +19,47 @@ import (
 )
 
 func (s *Server) listUsers(w http.ResponseWriter, r *http.Request) {
-	rows, err := s.Store.Pool.Query(r.Context(), `SELECT u.id,u.username,u.display_name,u.email,u.department,u.auth_source,u.active,u.last_login_at,u.created_at,u.failed_login_count,CASE WHEN u.locked_until>now() THEN u.locked_until END,u.totp_enabled,COALESCE(array_agg(ur.role_code ORDER BY ur.role_code) FILTER(WHERE ur.role_code IS NOT NULL),'{}') FROM users u LEFT JOIN user_roles ur ON ur.user_id=u.id GROUP BY u.id ORDER BY u.display_name`)
+	// An installation that syncs a staff directory has thousands of accounts,
+	// and this screen used to hand the browser every one of them with their
+	// roles aggregated -- then filter in JavaScript, which also meant a filter
+	// could only ever see what had already been downloaded.
+	query := r.URL.Query()
+	where, args := "TRUE", []any{}
+	if term := strings.TrimSpace(query.Get("q")); term != "" {
+		args = append(args, "%"+term+"%")
+		where += fmt.Sprintf(" AND (u.display_name ILIKE $%[1]d OR u.username ILIKE $%[1]d OR u.email ILIKE $%[1]d OR u.department ILIKE $%[1]d)", len(args))
+	}
+	switch strings.ToUpper(strings.TrimSpace(query.Get("only"))) {
+	case "LOCKED":
+		where += " AND u.locked_until>now()"
+	case "INACTIVE":
+		where += " AND NOT u.active"
+	case "OIDC":
+		where += " AND u.auth_source='oidc'"
+	case "LOCAL":
+		where += " AND u.auth_source='local'"
+	case "STALE":
+		// The same question the account review asks: a working account with a
+		// role that matters that nobody has signed into for the lock window.
+		var cfg struct {
+			InactiveAdminLockDays int `json:"inactive_admin_lock_days"`
+		}
+		_, _ = s.Store.Setting(r.Context(), "security", &cfg)
+		if cfg.InactiveAdminLockDays <= 0 {
+			cfg.InactiveAdminLockDays = 90
+		}
+		args = append(args, cfg.InactiveAdminLockDays)
+		where += fmt.Sprintf(" AND u.active AND (u.last_login_at IS NULL OR u.last_login_at < now()-make_interval(days=>$%d))", len(args))
+		where += " AND EXISTS(SELECT 1 FROM user_roles pr WHERE pr.user_id=u.id AND pr.role_code IN ('SYSTEM_ADMIN','TEMPLATE_ADMIN','SECURITY_REVIEWER','APPROVER'))"
+	}
+	var total int64
+	if err := s.Store.Pool.QueryRow(r.Context(), `SELECT count(*) FROM users u WHERE `+where, args...).Scan(&total); err != nil {
+		s.fault(w, r, "QUERY_FAILED", "사용자를 불러오지 못했습니다.", err)
+		return
+	}
+	limit, offset := parsePage(r)
+	args = append(args, limit, offset)
+	rows, err := s.Store.Pool.Query(r.Context(), `SELECT u.id,u.username,u.display_name,u.email,u.department,u.auth_source,u.active,u.last_login_at,u.created_at,u.failed_login_count,CASE WHEN u.locked_until>now() THEN u.locked_until END,u.totp_enabled,COALESCE(array_agg(ur.role_code ORDER BY ur.role_code) FILTER(WHERE ur.role_code IS NOT NULL),'{}') FROM users u LEFT JOIN user_roles ur ON ur.user_id=u.id WHERE `+where+` GROUP BY u.id ORDER BY u.display_name LIMIT $`+intString(len(args)-1)+` OFFSET $`+intString(len(args)), args...)
 	if err != nil {
 		s.fault(w, r, "QUERY_FAILED", "사용자를 불러오지 못했습니다.", err)
 		return
@@ -29,9 +69,16 @@ func (s *Server) listUsers(w http.ResponseWriter, r *http.Request) {
 		s.fault(w, r, "QUERY_FAILED", "목록을 불러오지 못했습니다.", err)
 		return
 	}
-	jsonResponse(w, 200, items)
+	var locked int64
+	if err := s.Store.Pool.QueryRow(r.Context(), `SELECT count(*) FROM users WHERE locked_until>now()`).Scan(&locked); err != nil {
+		s.fault(w, r, "QUERY_FAILED", "잠긴 계정 수를 확인하지 못했습니다.", err)
+		return
+	}
+	// locked is counted over every account, not the page: the screen warns
+	// about locked accounts and a warning that only counts what is on screen is
+	// not a warning.
+	jsonResponse(w, 200, map[string]any{"items": items, "total": total, "locked": locked, "limit": limit, "offset": offset, "has_more": int64(offset+len(items)) < total})
 }
-
 func (s *Server) createUser(w http.ResponseWriter, r *http.Request) {
 	var in struct {
 		Username    string   `json:"username"`
