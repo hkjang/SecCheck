@@ -937,6 +937,27 @@ func (s *Server) submitReview(w http.ResponseWriter, r *http.Request) {
 	jsonResponse(w, 200, map[string]any{"status": next})
 }
 
+// submissionCheck answers "is this ready to submit" before anyone presses the
+// button. The same rules already ran inside submitReview, but they only ran
+// there: on a two hundred item checklist filled in by several people over
+// weeks, the first and only report of what is still missing arrived as a 422
+// on the requester's screen -- and the participants who had to fix it never
+// saw it at all. The list is read-only and open to everyone who can see the
+// review, so each participant can chase their own items.
+func (s *Server) submissionCheck(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	if !s.canAccessReview(r.Context(), session(r), id) {
+		problem(w, 404, "NOT_FOUND", "심의를 찾을 수 없습니다.", nil)
+		return
+	}
+	issues, err := s.validateSubmission(r.Context(), id)
+	if err != nil {
+		s.fault(w, r, "QUERY_FAILED", "제출 점검에 실패했습니다.", err)
+		return
+	}
+	jsonResponse(w, 200, map[string]any{"ready": len(issues) == 0, "issues": issues, "total": len(issues)})
+}
+
 func (s *Server) validateSubmission(ctx context.Context, id string) ([]map[string]any, error) {
 	rows, err := s.Store.Pool.Query(ctx, `SELECT si.id,si.item_code,si.title,si.required,si.evidence_required,si.answer_type,si.options_json,COALESCE(resp.answer_json,'{}'),COALESCE(resp.applicability,''),COALESCE(resp.self_assessment,''),COALESCE(resp.na_reason,''),(SELECT count(*) FROM evidences e WHERE e.submission_item_id=si.id AND e.deleted_at IS NULL),(SELECT count(*) FROM evidences e WHERE e.submission_item_id=si.id AND e.deleted_at IS NULL AND e.scan_status NOT IN ('CLEAN','SKIPPED')) FROM submissions sub JOIN submission_items si ON si.submission_id=sub.id LEFT JOIN responses resp ON resp.submission_item_id=si.id WHERE sub.review_request_id=$1 AND sub.revision=(SELECT max(revision) FROM submissions WHERE review_request_id=$1)`, id)
 	if err != nil {

@@ -1208,3 +1208,98 @@ func TestADeadlineThatHasAlreadyPassedIsRefused(t *testing.T) {
 		t.Errorf("%d change requests exist that were overdue the moment they were made", born)
 	}
 }
+
+// Until now the only way to learn what was blocking submission was to press
+// 제출 and read the 422 -- which the requester alone could do, and only at the
+// very end. The pre-flight check answers the same question at any time, to
+// everyone working on the review.
+func TestWhatBlocksSubmissionCanBeSeenBeforeSubmitting(t *testing.T) {
+	h := newHarness(t)
+	ctx := context.Background()
+	requesterID := h.user("precheck-requester", "REQUESTER")
+	_ = requesterID
+	helperID := h.user("precheck-helper", "REQUESTER")
+	h.user("precheck-stranger", "REQUESTER")
+	requester := h.login("precheck-requester")
+	helper := h.login("precheck-helper")
+	stranger := h.login("precheck-stranger")
+
+	reviewID := requester.createReview("제출 전 점검 서비스")
+	if res := requester.do(http.MethodPost, "/api/v1/review-requests/"+reviewID+"/participants", map[string]string{"user_id": helperID, "role": "CONTRIBUTOR"}); res.status != http.StatusOK {
+		t.Fatalf("add participant: %d %s", res.status, res.body)
+	}
+
+	check := func(c *client) (bool, map[string]bool) {
+		t.Helper()
+		res := c.do(http.MethodGet, "/api/v1/review-requests/"+reviewID+"/submission-check", nil)
+		if res.status != http.StatusOK {
+			t.Fatalf("submission check: %d %s", res.status, res.body)
+		}
+		payload := res.json()
+		codes := map[string]bool{}
+		for _, raw := range payload["issues"].([]any) {
+			codes[raw.(map[string]any)["item_code"].(string)] = true
+		}
+		return payload["ready"].(bool), codes
+	}
+
+	// Nothing is answered yet, so the check reports work left -- and the
+	// participant who has to do that work can read it too.
+	ready, codes := check(requester)
+	if ready || len(codes) == 0 {
+		t.Fatalf("a blank review reports ready=%v with %d blocked items", ready, len(codes))
+	}
+	if _, helperCodes := check(helper); len(helperCodes) != len(codes) {
+		t.Fatalf("the participant sees %d blocked items, the requester %d", len(helperCodes), len(codes))
+	}
+	if res := stranger.do(http.MethodGet, "/api/v1/review-requests/"+reviewID+"/submission-check", nil); res.status != http.StatusNotFound {
+		t.Fatalf("someone outside the review reads the check: %d %s", res.status, res.body)
+	}
+
+	// The pre-flight answer is the submission rule itself, not a second guess
+	// at it: pressing 제출 names exactly the same items.
+	res := requester.do(http.MethodPost, "/api/v1/review-requests/"+reviewID+"/submit", map[string]any{})
+	if res.status != http.StatusUnprocessableEntity {
+		t.Fatalf("submitting a blank review: %d %s", res.status, res.body)
+	}
+	refused := map[string]bool{}
+	for _, raw := range res.json()["error"].(map[string]any)["details"].([]any) {
+		refused[raw.(map[string]any)["item_code"].(string)] = true
+	}
+	if len(refused) != len(codes) {
+		t.Fatalf("the check names %d items, the refusal %d", len(codes), len(refused))
+	}
+	for code := range refused {
+		if !codes[code] {
+			t.Fatalf("the refusal names %s but the check did not", code)
+		}
+	}
+
+	// Once the work is done the check clears, and only then does submitting
+	// go through.
+	items := []map[string]any{}
+	if err := json.Unmarshal([]byte(requester.do(http.MethodGet, "/api/v1/review-requests/"+reviewID+"/items", nil).body), &items); err != nil {
+		t.Fatal(err)
+	}
+	ids := make([]string, 0, len(items))
+	for _, item := range items {
+		ids = append(ids, item["id"].(string))
+	}
+	if res := helper.do(http.MethodPost, "/api/v1/review-requests/"+reviewID+"/responses/bulk",
+		map[string]any{"item_ids": ids, "applicability": "N/A", "na_reason": "이 서비스에 해당하지 않음", "self_assessment": "N/A"}); res.status != http.StatusOK {
+		t.Fatalf("bulk answer: %d %s", res.status, res.body)
+	}
+	if ready, left := check(helper); !ready || len(left) != 0 {
+		t.Fatalf("after answering everything the check reports ready=%v with %d left", ready, len(left))
+	}
+	if res := requester.do(http.MethodPost, "/api/v1/review-requests/"+reviewID+"/submit", map[string]any{}); res.status != http.StatusOK {
+		t.Fatalf("submit after a clean check: %d %s", res.status, res.body)
+	}
+	var status string
+	if err := h.db.Pool.QueryRow(ctx, `SELECT status FROM review_requests WHERE id=$1`, reviewID).Scan(&status); err != nil {
+		t.Fatal(err)
+	}
+	if status != "SUBMITTED" {
+		t.Fatalf("after submitting the review is %s", status)
+	}
+}
