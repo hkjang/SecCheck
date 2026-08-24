@@ -478,7 +478,12 @@ var auditColumns = []string{"event_id", "timestamp", "user_id", "user_name", "so
 var auditCSVColumns = append([]string{"event_label"}, auditColumns...)
 
 func (s *Server) listAudit(w http.ResponseWriter, r *http.Request) {
-	limit := parseLimit(r)
+	// The screen used to show the newest rows matching the filter and stop
+	// there, with nothing saying more existed: an investigation that reached
+	// the bottom of the page had no way to go further back except by guessing
+	// at date filters. One row past the page tells the reader there is more
+	// without counting a table that only grows.
+	limit, offset := parsePage(r)
 	query := r.URL.Query()
 	where := "TRUE"
 	args := []any{}
@@ -528,10 +533,10 @@ func (s *Server) listAudit(w http.ResponseWriter, r *http.Request) {
 	// One row past the cap tells us the export was cut short without a second
 	// count query over a table that is only ever appended to.
 	if query.Get("format") == "csv" {
-		limit = exportRowCap + 1
+		limit, offset = exportRowCap+1, 0
 	}
-	args = append(args, limit)
-	rows, err := s.Store.Pool.Query(r.Context(), `SELECT event_id,timestamp,user_id,user_name,source_ip,session_id,event_type,target_type,target_id,before_value,after_value,request_id,result,previous_hash,event_hash FROM audit_logs WHERE `+where+` ORDER BY timestamp DESC LIMIT $`+intString(len(args)), args...)
+	args = append(args, limit+1, offset)
+	rows, err := s.Store.Pool.Query(r.Context(), `SELECT event_id,timestamp,user_id,user_name,source_ip,session_id,event_type,target_type,target_id,before_value,after_value,request_id,result,previous_hash,event_hash FROM audit_logs WHERE `+where+` ORDER BY timestamp DESC,chain_sequence DESC LIMIT $`+intString(len(args)-1)+` OFFSET $`+intString(len(args)), args...)
 	if err != nil {
 		s.fault(w, r, "QUERY_FAILED", "감사 로그를 불러오지 못했습니다.", err)
 		return
@@ -546,13 +551,17 @@ func (s *Server) listAudit(w http.ResponseWriter, r *http.Request) {
 			record["event_label"] = auditEventLabels[code]
 		}
 	}
+	hasMore := len(records) > limit
+	if hasMore {
+		records = records[:limit]
+	}
 	if query.Get("format") == "csv" {
 		records, truncated := capExport(w, records)
 		_ = s.Store.Audit(r.Context(), auditFrom(r, "EXPORT_AUDIT", "AUDIT_LOG", "", nil, map[string]any{"rows": len(records), "truncated": truncated}))
 		writeCSV(w, "seccheck-audit", s.Store.Location(r.Context()), auditCSVColumns, records)
 		return
 	}
-	jsonResponse(w, 200, map[string]any{"items": records, "events": auditEventCatalogue()})
+	jsonResponse(w, 200, map[string]any{"items": records, "events": auditEventCatalogue(), "has_more": hasMore, "limit": limit, "offset": offset})
 }
 
 // exportRowCap bounds a single export so that one download cannot pull an
@@ -735,7 +744,7 @@ func (s *Server) reportChainBreak(r *http.Request, eventID string, sequence int6
 }
 
 func (s *Server) listLogs(w http.ResponseWriter, r *http.Request) {
-	limit := parseLimit(r)
+	limit, offset := parsePage(r)
 	level := strings.TrimSpace(r.URL.Query().Get("level"))
 	where := "TRUE"
 	args := []any{}
@@ -748,8 +757,8 @@ func (s *Server) listLogs(w http.ResponseWriter, r *http.Request) {
 		position := intString(len(args))
 		where += ` AND (message ILIKE $` + position + ` OR component ILIKE $` + position + ` OR request_id ILIKE $` + position + ` OR fields::text ILIKE $` + position + `)`
 	}
-	args = append(args, limit)
-	rows, err := s.Store.Pool.Query(r.Context(), `SELECT id,timestamp,level,request_id,component,message,fields FROM application_logs WHERE `+where+` ORDER BY timestamp DESC LIMIT $`+intString(len(args)), args...)
+	args = append(args, limit+1, offset)
+	rows, err := s.Store.Pool.Query(r.Context(), `SELECT id,timestamp,level,request_id,component,message,fields FROM application_logs WHERE `+where+` ORDER BY timestamp DESC,id DESC LIMIT $`+intString(len(args)-1)+` OFFSET $`+intString(len(args)), args...)
 	if err != nil {
 		s.fault(w, r, "QUERY_FAILED", "서버 로그를 불러오지 못했습니다.", err)
 		return
@@ -759,7 +768,11 @@ func (s *Server) listLogs(w http.ResponseWriter, r *http.Request) {
 		s.fault(w, r, "QUERY_FAILED", "목록을 불러오지 못했습니다.", err)
 		return
 	}
-	jsonResponse(w, 200, items)
+	hasMore := len(items) > limit
+	if hasMore {
+		items = items[:limit]
+	}
+	jsonResponse(w, 200, map[string]any{"items": items, "has_more": hasMore, "limit": limit, "offset": offset})
 }
 
 func contains(items []string, v string) bool {
@@ -837,7 +850,7 @@ func (s *Server) testSMTP(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) listJobs(w http.ResponseWriter, r *http.Request) {
-	limit := parseLimit(r)
+	limit, offset := parsePage(r)
 	where := "TRUE"
 	args := []any{}
 	if status := strings.TrimSpace(r.URL.Query().Get("status")); status != "" {
@@ -848,8 +861,8 @@ func (s *Server) listJobs(w http.ResponseWriter, r *http.Request) {
 		args = append(args, jobType)
 		where += ` AND type=$` + intString(len(args))
 	}
-	args = append(args, limit)
-	rows, err := s.Store.Pool.Query(r.Context(), `SELECT id,type,status,attempts,available_at,locked_at,last_error,created_at,updated_at FROM jobs WHERE `+where+` ORDER BY updated_at DESC LIMIT $`+intString(len(args)), args...)
+	args = append(args, limit+1, offset)
+	rows, err := s.Store.Pool.Query(r.Context(), `SELECT id,type,status,attempts,available_at,locked_at,last_error,created_at,updated_at FROM jobs WHERE `+where+` ORDER BY updated_at DESC,id DESC LIMIT $`+intString(len(args)-1)+` OFFSET $`+intString(len(args)), args...)
 	if err != nil {
 		s.fault(w, r, "QUERY_FAILED", "작업 큐를 불러오지 못했습니다.", err)
 		return
@@ -858,6 +871,10 @@ func (s *Server) listJobs(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		s.fault(w, r, "QUERY_FAILED", "작업 큐를 불러오지 못했습니다.", err)
 		return
+	}
+	hasMore := len(items) > limit
+	if hasMore {
+		items = items[:limit]
 	}
 	summary := map[string]any{}
 	counts, err := s.Store.Pool.Query(r.Context(), `SELECT type,status,count(*) FROM jobs GROUP BY type,status`)
@@ -877,7 +894,7 @@ func (s *Server) listJobs(w http.ResponseWriter, r *http.Request) {
 	var oldestDue float64
 	_ = s.Store.Pool.QueryRow(r.Context(), `SELECT coalesce(extract(epoch FROM now()-min(available_at)),0) FROM jobs WHERE status='PENDING' AND available_at<=now()`).Scan(&oldestDue)
 	summary["oldest_pending_seconds"] = int64(oldestDue)
-	jsonResponse(w, 200, map[string]any{"items": items, "summary": summary})
+	jsonResponse(w, 200, map[string]any{"items": items, "summary": summary, "has_more": hasMore, "limit": limit, "offset": offset})
 }
 
 // retryJob puts a failed job back in the queue. Evidence stuck in ERROR is

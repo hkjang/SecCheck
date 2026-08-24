@@ -4852,3 +4852,84 @@ func TestOnlyTheReviewsOwnReviewerClosesAFollowUp(t *testing.T) {
 		t.Fatalf("stepping in for a reviewer who cannot act: %d", got)
 	}
 }
+
+// An investigation reads the audit log from the newest event backwards. The
+// screen showed one page and said nothing about the rest, so anything older
+// than that page could only be reached by guessing at date filters.
+func TestOlderAuditEventsAreReachablePageByPage(t *testing.T) {
+	h := newHarness(t)
+	admin := h.login(adminOf(h))
+	ctx := context.Background()
+
+	// A run of events of one kind, so the page walk can be checked against a
+	// filter whose result set is known.
+	for i := 0; i < 12; i++ {
+		if err := h.db.Audit(ctx, store.AuditEvent{EventType: "PAGING_PROBE", TargetType: "SETTING", TargetID: fmt.Sprintf("probe-%02d", i)}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	page := func(limit, offset int) ([]string, bool) {
+		t.Helper()
+		res := admin.do(http.MethodGet, fmt.Sprintf("/api/v1/admin/audit?event=PAGING_PROBE&limit=%d&offset=%d", limit, offset), nil)
+		if res.status != http.StatusOK {
+			t.Fatalf("audit page: %d %s", res.status, res.body)
+		}
+		payload := res.json()
+		ids := []string{}
+		for _, raw := range payload["items"].([]any) {
+			ids = append(ids, raw.(map[string]any)["target_id"].(string))
+		}
+		return ids, payload["has_more"] == true
+	}
+
+	first, more := page(5, 0)
+	if len(first) != 5 || !more {
+		t.Fatalf("the first page holds %d events, has_more=%v", len(first), more)
+	}
+	seen := append([]string{}, first...)
+	for offset := 5; ; offset += 5 {
+		next, hasMore := page(5, offset)
+		if len(next) == 0 {
+			t.Fatal("paging ran out of events before it ran out of pages")
+		}
+		seen = append(seen, next...)
+		if !hasMore {
+			break
+		}
+		if offset > 40 {
+			t.Fatal("has_more never cleared")
+		}
+	}
+	if len(seen) != 12 {
+		t.Fatalf("walking the pages found %d events, want 12", len(seen))
+	}
+	unique := map[string]bool{}
+	for _, id := range seen {
+		if unique[id] {
+			t.Fatalf("%s appeared on two pages", id)
+		}
+		unique[id] = true
+	}
+	// Newest first, and the walk keeps that order across page boundaries.
+	for i := range seen {
+		if want := fmt.Sprintf("probe-%02d", 11-i); seen[i] != want {
+			t.Fatalf("event %d of the walk is %s, want %s", i, seen[i], want)
+		}
+	}
+
+	// The last page must not claim there is more behind it.
+	if _, more := page(20, 0); more {
+		t.Fatal("a page holding every matching event still reports has_more")
+	}
+
+	// The other two operational lists say when they are showing a slice.
+	for _, path := range []string{"/api/v1/admin/logs?limit=1", "/api/v1/admin/jobs?limit=1"} {
+		res := admin.do(http.MethodGet, path, nil)
+		if res.status != http.StatusOK {
+			t.Fatalf("%s: %d %s", path, res.status, res.body)
+		}
+		if _, ok := res.json()["has_more"]; !ok {
+			t.Fatalf("%s does not report whether it was cut short", path)
+		}
+	}
+}

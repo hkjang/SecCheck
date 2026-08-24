@@ -12,10 +12,10 @@ const tone = (status: string) => status === 'FAILED' ? 'red' : status === 'RUNNI
 
 export default function JobsPage() {
   const toast = useToast()
-  const [data, setData] = useState<{ items: Job[]; summary: Summary }>()
+  const [data, setData] = useState<{ items: Job[]; summary: Summary; has_more?: boolean }>()
   const [status, setStatus] = useState('')
   const [live, setLive] = useState(false)
-  const load = () => { const qs = new URLSearchParams({ limit: '200' }); if (status) qs.set('status', status); return get<{ items: Job[]; summary: Summary }>(`/api/v1/admin/jobs?${qs}`).then(setData) }
+  const load = () => { const qs = new URLSearchParams({ limit: '200' }); if (status) qs.set('status', status); return get<{ items: Job[]; summary: Summary; has_more?: boolean }>(`/api/v1/admin/jobs?${qs}`).then(setData) }
   const [loadError, setLoadError] = useState<unknown>()
   useEffect(() => {
     let alive = true
@@ -51,6 +51,7 @@ export default function JobsPage() {
     <div className="card">{data.items.length ? <div className="table-wrap"><table><caption className="sr-only">백그라운드 작업 목록</caption>
       <thead><tr><th scope="col">유형</th><th scope="col">상태</th><th scope="col">시도</th><th scope="col">다음 실행</th><th scope="col">마지막 오류</th><th scope="col">변경</th><th scope="col"><span className="sr-only">작업</span></th></tr></thead>
       <tbody>{data.items.map(j => <tr key={j.id}><td>{typeLabel[j.type] || j.type}<div className="subtle"><code>{j.id.slice(0, 8)}</code></div></td><td><Badge tone={tone(j.status)}>{j.status}</Badge></td><td>{j.attempts}</td><td>{formatDate(j.available_at, true)}</td><td className="subtle" title={j.last_error}>{j.last_error ? j.last_error.slice(0, 90) : '-'}</td><td>{formatDate(j.updated_at, true)}</td><td>{j.status !== 'COMPLETED' && <Button small onClick={() => retry(j.id)}><RotateCcw size={13} /> 재시도</Button>}</td></tr>)}</tbody></table></div>
-      : <Empty title="조건에 맞는 작업이 없습니다." description="큐가 비어 있으면 알림과 검사가 모두 정상 처리된 상태입니다." />}</div>
+      : <Empty title="조건에 맞는 작업이 없습니다." description="큐가 비어 있으면 알림과 검사가 모두 정상 처리된 상태입니다." />}
+      {data.has_more && <div className="card-body"><p className="subtle">최근 200건만 표시합니다. 상태 필터로 좁혀 확인하세요.</p></div>}</div>
   </div>
 }

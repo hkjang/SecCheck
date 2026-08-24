@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { Link, useSearchParams } from 'react-router-dom'
 import { Download, RotateCcw, Search, ShieldCheck } from 'lucide-react'
 import { errorMessage, get } from '../lib/api'
@@ -17,7 +17,26 @@ export default function AuditPage() {
   const [filter, setFilter] = useState({ event: '', user: '', target: search.get('target') || '', target_type: search.get('target_type') || '', event_id: search.get('event_id') || '', result: '', from: '', to: '', limit: '200' })
   const [detail, setDetail] = useState<Record<string, unknown>>()
   const params = useMemo(() => { const qs = new URLSearchParams(); Object.entries(filter).forEach(([k, v]) => { if (v) qs.set(k, v) }); return qs }, [filter])
-  useEffect(() => { setItems(undefined); const timer = window.setTimeout(() => { get<{ items: Record<string, unknown>[]; events: { code: string; label: string }[] }>(`/api/v1/admin/audit?${params}`).then(page => { setItems(page.items); if (page.events?.length) setEvents(page.events) }) }, 200); return () => clearTimeout(timer) }, [params])
+  // The log is the record an investigation works through, and the screen used
+  // to stop at the newest page without saying so. Older events are now one
+  // button away instead of a guess at date filters.
+  const [offset, setOffset] = useState(0)
+  const [hasMore, setHasMore] = useState(false)
+  const key = params.toString()
+  const lastKey = useRef(key)
+  useEffect(() => {
+    if (lastKey.current !== key) { lastKey.current = key; if (offset !== 0) { setOffset(0); return } }
+    if (!offset) setItems(undefined)
+    const qs = new URLSearchParams(params); qs.set('offset', String(offset))
+    const timer = window.setTimeout(() => {
+      get<{ items: Record<string, unknown>[]; events: { code: string; label: string }[]; has_more: boolean }>(`/api/v1/admin/audit?${qs}`).then(page => {
+        setItems(prev => (offset && prev ? [...prev, ...page.items] : page.items))
+        setHasMore(Boolean(page.has_more))
+        if (page.events?.length) setEvents(page.events)
+      })
+    }, 200)
+    return () => clearTimeout(timer)
+  }, [key, offset])
   const [verifying, setVerifying] = useState(false)
   // The routine check only proves what has been appended since the last run;
   // a full pass re-hashes the whole chain and is offered separately.
@@ -49,6 +68,7 @@ export default function AuditPage() {
       <div className="field"><label>&nbsp;</label><Button disabled={!active} onClick={() => setFilter({ event: '', user: '', target: '', target_type: '', event_id: '', result: '', from: '', to: '', limit: filter.limit })}><RotateCcw size={13} /> 필터 초기화</Button></div>
     </div></div>
       {!items ? <Loading /> : items.length ? <div className="table-wrap"><table><thead><tr><th>시각</th><th>이벤트</th><th>사용자 / IP</th><th>대상</th><th>결과</th><th>해시</th></tr></thead><tbody>{items.map(x => <tr key={String(x.event_id)}><td>{formatDate(x.timestamp, true)}</td><td><button className="link-button" onClick={() => setDetail(x)}><Badge tone="blue">{String(x.event_label || x.event_type)}</Badge></button><div className="subtle">{String(x.event_type)}</div></td><td>{String(x.user_name || '-')}<div className="subtle">{String(x.source_ip || '')}</div></td><td>{x.target_id ? <button className="link-button" title="이 대상의 이력만 보기" onClick={() => setFilter(v => ({ ...v, target: String(x.target_id), target_type: String(x.target_type || '') }))}>{String(x.target_type)}<div className="subtle">{String(x.target_id)}</div></button> : <>{String(x.target_type)}</>}</td><td><Badge tone={x.result === 'SUCCESS' ? 'green' : 'red'}>{String(x.result)}</Badge></td><td><code title={String(x.event_hash)}>{String(x.event_hash).slice(0, 12)}…</code></td></tr>)}</tbody></table></div> : <Empty title="조건에 맞는 감사 이벤트가 없습니다." description="필터를 넓히거나 기간을 조정하세요." />}
+      {items && hasMore && <div className="card-body"><Button small onClick={() => setOffset(items.length)}>더 보기 (현재 {items.length.toLocaleString('ko-KR')}건)</Button> <span className="subtle">더 오래된 이벤트가 남아 있습니다.</span></div>}
     </div>
     {detail && <AuditDetail event={detail} onClose={() => setDetail(undefined)} />}
   </div>
