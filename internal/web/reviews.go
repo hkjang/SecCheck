@@ -1475,9 +1475,22 @@ func (s *Server) updateChangeRequest(w http.ResponseWriter, r *http.Request) {
 		problem(w, 422, "VALIDATION_FAILED", "상태는 DONE 또는 VERIFIED여야 합니다.", nil)
 		return
 	}
-	_, err = s.Store.Pool.Exec(r.Context(), `UPDATE change_requests SET answer=COALESCE(NULLIF($2,''),answer),status=$3,updated_at=now() WHERE id=$1`, id, in.Answer, in.Status)
+	// A verified request is closed. Nothing stopped the author from pressing
+	// "조치 완료" again afterwards, which reopened it: the review could no
+	// longer be completed, and one that was already approved carried an
+	// unverified request in the register. Pressing the same button twice also
+	// sent the reviewer the same notice twice.
+	from := map[string][]string{"DONE": {"OPEN"}, "VERIFIED": {"OPEN", "DONE"}}[in.Status]
+	tag, err := s.Store.Pool.Exec(r.Context(), `UPDATE change_requests SET answer=COALESCE(NULLIF($2,''),answer),status=$3,updated_at=now() WHERE id=$1 AND status = ANY($4)`, id, in.Answer, in.Status, from)
 	if err != nil {
 		s.fault(w, r, "UPDATE_FAILED", "보완 요청을 저장하지 못했습니다.", err)
+		return
+	}
+	if tag.RowsAffected() == 0 {
+		problem(w, 409, "STATE_CONFLICT", map[string]string{
+			"DONE":     "이미 조치 완료했거나 검증이 끝난 보완 요청입니다.",
+			"VERIFIED": "이미 검증이 끝난 보완 요청입니다.",
+		}[in.Status], map[string]string{"status": status})
 		return
 	}
 	_ = s.Store.Audit(r.Context(), auditFrom(r, "UPDATE_CHANGE_REQUEST", "CHANGE_REQUEST", id, map[string]string{"status": status}, in))

@@ -427,7 +427,27 @@ func TestCompletingAReviewCatchesVerdictsTheAuthorEditedAway(t *testing.T) {
 		t.Fatal(err)
 	}
 	step(requester, http.MethodPatch, "/api/v1/change-requests/"+changeID, map[string]any{"answer": "보완했습니다", "status": "DONE"}, http.StatusOK, "answer the change request")
+	// Pressing the same button twice must not send the reviewer a second notice.
+	step(requester, http.MethodPatch, "/api/v1/change-requests/"+changeID, map[string]any{"answer": "보완했습니다", "status": "DONE"}, http.StatusConflict, "answer the change request twice")
 	step(reviewer, http.MethodPatch, "/api/v1/change-requests/"+changeID, map[string]any{"answer": "", "status": "VERIFIED"}, http.StatusOK, "verify the change request")
+	// A verified request is closed: reopening it would block the completion of
+	// a review that is otherwise finished, or leave an approved one with work
+	// outstanding in the register.
+	step(requester, http.MethodPatch, "/api/v1/change-requests/"+changeID, map[string]any{"answer": "다시 열기", "status": "DONE"}, http.StatusConflict, "reopen a verified change request")
+	var finalStatus string
+	if err := h.db.Pool.QueryRow(ctx, `SELECT status FROM change_requests WHERE id=$1`, changeID).Scan(&finalStatus); err != nil {
+		t.Fatal(err)
+	}
+	if finalStatus != "VERIFIED" {
+		t.Errorf("the change request is %s after a refused reopen", finalStatus)
+	}
+	var notices int
+	if err := h.db.Pool.QueryRow(ctx, `SELECT count(*) FROM notifications WHERE event_type='CHANGE_DONE'`).Scan(&notices); err != nil {
+		t.Fatal(err)
+	}
+	if notices != 1 {
+		t.Errorf("the reviewer received %d 조치 완료 notices for one change request", notices)
+	}
 	step(requester, http.MethodPost, "/api/v1/review-requests/"+reviewID+"/submit", map[string]any{}, http.StatusOK, "resubmit")
 	step(reviewer, http.MethodPost, "/api/v1/review-requests/"+reviewID+"/begin-review", map[string]any{}, http.StatusOK, "begin review again")
 
