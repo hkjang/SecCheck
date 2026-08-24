@@ -1500,6 +1500,9 @@ func (s *Server) bulkChangeRequests(w http.ResponseWriter, r *http.Request) {
 		problem(w, 422, "VALIDATION_FAILED", "완료 예정일이 오늘보다 이전입니다. 지난 날짜로 요청하면 등록하자마자 기한 초과로 집계됩니다.", map[string]string{"due_date": "오늘 이후 날짜를 입력하세요."})
 		return
 	}
+	if s.rejectOutsideAssignee(w, r, id, in.AssigneeID) {
+		return
+	}
 	tx, err := s.Store.Pool.Begin(r.Context())
 	if err != nil {
 		s.fault(w, r, "CREATE_FAILED", "보완 요청을 만들지 못했습니다.", err)
@@ -1561,6 +1564,22 @@ func (s *Server) pastDueDate(ctx context.Context, value string) bool {
 	return past
 }
 
+// changeRequestAssignee validates who a correction is handed to. The item
+// assignment already refused anybody who cannot open the review; the change
+// request did not, so a name picked from the directory could be made
+// responsible for work they cannot reach -- and the notice, which carries the
+// review number and the reason, went to them anyway.
+func (s *Server) rejectOutsideAssignee(w http.ResponseWriter, r *http.Request, reviewID, assignee string) bool {
+	if strings.TrimSpace(assignee) == "" {
+		return false
+	}
+	if s.canAccessReviewAs(r.Context(), assignee, reviewID) {
+		return false
+	}
+	problem(w, 422, "NOT_A_PARTICIPANT", "이 심의에 참여하지 않는 사용자에게는 보완 조치를 배정할 수 없습니다.", map[string]string{"assignee_id": "참여자가 아닙니다."})
+	return true
+}
+
 func (s *Server) createChangeRequest(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 	if !s.canReview(r.Context(), session(r), id) {
@@ -1593,6 +1612,9 @@ func (s *Server) createChangeRequest(w http.ResponseWriter, r *http.Request) {
 	}
 	if s.pastDueDate(r.Context(), in.DueDate) {
 		problem(w, 422, "VALIDATION_FAILED", "완료 예정일이 오늘보다 이전입니다. 지난 날짜로 요청하면 등록하자마자 기한 초과로 집계됩니다.", map[string]string{"due_date": "오늘 이후 날짜를 입력하세요."})
+		return
+	}
+	if s.rejectOutsideAssignee(w, r, id, in.AssigneeID) {
 		return
 	}
 	if !s.itemBelongsToLatestSubmission(r.Context(), in.ItemID, id) {

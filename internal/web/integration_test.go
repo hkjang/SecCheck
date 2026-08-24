@@ -5024,3 +5024,65 @@ func TestAssigningOneItemChecksAndTellsTheAssignee(t *testing.T) {
 		t.Fatal("somebody outside the review is offered as an assignee")
 	}
 }
+
+// A correction handed to somebody outside the review is a correction nobody
+// can carry out -- and the notice that goes with it carries the review number
+// and the reason to a person who cannot open either.
+func TestACorrectionCannotBeHandedOutsideTheReview(t *testing.T) {
+	h := newHarness(t)
+	ctx := context.Background()
+	authorID := h.user("cr-author", "REQUESTER")
+	h.user("cr-reviewer", "SECURITY_REVIEWER")
+	outsiderID := h.user("cr-outsider", "REQUESTER")
+	author := h.login("cr-author")
+	reviewer := h.login("cr-reviewer")
+	var reviewerID string
+	if err := h.db.Pool.QueryRow(ctx, `SELECT id FROM users WHERE username='cr-reviewer'`).Scan(&reviewerID); err != nil {
+		t.Fatal(err)
+	}
+
+	reviewID := author.createReview("보완 배정 서비스")
+	items := []map[string]any{}
+	if err := json.Unmarshal([]byte(author.do(http.MethodGet, "/api/v1/review-requests/"+reviewID+"/items", nil).body), &items); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := h.db.Pool.Exec(ctx, `UPDATE review_requests SET reviewer_id=$2,status='REVIEWING' WHERE id=$1`, reviewID, reviewerID); err != nil {
+		t.Fatal(err)
+	}
+	itemID := items[0]["id"].(string)
+
+	res := reviewer.do(http.MethodPost, "/api/v1/review-requests/"+reviewID+"/change-requests",
+		map[string]any{"item_id": itemID, "reason": "권한 설정을 보완하세요", "assignee_id": outsiderID, "due_date": "2030-04-30"})
+	if res.status != http.StatusUnprocessableEntity {
+		t.Fatalf("assigning a correction to an outsider: %d %s", res.status, res.body)
+	}
+	if code := res.json()["error"].(map[string]any)["code"]; code != "NOT_A_PARTICIPANT" {
+		t.Fatalf("the refusal is reported as %v", code)
+	}
+	// Nothing was written, and nobody outside the review heard about it.
+	var made, told int
+	if err := h.db.Pool.QueryRow(ctx, `SELECT count(*) FROM change_requests WHERE review_request_id=$1`, reviewID).Scan(&made); err != nil {
+		t.Fatal(err)
+	}
+	if made != 0 {
+		t.Fatalf("%d change requests were created by a refused call", made)
+	}
+	if err := h.db.Pool.QueryRow(ctx, `SELECT count(*) FROM notifications WHERE recipient_id=$1`, outsiderID).Scan(&told); err != nil {
+		t.Fatal(err)
+	}
+	if told != 0 {
+		t.Fatalf("the outsider received %d notifications about a review they cannot open", told)
+	}
+
+	// The bulk path refuses the same name.
+	if res := reviewer.do(http.MethodPost, "/api/v1/review-requests/"+reviewID+"/change-requests/bulk",
+		map[string]any{"item_ids": []string{itemID}, "reason": "일괄 보완", "assignee_id": outsiderID, "due_date": "2030-04-30"}); res.status != http.StatusUnprocessableEntity {
+		t.Fatalf("bulk assigning a correction to an outsider: %d %s", res.status, res.body)
+	}
+
+	// Somebody on the review is accepted, so the rule refuses only outsiders.
+	if res := reviewer.do(http.MethodPost, "/api/v1/review-requests/"+reviewID+"/change-requests",
+		map[string]any{"item_id": itemID, "reason": "권한 설정을 보완하세요", "assignee_id": authorID, "due_date": "2030-04-30"}); res.status != http.StatusCreated {
+		t.Fatalf("assigning a correction to the author: %d %s", res.status, res.body)
+	}
+}
