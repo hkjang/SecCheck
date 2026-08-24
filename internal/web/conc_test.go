@@ -3,6 +3,7 @@ package web_test
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"sync"
 	"testing"
@@ -96,5 +97,62 @@ func TestConcurrentAnswersWithoutAVersionAllApply(t *testing.T) {
 	}
 	if stored != 1 {
 		t.Errorf("concurrent writers produced %d response rows for one item, want 1", stored)
+	}
+}
+
+// Uploading a new version of the same evidence twice at once -- two people, or
+// one double click -- read the same next version number and the second insert
+// was refused by the unique index, after its file had already been encrypted
+// and written. The upload came back as a server error, and the version history
+// gained nothing.
+func TestConcurrentEvidenceVersionsGetDistinctNumbers(t *testing.T) {
+	h := newHarness(t)
+	author := h.login(adminOf(h))
+	reviewID := author.createReview("증적 버전 경합")
+	items := []map[string]any{}
+	if err := json.Unmarshal([]byte(author.do(http.MethodGet, "/api/v1/review-requests/"+reviewID+"/items", nil).body), &items); err != nil {
+		t.Fatal(err)
+	}
+	itemID := items[0]["id"].(string)
+	first := author.upload(fmt.Sprintf("/api/v1/review-requests/%s/items/%s/evidences", reviewID, itemID), "증적.txt", "최초 본문")
+	if first.status != http.StatusCreated {
+		t.Fatalf("first upload: %d %s", first.status, first.body)
+	}
+	evidenceID, _ := first.json()["id"].(string)
+	if evidenceID == "" {
+		t.Fatalf("no evidence id in %s", first.body)
+	}
+
+	const uploaders = 4
+	var wg sync.WaitGroup
+	var mu sync.Mutex
+	accepted := 0
+	for i := 0; i < uploaders; i++ {
+		wg.Add(1)
+		go func(n int) {
+			defer wg.Done()
+			res := h.login("integration-admin").upload("/api/v1/evidences/"+evidenceID+"/versions", fmt.Sprintf("증적-v%d.txt", n), fmt.Sprintf("교체본 %d", n))
+			mu.Lock()
+			defer mu.Unlock()
+			if res.status == http.StatusCreated {
+				accepted++
+				return
+			}
+			t.Errorf("uploader %d got %d %s", n, res.status, res.body)
+		}(i)
+	}
+	wg.Wait()
+	if accepted != uploaders {
+		t.Errorf("%d of %d concurrent version uploads succeeded", accepted, uploaders)
+	}
+	var versions, distinct, current int
+	if err := h.db.Pool.QueryRow(context.Background(), `SELECT count(*),count(DISTINCT version),(SELECT current_version FROM evidences WHERE id=$1) FROM evidence_versions WHERE evidence_id=$1`, evidenceID).Scan(&versions, &distinct, &current); err != nil {
+		t.Fatal(err)
+	}
+	if versions != distinct {
+		t.Errorf("%d version rows share only %d numbers", versions, distinct)
+	}
+	if current != versions {
+		t.Errorf("the evidence points at version %d but %d versions exist", current, versions)
 	}
 }

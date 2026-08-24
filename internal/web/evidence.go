@@ -127,28 +127,39 @@ func (s *Server) newEvidenceVersion(w http.ResponseWriter, r *http.Request) {
 		s.fault(w, r, "KEY_UNAVAILABLE", "개인 암호화 키를 사용할 수 없습니다.", err)
 		return
 	}
+	// Two uploads of a new version at the same time -- two people, or one
+	// double click -- both read the same next number, and the second insert is
+	// refused by the unique index after its file has already been encrypted and
+	// written. Taking the row inside the transaction makes the second upload
+	// wait and then take the number after. The version is part of the AAD the
+	// file is sealed with, so it has to be settled before the bytes are
+	// written, not after.
+	tx, err := s.Store.Pool.Begin(r.Context())
+	if err != nil {
+		s.fault(w, r, "UPLOAD_FAILED", "새 증적 버전을 저장하지 못했습니다.", err)
+		return
+	}
+	defer tx.Rollback(r.Context())
 	var version int
-	_ = s.Store.Pool.QueryRow(r.Context(), `SELECT current_version+1 FROM evidences WHERE id=$1`, id).Scan(&version)
+	if err = tx.QueryRow(r.Context(), `SELECT current_version+1 FROM evidences WHERE id=$1 FOR UPDATE`, id).Scan(&version); err != nil {
+		s.fault(w, r, "UPLOAD_FAILED", "새 증적 버전을 저장하지 못했습니다.", err)
+		return
+	}
 	stored := store.NewID() + ".enc"
 	size, digest, err := s.writeEvidenceStream(stored, key, []byte(fmt.Sprintf("evidence:%s:%d", id, version)), upload.File)
 	if err != nil {
 		s.fault(w, r, "STORAGE_FAILED", "증적을 저장하지 못했습니다.", err)
 		return
 	}
-	tx, err := s.Store.Pool.Begin(r.Context())
+	_, err = tx.Exec(r.Context(), `INSERT INTO evidence_versions(id,evidence_id,version,stored_filename,size_bytes,sha256,mime_type,key_owner_id,key_version,scan_status,uploaded_by,original_filename) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$8,$11)`, store.NewID(), id, version, stored, size, digest, upload.MIME, uid, keyVersion, upload.Scan, upload.Name)
 	if err == nil {
-		_, err = tx.Exec(r.Context(), `INSERT INTO evidence_versions(id,evidence_id,version,stored_filename,size_bytes,sha256,mime_type,key_owner_id,key_version,scan_status,uploaded_by,original_filename) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$8,$11)`, store.NewID(), id, version, stored, size, digest, upload.MIME, uid, keyVersion, upload.Scan, upload.Name)
-		if err == nil {
-			_, err = tx.Exec(r.Context(), `UPDATE evidences SET original_filename=$2,stored_filename=$3,mime_type=$4,size_bytes=$5,sha256=$6,uploaded_by=$7,key_owner_id=$7,key_version=$8,scan_status=$9,current_version=$10 WHERE id=$1`, id, upload.Name, stored, upload.MIME, size, digest, uid, keyVersion, upload.Scan, version)
-		}
-		if err == nil {
-			err = enqueueScan(r.Context(), tx, id, upload.Scan)
-		}
-		if err == nil {
-			err = tx.Commit(r.Context())
-		} else {
-			_ = tx.Rollback(r.Context())
-		}
+		_, err = tx.Exec(r.Context(), `UPDATE evidences SET original_filename=$2,stored_filename=$3,mime_type=$4,size_bytes=$5,sha256=$6,uploaded_by=$7,key_owner_id=$7,key_version=$8,scan_status=$9,current_version=$10 WHERE id=$1`, id, upload.Name, stored, upload.MIME, size, digest, uid, keyVersion, upload.Scan, version)
+	}
+	if err == nil {
+		err = enqueueScan(r.Context(), tx, id, upload.Scan)
+	}
+	if err == nil {
+		err = tx.Commit(r.Context())
 	}
 	if err != nil {
 		_ = os.Remove(s.evidencePath(stored))
