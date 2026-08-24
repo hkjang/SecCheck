@@ -85,7 +85,9 @@ scrape_configs:
 지표 수집 쿼리가 실패하면 `/metrics`는 0을 돌려주지 않고 503으로 응답합니다. 데이터베이스가 답하지 않는 순간에 "실패한 작업 0건, 잠긴 계정 0건"을 기록하는 것은 사실이 아니며, 스크레이프 실패로 대상이 down으로 표시되는 편이 맞습니다.
 | `seccheck_storage_writable` | 증적 볼륨 쓰기 가능 여부(1/0) | 0이면 업로드가 전부 실패하는 상태 |
 | `seccheck_evidence_scan_pending` | 검사 대기 증적 수 | 감소하지 않으면 clamd 확인 |
-| `seccheck_scan_failures` | `CLEAN`·`SKIPPED`이 아닌 증적 수 | `> 0` 지속 시 조사 |
+| `seccheck_scan_failures` | 검사를 끝내지 못한(`ERROR`) 현재 증적 수 | `> 0`이면 clamd 확인 후 작업 재시도 |
+| `seccheck_evidence_unreadable` | 되읽기 확인에 실패한 증적 수 | `> 0`이면 즉시 조사(백업 복구 필요) |
+| `seccheck_evidence_unverified` | 아직 한 번도 되읽기 확인하지 않은 증적 수 | 신규 업로드분이며 시간이 지나도 줄지 않으면 스윕 확인 |
 | `seccheck_submission_failures_24h` | 24시간 제출 실패(4xx 이상) 수 | 급증 시 규칙·증적 정책 확인 |
 | `seccheck_db_connections` | 커넥션 풀 상태 (`state` label: total/acquired/idle) | `acquired`가 `total`에 근접하면 포화 |
 

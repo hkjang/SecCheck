@@ -3671,6 +3671,64 @@ func TestNobodyReviewsTheirOwnRequest(t *testing.T) {
 	}
 }
 
+// A quarantined file stays counted for ever if the gauge counts everything that
+// is not CLEAN: the number never returns to zero, so the alert written on it is
+// switched off within a week of the first infected upload. The gauge has to
+// mean "a scan that could not finish", which is the state somebody can act on.
+func TestScanFailureMetricCountsOnlyWhatSomebodyCanFix(t *testing.T) {
+	h := newHarness(t)
+	admin := h.login(adminOf(h))
+	ctx := context.Background()
+	reviewID := admin.createReview("검사 지표")
+	var items []map[string]any
+	if err := json.Unmarshal([]byte(admin.do(http.MethodGet, "/api/v1/review-requests/"+reviewID+"/items", nil).body), &items); err != nil {
+		t.Fatal(err)
+	}
+	itemID := items[0]["id"].(string)
+	if res := admin.upload(fmt.Sprintf("/api/v1/review-requests/%s/items/%s/evidences", reviewID, itemID), "증적.txt", "본문"); res.status != http.StatusCreated {
+		t.Fatalf("upload: %d %s", res.status, res.body)
+	}
+	gauge := func(name string) float64 {
+		t.Helper()
+		body := admin.do(http.MethodGet, "/metrics", nil).body
+		for _, line := range strings.Split(body, "\n") {
+			if strings.HasPrefix(line, name+" ") {
+				var v float64
+				_, _ = fmt.Sscanf(strings.TrimPrefix(line, name+" "), "%f", &v)
+				return v
+			}
+		}
+		t.Fatalf("/metrics does not carry %s", name)
+		return 0
+	}
+
+	// A file the scanner found malware in is quarantined and detached. It is
+	// handled, and it must not hold the gauge above zero for ever.
+	if _, err := h.db.Pool.Exec(ctx, `UPDATE evidences SET scan_status='INFECTED',deleted_at=now()`); err != nil {
+		t.Fatal(err)
+	}
+	if got := gauge("seccheck_scan_failures"); got != 0 {
+		t.Errorf("a quarantined file counts as %v scan failures; the gauge can never clear", got)
+	}
+	// A scan that gave up is the state an administrator can retry.
+	if _, err := h.db.Pool.Exec(ctx, `UPDATE evidences SET scan_status='ERROR',deleted_at=NULL`); err != nil {
+		t.Fatal(err)
+	}
+	if got := gauge("seccheck_scan_failures"); got != 1 {
+		t.Errorf("seccheck_scan_failures = %v, want the one file whose scan could not finish", got)
+	}
+	// And the integrity sweep's findings are exported for the same reason.
+	if _, err := h.db.Pool.Exec(ctx, `UPDATE evidences SET verify_error='encrypted file is missing from the evidence volume',verified_at=now()`); err != nil {
+		t.Fatal(err)
+	}
+	if got := gauge("seccheck_evidence_unreadable"); got != 1 {
+		t.Errorf("seccheck_evidence_unreadable = %v, want 1", got)
+	}
+	if got := gauge("seccheck_evidence_unverified"); got != 0 {
+		t.Errorf("seccheck_evidence_unverified = %v, want 0 once the file has been checked", got)
+	}
+}
+
 // The sweep records whether each stored file still matches its record, and an
 // administrator has to be able to look that up: the notification is read once
 // and swept away by retention, the state is not.
