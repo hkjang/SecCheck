@@ -872,3 +872,63 @@ func TestStalledRemindersSkipAnAssigneeWhoLostTheRole(t *testing.T) {
 		t.Errorf("the reminder does not name the stuck review: %q", body)
 	}
 }
+
+// An API key's expiry was written down when it was issued and never mentioned
+// again -- not on the screen, not in a message. Whatever ran on the key just
+// started failing with 401 one morning.
+func TestAnExpiringAPIKeyWarnsItsOwner(t *testing.T) {
+	db := testdb.New(t)
+	ctx := context.Background()
+	owner := testdb.Bootstrap(t, db, "key-owner")
+	worker := maintenance.New(db, nil)
+	exec := func(sql string, args ...any) {
+		t.Helper()
+		if _, err := db.Pool.Exec(ctx, sql, args...); err != nil {
+			t.Fatalf("%s: %v", sql, err)
+		}
+	}
+	key := func(name string, expiresInDays int, revoked bool) {
+		t.Helper()
+		var expiry any
+		if expiresInDays != 0 {
+			expiry = time.Now().Add(time.Duration(expiresInDays) * 24 * time.Hour)
+		}
+		exec(`INSERT INTO api_keys(id,user_id,name,prefix,secret_hash,scopes,expires_at,revoked_at)
+                      VALUES($1,$2,$3,'sk_test',$4,ARRAY['read']::text[],$5,CASE WHEN $6 THEN now() ELSE NULL END)`,
+			store.NewID(), owner, name, []byte(name), expiry, revoked)
+	}
+	key("만료임박", 3, false)
+	key("여유", 90, false)
+	key("무기한", 0, false)
+	key("폐기됨", 2, true)
+
+	worker.Sweep(ctx)
+	notices := func() []string {
+		t.Helper()
+		rows, err := db.Pool.Query(ctx, `SELECT body FROM notifications WHERE recipient_id=$1 AND event_type='API_KEY_EXPIRING'`, owner)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer rows.Close()
+		var out []string
+		for rows.Next() {
+			var body string
+			if rows.Scan(&body) == nil {
+				out = append(out, body)
+			}
+		}
+		return out
+	}
+	got := notices()
+	if len(got) != 1 {
+		t.Fatalf("the owner was warned about %d keys, want only the one expiring this week: %v", len(got), got)
+	}
+	if !strings.Contains(got[0], "만료임박") || !strings.Contains(got[0], "3일 뒤") {
+		t.Errorf("the warning does not say which key or when: %q", got[0])
+	}
+	// A key nobody rotated must not be reported every hour.
+	worker.Sweep(ctx)
+	if again := notices(); len(again) != 1 {
+		t.Errorf("a second sweep raised the count to %d", len(again))
+	}
+}

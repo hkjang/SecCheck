@@ -12,6 +12,7 @@ const adminDestination: Record<string, { to: string; label: string }> = {
   JOB_FAILED: { to: '/admin/jobs', label: '작업 큐 열기' },
   STORAGE_LOW: { to: '/admin/system', label: '시스템 정보 열기' },
   AUDIT_CHAIN_BROKEN: { to: '/admin/audit', label: '감사로그 열기' },
+  API_KEY_EXPIRING: { to: '/profile/keys', label: 'API 키 열기' },
 }
 type EventInfo = { code: string; label: string; description: string }
 type Preference = { email_enabled: boolean; digest: string; muted_events: string[] }

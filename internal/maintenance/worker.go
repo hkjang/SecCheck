@@ -7,6 +7,7 @@ package maintenance
 import (
 	"context"
 	"fmt"
+	"math"
 	"os"
 	"strings"
 	"time"
@@ -38,6 +39,9 @@ const (
 	// nearly full, or absolutely close enough that a few uploads finish it.
 	lowStorageRatio = 0.10
 	lowStorageBytes = 2 << 30
+	// How long before an API key expires its owner is warned, and how long
+	// before they are warned again.
+	apiKeyWarningDays = 7
 )
 
 type Worker struct {
@@ -84,6 +88,7 @@ func (w *Worker) Sweep(ctx context.Context) map[string]int64 {
 	removed["stall_alerts"] = w.alertStalledQueue(ctx)
 	removed["failure_alerts"] = w.alertFailedJobs(ctx)
 	removed["storage_alerts"] = w.alertLowStorage(ctx)
+	removed["api_key_reminders"] = w.remindExpiringAPIKeys(ctx)
 	removed["purged_evidence_files"] = w.purgeDeletedEvidence(ctx)
 	total := int64(0)
 	for _, n := range removed {
@@ -93,6 +98,56 @@ func (w *Worker) Sweep(ctx context.Context) map[string]int64 {
 		w.Store.Log(ctx, "INFO", "", "maintenance", "retention sweep completed", map[string]any{"retention_days": retention, "removed": removed})
 	}
 	return removed
+}
+
+// remindExpiringAPIKeys warns the owner before a key stops working. The expiry
+// was recorded when the key was issued and never mentioned again, so whatever
+// was built on it -- a nightly export, an agent over MCP -- failed with 401 one
+// morning and the owner had to work out why.
+func (w *Worker) remindExpiringAPIKeys(ctx context.Context) int64 {
+	rows, err := w.Store.Pool.Query(ctx, `
+                UPDATE api_keys SET expiry_reminded_at=now()
+                WHERE id IN (
+                  SELECT k.id FROM api_keys k JOIN users u ON u.id=k.user_id
+                  WHERE k.revoked_at IS NULL AND u.active
+                    AND k.expires_at IS NOT NULL
+                    AND k.expires_at > now() AND k.expires_at <= now()+make_interval(days=>$1)
+                    AND (k.expiry_reminded_at IS NULL OR k.expiry_reminded_at < now()-make_interval(days=>$1))
+                  LIMIT 200)
+                RETURNING user_id,name,prefix,expires_at`, apiKeyWarningDays)
+	if err != nil {
+		w.Store.Log(ctx, "ERROR", "", "maintenance", "api key expiry query failed", map[string]any{"error": err.Error()})
+		return 0
+	}
+	type expiring struct {
+		owner, name, prefix string
+		at                  time.Time
+	}
+	var pending []expiring
+	for rows.Next() {
+		var key expiring
+		if rows.Scan(&key.owner, &key.name, &key.prefix, &key.at) == nil {
+			pending = append(pending, key)
+		}
+	}
+	rows.Close()
+
+	var sent int64
+	for _, key := range pending {
+		// Rounding down reads as a day early -- a key with 71 hours left is
+		// three days away, not two.
+		days := int(math.Ceil(time.Until(key.at).Hours() / 24))
+		when := fmt.Sprintf("%d일 뒤", days)
+		if days < 1 {
+			when = "곧"
+		}
+		body := fmt.Sprintf("API 키 %s(%s…)가 %s 만료됩니다(%s). 만료되면 이 키를 쓰는 연동은 401로 실패합니다. 프로필 > API 키에서 재발급하세요.",
+			key.name, key.prefix, when, key.at.In(w.Store.Location(ctx)).Format("2006-01-02 15:04"))
+		if err = w.Store.Notify(ctx, key.owner, "API_KEY_EXPIRING", "API 키 만료 임박", body, "", ""); err == nil {
+			sent++
+		}
+	}
+	return sent
 }
 
 // alertLowStorage warns before the evidence volume fills. An appliance that
