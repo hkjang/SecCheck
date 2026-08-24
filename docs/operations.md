@@ -332,6 +332,7 @@ docker compose exec seccheck /app/seccheck selftest --username admin --password 
 | 019 | 오픈 예정일 알림 발송 시각(`review_requests.open_date_reminded_at`) |
 | 020 | 항목 증적이 마지막으로 바뀐 시각 함수 `evidence_touched_at()` (판정 이후 증적 변경 감지) |
 | 021 | API 키 만료 임박 알림 발송 시각(`api_keys.expiry_reminded_at`) |
+| 022 | 증적 정기 무결성 확인 시각(`evidences.verified_at`)과 조회 인덱스 |
 
 ## 업그레이드와 롤백
 

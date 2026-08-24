@@ -9,10 +9,12 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"io"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"github.com/hkjang/SecCheck/internal/cryptox"
 	"github.com/hkjang/SecCheck/internal/store"
@@ -102,6 +104,31 @@ func (v *Vault) Read(dst io.Writer, name string, key, aad []byte) (int64, string
 	digest := sha256.Sum256(plain)
 	written, err := dst.Write(plain)
 	return int64(written), hex.EncodeToString(digest[:]), err
+}
+
+// VerifyBlob reads one stored blob back and reports why it does not match what
+// the database says, or "" when it does. The command line tool and the hourly
+// sweep ask the same question, and asking it two different ways is how the two
+// answers start to disagree.
+func (v *Vault) VerifyBlob(ctx context.Context, evidenceID, stored, owner string, keyVersion, version int, size int64, digest string) string {
+	key, err := v.UserKey(ctx, owner, keyVersion)
+	if err != nil {
+		return "encryption key unavailable: " + err.Error()
+	}
+	readSize, readDigest, err := v.Read(io.Discard, stored, key, AAD(evidenceID, version))
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return "encrypted file is missing from the evidence volume"
+		}
+		return err.Error()
+	}
+	if readSize != size {
+		return fmt.Sprintf("size mismatch: stored %d bytes, recorded %d", readSize, size)
+	}
+	if !strings.EqualFold(readDigest, digest) {
+		return "SHA-256 mismatch between the file and the database"
+	}
+	return ""
 }
 
 // EnsureUserKey creates the caller's first data key if they do not have one.

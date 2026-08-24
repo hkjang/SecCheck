@@ -965,3 +965,81 @@ func TestJobsLeftRunningByAStoppedWorkerAreRequeued(t *testing.T) {
 		t.Errorf("a job claimed a minute ago was requeued (%s) under a working worker", got)
 	}
 }
+
+// The evidence volume is what the service exists to keep, and nothing ever read
+// it back: a file lost to a bad disk or a restore that missed the volume was
+// found when somebody tried to download it, which for evidence is during an
+// audit.
+func TestStoredEvidenceIsReadBackAndFailuresAreReported(t *testing.T) {
+	db := testdb.New(t)
+	ctx := context.Background()
+	dir := t.TempDir()
+	key, err := cryptox.RandomBytes(32)
+	if err != nil {
+		t.Fatal(err)
+	}
+	box, err := cryptox.New(key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	blobs := vault.New(dir, box, db)
+	owner := testdb.Bootstrap(t, db, "integrity-owner")
+	if err = blobs.EnsureUserKey(ctx, owner); err != nil {
+		t.Fatal(err)
+	}
+	userKey, keyVersion, err := blobs.ActiveUserKey(ctx, owner)
+	if err != nil {
+		t.Fatal(err)
+	}
+	evidenceID, stored := store.NewID(), store.NewID()+".enc"
+	size, digest, err := blobs.Write(stored, userKey, vault.AAD(evidenceID, 1), strings.NewReader("증적 본문입니다"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	itemID := seedEvidenceRow(t, db, store.NewID(), owner, store.NewID()+".enc", keyVersion, 200)
+	if _, err = db.Pool.Exec(ctx, `INSERT INTO evidences(id,submission_item_id,original_filename,stored_filename,mime_type,size_bytes,sha256,uploaded_by,key_owner_id,key_version,scan_status)
+              VALUES($1,$2,'증적.txt',$3,'text/plain',$4,$5,$6,$6,$7,'CLEAN')`, evidenceID, itemID, stored, size, digest, owner, keyVersion); err != nil {
+		t.Fatal(err)
+	}
+	worker := maintenance.New(db, blobs)
+
+	// A healthy volume produces no noise, and the row records that it was read.
+	worker.Sweep(ctx)
+	alerts := func() int {
+		t.Helper()
+		var n int
+		if err := db.Pool.QueryRow(ctx, `SELECT count(*) FROM notifications WHERE event_type='EVIDENCE_UNREADABLE'`).Scan(&n); err != nil {
+			t.Fatal(err)
+		}
+		return n
+	}
+	if got := alerts(); got != 0 {
+		t.Fatalf("a healthy volume raised %d alerts", got)
+	}
+	var verified bool
+	if err = db.Pool.QueryRow(ctx, `SELECT verified_at IS NOT NULL FROM evidences WHERE id=$1`, evidenceID).Scan(&verified); err != nil {
+		t.Fatal(err)
+	}
+	if !verified {
+		t.Error("the sweep did not record that the file was read back")
+	}
+
+	// Now the volume loses the file, which is what a failed restore looks like.
+	if err = os.Remove(blobs.Path(stored)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = db.Pool.Exec(ctx, `UPDATE evidences SET verified_at=NULL WHERE id=$1`, evidenceID); err != nil {
+		t.Fatal(err)
+	}
+	worker.Sweep(ctx)
+	if got := alerts(); got == 0 {
+		t.Fatal("a missing evidence file was not reported to anybody")
+	}
+	var body string
+	if err = db.Pool.QueryRow(ctx, `SELECT body FROM notifications WHERE event_type='EVIDENCE_UNREADABLE' LIMIT 1`).Scan(&body); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(body, "증적.txt") {
+		t.Errorf("the alert does not name the file: %q", body)
+	}
+}

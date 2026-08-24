@@ -45,6 +45,10 @@ const (
 	// How long a job may hold its lock before the worker holding it is assumed
 	// to be gone. Both workers use the same window when they start.
 	abandonedAfter = 15 * time.Minute
+	// How many stored files are read back per sweep. Small enough that an
+	// hourly check is invisible next to ordinary uploads, large enough that a
+	// volume of any size comes round within days.
+	evidenceSamplePerSweep = 20
 )
 
 type Worker struct {
@@ -92,6 +96,7 @@ func (w *Worker) Sweep(ctx context.Context) map[string]int64 {
 	removed["failure_alerts"] = w.alertFailedJobs(ctx)
 	removed["storage_alerts"] = w.alertLowStorage(ctx)
 	removed["requeued_jobs"] = w.requeueAbandonedJobs(ctx)
+	removed["evidence_checked"] = w.verifyEvidenceSample(ctx)
 	removed["api_key_reminders"] = w.remindExpiringAPIKeys(ctx)
 	removed["purged_evidence_files"] = w.purgeDeletedEvidence(ctx)
 	total := int64(0)
@@ -102,6 +107,89 @@ func (w *Worker) Sweep(ctx context.Context) map[string]int64 {
 		w.Store.Log(ctx, "INFO", "", "maintenance", "retention sweep completed", map[string]any{"retention_days": retention, "removed": removed})
 	}
 	return removed
+}
+
+// verifyEvidenceSample reads a few stored files back and compares them with
+// what the database records. The evidence volume is the one thing this service
+// exists to keep, and nothing ever read it back on its own: a disk that lost a
+// file, a restore that missed the volume, a blob a power cut left without its
+// directory entry -- all of it surfaced when somebody tried to download the
+// file, which for evidence is during an audit. The command line tool can check
+// everything at once; this checks the least recently checked handful every
+// sweep, so a volume comes round on its own.
+func (w *Worker) verifyEvidenceSample(ctx context.Context) int64 {
+	if w.Vault == nil {
+		return 0
+	}
+	rows, err := w.Store.Pool.Query(ctx, `SELECT e.id,e.original_filename,e.stored_filename,e.key_owner_id,e.key_version,e.current_version,e.size_bytes,e.sha256,COALESCE(r.review_number,'')
+                FROM evidences e
+                LEFT JOIN submission_items si ON si.id=e.submission_item_id
+                LEFT JOIN submissions sub ON sub.id=si.submission_id
+                LEFT JOIN review_requests r ON r.id=sub.review_request_id
+                WHERE e.deleted_at IS NULL AND e.purged_at IS NULL
+                ORDER BY e.verified_at NULLS FIRST, e.created_at LIMIT $1`, evidenceSamplePerSweep)
+	if err != nil {
+		w.Store.Log(ctx, "ERROR", "", "maintenance", "evidence verification query failed", map[string]any{"error": err.Error()})
+		return 0
+	}
+	type blob struct {
+		id, filename, stored, owner, digest, review string
+		keyVersion, version                         int
+		size                                        int64
+	}
+	var sample []blob
+	for rows.Next() {
+		var b blob
+		if rows.Scan(&b.id, &b.filename, &b.stored, &b.owner, &b.keyVersion, &b.version, &b.size, &b.digest, &b.review) == nil {
+			sample = append(sample, b)
+		}
+	}
+	rows.Close()
+
+	var checked int64
+	var broken []string
+	for _, b := range sample {
+		reason := w.Vault.VerifyBlob(ctx, b.id, b.stored, b.owner, b.keyVersion, b.version, b.size, b.digest)
+		// The timestamp moves either way: a file that cannot be read must not
+		// be re-checked every sweep in place of files nobody has looked at yet,
+		// and the administrators have already been told about it.
+		_, _ = w.Store.Pool.Exec(ctx, `UPDATE evidences SET verified_at=now() WHERE id=$1`, b.id)
+		checked++
+		if reason == "" {
+			continue
+		}
+		w.Store.Log(ctx, "ERROR", "", "maintenance", "stored evidence does not match its record", map[string]any{"evidence_id": b.id, "filename": b.filename, "review": b.review, "reason": reason})
+		label := b.filename
+		if b.review != "" {
+			label = fmt.Sprintf("%s(%s)", b.filename, b.review)
+		}
+		broken = append(broken, label+": "+reason)
+	}
+	if len(broken) > 0 {
+		w.alertUnreadableEvidence(ctx, broken)
+	}
+	return checked
+}
+
+// alertUnreadableEvidence tells the administrators, once per reminder window,
+// that the volume no longer holds what the database says it holds.
+func (w *Worker) alertUnreadableEvidence(ctx context.Context, broken []string) {
+	admins, err := w.uninformedAdmins(ctx, "EVIDENCE_UNREADABLE")
+	if err != nil || len(admins) == 0 {
+		return
+	}
+	named := broken
+	if len(named) > 3 {
+		named = named[:3]
+	}
+	body := fmt.Sprintf("증적 %d건을 저장소에서 읽을 수 없거나 기록과 다릅니다: %s", len(broken), strings.Join(named, " / "))
+	if len(broken) > len(named) {
+		body += fmt.Sprintf(" 외 %d건", len(broken)-len(named))
+	}
+	body += ". 백업본 복구가 필요할 수 있습니다. `seccheck verify-evidence`로 전체를 점검하세요."
+	for _, admin := range admins {
+		_ = w.Store.Notify(ctx, admin, "EVIDENCE_UNREADABLE", "증적 무결성 확인 실패", body, "", "")
+	}
 }
 
 // requeueAbandonedJobs returns work whose worker went away to the queue. Both

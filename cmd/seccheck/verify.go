@@ -3,9 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
-	"io"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -146,29 +144,11 @@ func verifyEvidence(args []string) int {
 	var bytesChecked int64
 	started := time.Now()
 	for _, rec := range records {
-		key, keyErr := blobs.UserKey(ctx, rec.owner, rec.keyVersion)
-		if keyErr != nil {
-			failures = append(failures, failure{rec.id, rec.filename, "encryption key unavailable: " + keyErr.Error()})
-			continue
-		}
-		size, digest, readErr := blobs.Read(io.Discard, rec.stored, key, vault.AAD(rec.id, rec.version))
-		if readErr != nil {
-			reason := readErr.Error()
-			if errors.Is(readErr, os.ErrNotExist) {
-				reason = "encrypted file is missing from the evidence volume"
-			}
+		if reason := blobs.VerifyBlob(ctx, rec.id, rec.stored, rec.owner, rec.keyVersion, rec.version, rec.size, rec.digest); reason != "" {
 			failures = append(failures, failure{rec.id, rec.filename, reason})
 			continue
 		}
-		if size != rec.size {
-			failures = append(failures, failure{rec.id, rec.filename, fmt.Sprintf("size mismatch: stored %d bytes, recorded %d", size, rec.size)})
-			continue
-		}
-		if !strings.EqualFold(digest, rec.digest) {
-			failures = append(failures, failure{rec.id, rec.filename, "SHA-256 mismatch between the file and the database"})
-			continue
-		}
-		bytesChecked += size
+		bytesChecked += rec.size
 	}
 
 	orphans, orphanBytes := findOrphans(ctx, db, cfg.DataDir, sample > 0)
