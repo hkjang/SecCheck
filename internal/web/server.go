@@ -133,6 +133,7 @@ func (s *Server) routes() {
 	s.handle("POST", "/api/v1/review-requests/{id}/review-results/bulk", "워크플로", "선택한 항목 일괄 판정", []string{"SECURITY_REVIEWER"}, false, s.bulkSaveReviewResults)
 	s.handle("PUT", "/api/v1/review-requests/{id}/review-results/{itemID}", "워크플로", "항목별 검토 결과 저장", []string{"SECURITY_REVIEWER"}, false, s.saveReviewResult)
 	s.handle("POST", "/api/v1/review-requests/{id}/change-requests", "워크플로", "항목 보완 요청 등록", []string{"SECURITY_REVIEWER"}, false, s.createChangeRequest)
+	s.handle("POST", "/api/v1/review-requests/{id}/change-requests/bulk", "워크플로", "선택한 항목에 같은 보완 요청 일괄 등록. 이미 처리 중인 항목은 건너뜁니다", []string{"SECURITY_REVIEWER"}, false, s.bulkChangeRequests)
 	s.handle("PATCH", "/api/v1/change-requests/{id}", "워크플로", "보완 조치 답변 또는 조치 검증", nil, false, s.updateChangeRequest)
 	s.handle("POST", "/api/v1/review-requests/{id}/complete-review", "워크플로", "검토 완료. 승인 절차 설정에 따라 승인 대기 또는 완료", []string{"SECURITY_REVIEWER"}, false, s.completeReview)
 	s.handle("POST", "/api/v1/review-requests/{id}/approve", "워크플로", "최종 승인", []string{"APPROVER"}, false, s.approveReview)

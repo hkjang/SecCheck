@@ -102,7 +102,7 @@ export default function ReviewDetail() {
       <aside className="card detail-panel"><div className="card-header"><h3>항목 상세</h3>{current && <Badge tone="blue">{current.item_code}</Badge>}{filtered.length > 0 && <div className="header-actions"><span className="subtle">{position >= 0 ? position + 1 : '-'} / {filtered.length}</span><Button small aria-label="이전 항목 (Alt+위쪽 화살표)" title="이전 항목 (Alt+↑)" disabled={position <= 0} onClick={() => step(-1)}><ChevronUp size={13} /></Button><Button small aria-label="다음 항목 (Alt+아래쪽 화살표)" title="다음 항목 (Alt+↓)" disabled={position < 0 || position >= filtered.length - 1} onClick={() => step(1)}><ChevronDown size={13} /></Button></div>}</div><div className="card-body">{current ? <><strong>{current.title}</strong><p className="subtle" data-sx="sx-022">{current.question}</p><h4>점검 가이드</h4><div className="guide-block">{current.guide || '등록된 가이드가 없습니다.'}</div>{current.legal_basis && <><h4>관련 근거</h4><p className="subtle" data-sx="sx-049">{current.legal_basis}</p></>}{current.example && <><h4>작성 예시</h4><div className="guide-block">{current.example}</div></>}<h4>증적 ({current.evidences.length})</h4>{current.evidences.map(e => <div className="evidence-item" key={e.id}><button type="button" className="table-link" onClick={() => save(`/api/v1/evidences/${e.id}/download`)}><Paperclip size={13} /> {e.original_filename}</button><div className="subtle">{formatBytes(e.size_bytes)} · v{e.current_version} <ScanBadge status={e.scan_status} detail={String(e.scan_detail || '')} /></div><EvidencePreview evidence={e} /></div>)}<h4>보완 요청</h4>{current.change_requests.length ? current.change_requests.map(c => <div className="change-item" key={c.id}><StatusBadge status={c.status} /><p>{c.reason}</p>{c.answer&&<div className="guide-block">{c.answer}</div>}{c.due_date && <div className="subtle">기한 {formatDate(c.due_date)}</div>}{reviewer&&review.status==='REVIEWING'&&c.status==='DONE'&&<Button small variant="primary" onClick={()=>verifyChange(c.id)}><Check size={13}/> 조치 검증</Button>}</div>) : <p className="subtle">보완 요청이 없습니다.</p>}<CommentBox reviewID={review.id} item={current} onSaved={load} /></> : <Empty title="항목을 선택하세요." />}</div></aside></div>
     {selecting && picked.size > 0 && <div className="bulk-bar" role="region" aria-label="선택한 항목 일괄 작업"><CheckSquare size={16} /><strong>{picked.size}개 항목 선택됨</strong><Button small onClick={() => setPicked(new Set(filtered.map(x => x.id)))}>보이는 항목 모두</Button><Button small onClick={() => setPicked(new Set())}>선택 해제</Button><Button small variant="primary" onClick={() => setBulkOpen(true)}><ListChecks size={13} /> {judging ? '일괄 판정' : '일괄 처리'}</Button></div>}
     {historyOpen && <HistoryModal reviewID={id} onClose={() => setHistoryOpen(false)} />}
-    {bulkOpen && judging && <BulkReviewModal reviewID={id} itemIDs={Array.from(picked)} count={picked.size} onClose={() => setBulkOpen(false)} onSaved={async () => { setBulkOpen(false); setPicked(new Set()); await load() }} />}
+    {bulkOpen && judging && <BulkReviewModal reviewID={id} itemIDs={Array.from(picked)} count={picked.size} people={people} onClose={() => setBulkOpen(false)} onSaved={async () => { setBulkOpen(false); setPicked(new Set()); await load() }} />}
     {bulkOpen && !judging && <BulkModal reviewID={id} itemIDs={Array.from(picked)} count={picked.size} people={people} onClose={() => setBulkOpen(false)} onSaved={async () => { setBulkOpen(false); setPicked(new Set()); await load() }} />}
     {validation && <Modal title="제출 전 확인이 필요합니다" onClose={() => setValidation(null)} footer={<Button variant="primary" onClick={() => setValidation(null)}>확인</Button>}><p className="subtle">서버 검증에서 {validation.length}개 항목의 누락이 발견되었습니다. 항목을 누르면 해당 위치로 이동합니다.</p>{validation.map((issue, i) => <div className="change-item" key={i}><button className="link-button" onClick={() => focusItem(String(issue.item_code))}><strong>{String(issue.item_code)} {String(issue.title)}</strong></button><ul>{(issue.reasons as string[]).map(x => <li key={x}>{x}</li>)}</ul></div>)}</Modal>}
     {dialog && <DecisionModal kind={dialog} busy={busy} onClose={() => setDialog(null)} onSubmit={(data) => dialog === 'complete' ? action('complete-review', data) : action(dialog === 'approval' ? 'approve' : 'reject', data)} />}
@@ -204,19 +204,37 @@ const resultLabels: Record<string, string> = { COMPLIANT: '적합', CONDITIONAL:
 
 // The reviewer's counterpart to BulkModal. A long run of the same verdict is
 // what makes going through a checklist take an afternoon.
-function BulkReviewModal({ reviewID, itemIDs, count, onClose, onSaved }: { reviewID: string; itemIDs: string[]; count: number; onClose: () => void; onSaved: () => Promise<void> }) {
+function BulkReviewModal({ reviewID, itemIDs, count, people, onClose, onSaved }: { reviewID: string; itemIDs: string[]; count: number; people: DirectoryUser[]; onClose: () => void; onSaved: () => Promise<void> }) {
   const toast = useToast()
   const [form, setForm] = useState({ result: 'COMPLIANT', final_applicability: '', evidence_adequacy: '', opinion: '', overwrite: false })
+  // The same gap found on ten items was ten separate change requests, written
+  // ten times and delivered as ten notices for one piece of work.
+  const [mode, setMode] = useState<'VERDICT' | 'CHANGE'>('VERDICT')
+  const [change, setChange] = useState({ reason: '', due_date: '', assignee_id: '' })
   const [busy, setBusy] = useState(false)
   const submit = async () => {
     setBusy(true)
     try {
-      const out = await post<{ applied: number; skipped: number }>(`/api/v1/review-requests/${reviewID}/review-results/bulk`, { ...form, item_ids: itemIDs })
-      toast.push(out.skipped ? `${out.applied}개 항목을 판정했습니다. 이미 판정된 ${out.skipped}개는 건너뛰었습니다.` : `${out.applied}개 항목을 판정했습니다.`)
+      if (mode === 'CHANGE') {
+        const out = await post<{ created: number; skipped: number }>(`/api/v1/review-requests/${reviewID}/change-requests/bulk`, { ...change, item_ids: itemIDs })
+        toast.push(out.skipped ? `보완 요청 ${out.created}건을 등록했습니다. 이미 처리 중인 ${out.skipped}개는 건너뛰었습니다.` : `보완 요청 ${out.created}건을 등록했습니다.`)
+      } else {
+        const out = await post<{ applied: number; skipped: number }>(`/api/v1/review-requests/${reviewID}/review-results/bulk`, { ...form, item_ids: itemIDs })
+        toast.push(out.skipped ? `${out.applied}개 항목을 판정했습니다. 이미 판정된 ${out.skipped}개는 건너뛰었습니다.` : `${out.applied}개 항목을 판정했습니다.`)
+      }
       await onSaved()
     } catch (e) { toast.push(errorMessage(e), 'error') } finally { setBusy(false) }
   }
-  return <Modal title={`선택한 ${count}개 항목 일괄 판정`} onClose={onClose} footer={<><Button onClick={onClose}>취소</Button><Button variant="primary" disabled={busy} onClick={submit}>판정 적용</Button></>}>
+  return <Modal title={`선택한 ${count}개 항목 일괄 처리`} onClose={onClose} footer={<><Button onClick={onClose}>취소</Button><Button variant="primary" disabled={busy || (mode === 'CHANGE' && (!change.reason.trim() || !change.due_date))} onClick={submit}>{mode === 'CHANGE' ? '보완 요청' : '판정 적용'}</Button></>}>
+    <div className="toolbar"><button type="button" className={`chip ${mode === 'VERDICT' ? 'on' : ''}`} aria-pressed={mode === 'VERDICT'} onClick={() => setMode('VERDICT')}>일괄 판정</button><button type="button" className={`chip ${mode === 'CHANGE' ? 'on' : ''}`} aria-pressed={mode === 'CHANGE'} onClick={() => setMode('CHANGE')}>일괄 보완 요청</button></div>
+    {mode === 'CHANGE' ? <>
+      <div className="guide-block">같은 사유의 보완을 선택한 항목에 한 번에 등록합니다. 이미 처리 중인 보완 요청이 있는 항목은 건너뛰고, 작성자에게는 알림이 한 번만 갑니다.</div>
+      <div className="form-grid">
+        <Field label="보완 사유" required className="span-2"><textarea className="textarea" value={change.reason} onChange={e => setChange(v => ({ ...v, reason: e.target.value }))} /></Field>
+        <Field label="완료 예정일" required help="기한이 없으면 알림도 지연 판정도 동작하지 않습니다."><input type="date" className="input" value={change.due_date} onChange={e => setChange(v => ({ ...v, due_date: e.target.value }))} /></Field>
+        <Field label="조치 담당자" help="비우면 신청자에게 갑니다"><PeopleField value={change.assignee_id} people={people} onChange={id => setChange(v => ({ ...v, assignee_id: id }))} emptyLabel="신청자" /></Field>
+      </div>
+    </> : <>
     <div className="guide-block">같은 판정이 반복되는 항목을 한 번에 처리합니다. 결과는 감사로그에 일괄 판정으로 기록되며 개별 항목에서 다시 수정할 수 있습니다.</div>
     <div className="form-grid">
       <Field label="검토 결과" required><select className="select" value={form.result} onChange={e => setForm(v => ({ ...v, result: e.target.value }))}>{Object.entries(resultLabels).map(([code, label]) => <option key={code} value={code}>{label}</option>)}</select></Field>
@@ -224,7 +242,7 @@ function BulkReviewModal({ reviewID, itemIDs, count, onClose, onSaved }: { revie
       <Field label="증적 충분성"><input className="input" value={form.evidence_adequacy} onChange={e => setForm(v => ({ ...v, evidence_adequacy: e.target.value }))} /></Field>
       <Field label="공통 의견" className="span-2"><textarea className="textarea" value={form.opinion} onChange={e => setForm(v => ({ ...v, opinion: e.target.value }))} /></Field>
       <label className="span-2"><input type="checkbox" checked={form.overwrite} onChange={e => setForm(v => ({ ...v, overwrite: e.target.checked }))} /> 이미 판정한 항목도 덮어쓰기</label>
-    </div>
+    </div></>}
   </Modal>
 }
 

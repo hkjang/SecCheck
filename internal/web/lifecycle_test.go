@@ -1062,3 +1062,82 @@ func TestDeactivatingAnAccountReleasesTheItemsItHeld(t *testing.T) {
 		t.Errorf("the deactivation left %d records naming what it released", audited)
 	}
 }
+
+// One gap found on ten items was ten change requests, typed ten times and
+// delivered as ten notices for one piece of work. Raising them together has to
+// leave the same records as raising them one by one -- and exactly one notice.
+func TestOneCorrectionCanBeRaisedOnManyItemsAtOnce(t *testing.T) {
+	h := newHarness(t)
+	ctx := context.Background()
+	requesterID := h.user("bulk-cr-requester", "REQUESTER")
+	reviewerID := h.user("bulk-cr-reviewer", "SECURITY_REVIEWER")
+	requester, reviewer := h.login("bulk-cr-requester"), h.login("bulk-cr-reviewer")
+
+	reviewID := requester.createReview("일괄 보완 서비스")
+	var items []map[string]any
+	if err := json.Unmarshal([]byte(requester.do(http.MethodGet, "/api/v1/review-requests/"+reviewID+"/items", nil).body), &items); err != nil {
+		t.Fatal(err)
+	}
+	ids := make([]string, 0, len(items))
+	for _, item := range items {
+		ids = append(ids, item["id"].(string))
+	}
+	if _, err := h.db.Pool.Exec(ctx, `UPDATE review_requests SET reviewer_id=$2 WHERE id=$1`, reviewID, reviewerID); err != nil {
+		t.Fatal(err)
+	}
+	if res := requester.do(http.MethodPost, "/api/v1/review-requests/"+reviewID+"/responses/bulk",
+		map[string]any{"item_ids": ids, "applicability": "N/A", "na_reason": "해당 없음", "self_assessment": "N/A"}); res.status != http.StatusOK {
+		t.Fatalf("bulk answer: %d %s", res.status, res.body)
+	}
+	if res := requester.do(http.MethodPost, "/api/v1/review-requests/"+reviewID+"/submit", map[string]any{}); res.status != http.StatusOK {
+		t.Fatalf("submit: %d %s", res.status, res.body)
+	}
+	if res := reviewer.do(http.MethodPost, "/api/v1/review-requests/"+reviewID+"/begin-review", map[string]any{}); res.status != http.StatusOK {
+		t.Fatalf("begin review: %d %s", res.status, res.body)
+	}
+
+	three := ids[:3]
+	raised := reviewer.do(http.MethodPost, "/api/v1/review-requests/"+reviewID+"/change-requests/bulk",
+		map[string]any{"item_ids": three, "reason": "증적을 보완하세요", "assignee_id": requesterID, "due_date": "2030-03-31"})
+	if raised.status != http.StatusCreated {
+		t.Fatalf("bulk change request: %d %s", raised.status, raised.body)
+	}
+	if created, _ := raised.json()["created"].(float64); created != 3 {
+		t.Errorf("created = %v, want 3", raised.json()["created"])
+	}
+	var open int
+	if err := h.db.Pool.QueryRow(ctx, `SELECT count(*) FROM change_requests WHERE review_request_id=$1 AND status='OPEN' AND due_date='2030-03-31'`, reviewID).Scan(&open); err != nil {
+		t.Fatal(err)
+	}
+	if open != 3 {
+		t.Errorf("%d dated change requests exist, want 3", open)
+	}
+	// The review goes back once, and the author hears about it once.
+	var status string
+	if err := h.db.Pool.QueryRow(ctx, `SELECT status FROM review_requests WHERE id=$1`, reviewID).Scan(&status); err != nil {
+		t.Fatal(err)
+	}
+	if status != "CHANGE_REQUESTED" {
+		t.Errorf("the review is %s after a batch of change requests", status)
+	}
+	var notices int
+	if err := h.db.Pool.QueryRow(ctx, `SELECT count(*) FROM notifications WHERE recipient_id=$1 AND event_type='CHANGE_REQUEST'`, requesterID).Scan(&notices); err != nil {
+		t.Fatal(err)
+	}
+	if notices != 1 {
+		t.Errorf("the author received %d notices for one correction", notices)
+	}
+
+	// Asking again on the same items must not stack duplicates on them.
+	again := reviewer.do(http.MethodPost, "/api/v1/review-requests/"+reviewID+"/change-requests/bulk",
+		map[string]any{"item_ids": three, "reason": "같은 내용 다시", "due_date": "2030-04-30"})
+	if again.status != http.StatusUnprocessableEntity || again.errorCode() != "ITEM_ALREADY_USED" {
+		t.Errorf("repeating the batch returned %d %s", again.status, again.body)
+	}
+	if err := h.db.Pool.QueryRow(ctx, `SELECT count(*) FROM change_requests WHERE review_request_id=$1`, reviewID).Scan(&open); err != nil {
+		t.Fatal(err)
+	}
+	if open != 3 {
+		t.Errorf("the repeat left %d change requests, want the original 3", open)
+	}
+}

@@ -54,6 +54,7 @@ Authorization: Bearer sck_a1b2c3d4_xxxxxxxxxxxxxxxxxxxxxxxxxxxx
 ### 🛡️ 통합 Security Controls & 템플릿
 | 메서드 | 경로 | 설명 | 권한 |
 | :--- | :--- | :--- | :--- |
+| `POST` | `/review-requests/{id}/change-requests/bulk` | 선택 항목 일괄 보완 요청 | `SECURITY_REVIEWER` |
 | `POST` | `/admin/settings/upload/test` | ClamAV(clamd) 연결 테스트 | `SYSTEM_ADMIN` |
 | `GET` | `/security-controls` | 통합 Security Control 목록 및 영향 통계 | 전체 |
 | `GET` | `/security-controls/{id}/impact` | 특정 Control 변경 시 영향 받는 템플릿/심의 조회 | 전체 |

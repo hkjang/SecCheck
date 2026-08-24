@@ -1394,6 +1394,82 @@ func (s *Server) saveReviewResult(w http.ResponseWriter, r *http.Request) {
 	jsonResponse(w, 200, map[string]any{"saved_at": savedAt, "updated_at": savedAt})
 }
 
+// bulkChangeRequests raises the same correction on several items at once. A
+// reviewer who finds one gap repeated across ten items had to write it ten
+// times, and the author received ten separate notices for one piece of work.
+// Items that already carry an open request are left alone rather than
+// duplicated, and the count of what was skipped comes back.
+func (s *Server) bulkChangeRequests(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	if !s.canReview(r.Context(), session(r), id) {
+		problem(w, 403, "FORBIDDEN", "이 심의를 검토할 수 없습니다.", nil)
+		return
+	}
+	var in struct {
+		ItemIDs    []string `json:"item_ids"`
+		Reason     string   `json:"reason"`
+		AssigneeID string   `json:"assignee_id"`
+		DueDate    string   `json:"due_date"`
+	}
+	if !decodeJSON(w, r, &in) {
+		return
+	}
+	if len(in.ItemIDs) == 0 || strings.TrimSpace(in.Reason) == "" {
+		problem(w, 422, "VALIDATION_FAILED", "항목과 보완 사유가 필요합니다.", nil)
+		return
+	}
+	if field := tooLong(map[string]string{"reason": in.Reason}, longTextLimit); field != "" {
+		problem(w, 422, "VALIDATION_FAILED", fmt.Sprintf("보완 사유는 %d자 이내로 작성하세요.", longTextLimit), map[string]string{field: "너무 깁니다."})
+		return
+	}
+	if strings.TrimSpace(in.DueDate) == "" {
+		problem(w, 422, "DUE_DATE_REQUIRED", "보완 요청에는 완료 예정일이 필요합니다. 기한이 없으면 알림도 지연 판정도 동작하지 않습니다.", map[string]string{"due_date": "필수 입력 항목입니다."})
+		return
+	}
+	tx, err := s.Store.Pool.Begin(r.Context())
+	if err != nil {
+		s.fault(w, r, "CREATE_FAILED", "보완 요청을 만들지 못했습니다.", err)
+		return
+	}
+	defer tx.Rollback(r.Context())
+	tag, err := tx.Exec(r.Context(), `INSERT INTO change_requests(id,review_request_id,submission_item_id,reason,requester_id,assignee_id,due_date)
+                SELECT gen_random_uuid()::text,$1,si.id,$2,$3,NULLIF($4,''),NULLIF($5,'')::date
+                FROM submission_items si
+                JOIN submissions sub ON sub.id=si.submission_id
+                WHERE si.id = ANY($6) AND sub.review_request_id=$1
+                  AND sub.revision=(SELECT max(revision) FROM submissions WHERE review_request_id=$1)
+                  AND NOT EXISTS(SELECT 1 FROM change_requests oc WHERE oc.submission_item_id=si.id AND oc.status<>'VERIFIED')`,
+		id, strings.TrimSpace(in.Reason), session(r).User.ID, in.AssigneeID, strings.TrimSpace(in.DueDate), in.ItemIDs)
+	if err != nil {
+		s.fault(w, r, "CREATE_FAILED", "보완 요청을 만들지 못했습니다.", err)
+		return
+	}
+	created := tag.RowsAffected()
+	if created == 0 {
+		problem(w, 422, "ITEM_ALREADY_USED", "선택한 항목에는 이미 처리 중인 보완 요청이 있거나 현재 제출본의 항목이 아닙니다.", map[string]any{"requested": len(in.ItemIDs)})
+		return
+	}
+	// The review goes back to the author exactly once, whatever the batch size.
+	moved, err := tx.Exec(r.Context(), `UPDATE review_requests SET status='CHANGE_REQUESTED',updated_at=now() WHERE id=$1 AND status='REVIEWING'`, id)
+	if err != nil || moved.RowsAffected() == 0 {
+		problem(w, 409, "STATE_CONFLICT", "검토 중인 심의에만 보완을 요청할 수 있습니다.", nil)
+		return
+	}
+	if err = tx.Commit(r.Context()); err != nil {
+		s.fault(w, r, "CREATE_FAILED", "보완 요청을 만들지 못했습니다.", err)
+		return
+	}
+	recipient := in.AssigneeID
+	if recipient == "" {
+		_ = s.Store.Pool.QueryRow(r.Context(), `SELECT requester_id FROM review_requests WHERE id=$1`, id).Scan(&recipient)
+	}
+	// One notice for one piece of work: ten separate mails for the same
+	// correction is how people learn to ignore them.
+	s.addTargetedNotification(r.Context(), recipient, "CHANGE_REQUEST", fmt.Sprintf("보완 요청 %d건", created), in.Reason, "REVIEW_REQUEST", id)
+	_ = s.Store.Audit(r.Context(), auditFrom(r, "REQUEST_CHANGE", "REVIEW_REQUEST", id, nil, map[string]any{"items": created, "requested": len(in.ItemIDs), "reason": in.Reason, "due_date": in.DueDate, "assignee_id": in.AssigneeID}))
+	jsonResponse(w, 201, map[string]any{"created": created, "requested": len(in.ItemIDs), "skipped": int64(len(in.ItemIDs)) - created})
+}
+
 func (s *Server) createChangeRequest(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 	if !s.canReview(r.Context(), session(r), id) {
