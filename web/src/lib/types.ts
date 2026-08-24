@@ -126,6 +126,7 @@ export type AuthValue = {
   version: string
   upload?: UploadRules
   limits?: TextLimits
+  idleTimeoutMinutes?: number
   refresh: () => Promise<void>
   logout: () => Promise<void>
   enrolling?: boolean

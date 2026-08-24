@@ -35,11 +35,20 @@ function announce(event: SessionEvent) { sessionListeners.forEach(listener => li
 // caller; those must not be read as a session ending.
 const anonymousPaths = ['/api/v1/auth/login', '/api/v1/public/config']
 
+// The inactivity timeout is measured from the last request the server counts
+// as somebody using the service -- the notification poll deliberately does not
+// count. Tracking the same moment here is what lets the shell warn before the
+// session is closed instead of after.
+const passivePaths = ['/api/v1/notifications/unread-count']
+let touchedAt = Date.now()
+export function lastServerTouch() { return touchedAt }
+
 export async function api<T>(path: string, init: RequestInit = {}): Promise<T> {
   const headers = new Headers(init.headers)
   if (init.body && !(init.body instanceof FormData)) headers.set('Content-Type', 'application/json')
   if (csrfToken && init.method && !['GET', 'HEAD'].includes(init.method)) headers.set('X-CSRF-Token', csrfToken)
   headers.set('Accept', 'application/json')
+  if (!passivePaths.some(p => path.startsWith(p)) && !anonymousPaths.some(p => path.startsWith(p))) touchedAt = Date.now()
   const response = await fetch(path, { ...init, headers, credentials: 'same-origin' })
   if (response.status === 204) return undefined as T
   const type = response.headers.get('content-type') || ''

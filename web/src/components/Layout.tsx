@@ -3,7 +3,7 @@ import { Link, NavLink, Outlet, useLocation, useNavigate } from 'react-router-do
 import { Activity, BarChart3, Cpu, Bell, BookOpen, Boxes, CheckSquare, FlaskConical, ChevronDown, ClipboardCheck, FileKey, Gauge, History, KeyRound, LayoutDashboard, ListChecks, Lock, Logs, ListTodo, Search, Settings, Shield, ShieldCheck, Sparkles, Users, X } from 'lucide-react'
 import { useAuth } from '../main'
 import { Button, Modal } from './ui'
-import { get } from '../lib/api'
+import { get, lastServerTouch } from '../lib/api'
 
 type Nav = { to: string; label: string; icon: typeof Gauge; roles?: string[]; section?: string }
 const navigation: Nav[] = [
@@ -32,7 +32,7 @@ const titles: Record<string, [string, string]> = {
 , '/admin/system': ['시스템 정보', '버전·스키마·저장 공간을 확인합니다']}
 
 export default function Layout() {
-  const { user, version, logout, enrolling } = useAuth()
+  const { user, version, logout, enrolling, idleTimeoutMinutes } = useAuth()
   const location = useLocation()
   const navigate = useNavigate()
   const [profile, setProfile] = useState(false)
@@ -42,6 +42,25 @@ export default function Layout() {
   const [unread, setUnread] = useState(0)
   const inputRef = useRef<HTMLInputElement>(null)
   const visible = useMemo(() => navigation.filter(n => !n.roles || n.roles.some(r => user.roles.includes(r))), [user.roles])
+  // Reading a long checklist makes no requests, so an inactivity timeout ended
+  // the session with no warning at all: the screen jumped to sign-in and the
+  // answer that had been typed but not yet auto-saved went with it. The same
+  // clock the server keeps is followed here, and the last two minutes are
+  // offered as a choice rather than sprung.
+  const [expiring, setExpiring] = useState(0)
+  useEffect(() => {
+    const minutes = Number(idleTimeoutMinutes || 0)
+    if (!minutes || enrolling) return
+    const warnAt = Math.min(120000, minutes * 60000 / 2)
+    const tick = () => {
+      const left = minutes * 60000 - (Date.now() - lastServerTouch())
+      setExpiring(left <= warnAt ? Math.max(0, Math.ceil(left / 1000)) : 0)
+    }
+    tick()
+    const timer = window.setInterval(tick, 5000)
+    return () => clearInterval(timer)
+  }, [idleTimeoutMinutes, enrolling])
+  const staySignedIn = async () => { try { await get('/api/v1/me') } catch { /* the shell handles an ended session */ } setExpiring(0) }
   const pathTitle = location.pathname.startsWith('/reviews/') && location.pathname !== '/reviews/new' ? ['심의 상세', '체크리스트 작성과 검토 이력을 확인합니다'] : location.pathname.startsWith('/templates/') && !titles[location.pathname] ? ['템플릿 편집', '초안 항목과 버전을 관리합니다'] : titles[location.pathname] || ['SecCheck', '보안성 심의 관리']
   useEffect(() => { const key = (e: KeyboardEvent) => { if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'k') { e.preventDefault(); setCommand(true) } }; window.addEventListener('keydown', key); return () => window.removeEventListener('keydown', key) }, [])
   useEffect(() => { if (command) window.setTimeout(() => inputRef.current?.focus(), 40) }, [command])
@@ -70,5 +89,9 @@ export default function Layout() {
       <Outlet />
     </main>
     {command && <Modal onClose={() => { setCommand(false); setQuery(''); setResults({}) }} className="command-modal"><div data-sx="sx-026"><Search data-sx="sx-047" size={20} /><input ref={inputRef} className="command-input" placeholder="메뉴, 심의번호, 서비스명, 보안항목, 증적 검색…" value={query} onChange={e => setQuery(e.target.value)} /><div className="command-list">{!query && visible.map(item => { const Icon = item.icon; return <button className="command-item" key={item.to} onClick={() => { navigate(item.to); setCommand(false) }}><Icon size={18} /><span>{item.label}</span></button> })}{results.reviews?.map(x => <button className="command-item" key={x.id} onClick={() => { navigate(`/reviews/${x.id}`); setCommand(false) }}><ClipboardCheck size={18} /><span><strong>{x.review_number}</strong> {x.service_name}</span></button>)}{results.items?.map((x, i) => <button className="command-item" key={`${x.review_id}-${i}`} onClick={() => { navigate(`/reviews/${x.review_id}`); setCommand(false) }}><BookOpen size={18} /><span><strong>{x.item_code}</strong> {x.title}</span></button>)}{results.evidences?.map(x=><button className="command-item" key={x.id} onClick={()=>{navigate(`/reviews/${x.review_id}`);setCommand(false)}}><FileKey size={18}/><span><strong>{x.review_number}</strong> {x.original_filename}</span></button>)}{query.trim().length >= 2 && Object.values(results.has_more || {}).some(Boolean) && <div className="command-note">더 많은 결과가 있습니다. 검색어를 좁혀 보세요.</div>}</div></div></Modal>}
+    {expiring > 0 && <Modal title="곧 자동 로그아웃됩니다" onClose={staySignedIn} footer={<><Button onClick={logout}>지금 로그아웃</Button><Button variant="primary" onClick={staySignedIn}>계속 사용</Button></>}>
+      <p>보안 정책에 따라 아무 동작이 없으면 세션이 종료됩니다. 남은 시간 <strong>{Math.floor(expiring / 60)}분 {expiring % 60}초</strong>.</p>
+      <p className="subtle">`계속 사용`을 누르면 세션이 연장됩니다. 작성 중이던 내용이 있으면 먼저 저장하세요.</p>
+    </Modal>}
   </div>
 }

@@ -113,7 +113,7 @@
 | `login_rate_limit_per_minute` | `30` | IP별 분당 로그인 **실패** 허용 횟수. 성공한 로그인은 계산하지 않습니다 |
 | `max_login_failures` | `5` | 계정 잠금까지 허용할 연속 실패 횟수. `0`이면 잠금 미사용 |
 | `lockout_minutes` | `15` | 자동 잠금 유지 시간 |
-| `idle_timeout_minutes` | `0` | 유휴 세션 만료. `0`이면 세션 시간까지 유지 |
+| `idle_timeout_minutes` | `0` | 유휴 세션 만료. `0`이면 세션 시간까지 유지. 값이 있으면 사용자 화면이 만료 2분 전(짧은 정책은 절반 시점)에 `계속 사용` 여부를 묻습니다. 알림 배지 폴링은 활동으로 세지 않으므로 자리를 비운 세션은 그대로 만료됩니다 |
 | `trusted_proxies` | (비어 있음) | X-Forwarded-For를 신뢰할 Reverse Proxy IP 또는 CIDR |
 | `require_totp_for_admins` | `false` | 관리자·검토자·승인자 계정에 일회용 코드(TOTP) 요구 |
 

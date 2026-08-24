@@ -5086,3 +5086,61 @@ func TestACorrectionCannotBeHandedOutsideTheReview(t *testing.T) {
 		t.Fatalf("assigning a correction to the author: %d %s", res.status, res.body)
 	}
 }
+
+// An inactivity timeout the screen does not know about can only be discovered
+// by being thrown out. /me carries the rule so the shell can warn first.
+func TestTheScreenIsToldWhenTheSessionWillTimeOut(t *testing.T) {
+	h := newHarness(t)
+	admin := h.login(adminOf(h))
+	ctx := context.Background()
+
+	timeout := func(c *client) float64 {
+		t.Helper()
+		res := c.do(http.MethodGet, "/api/v1/me", nil)
+		if res.status != http.StatusOK {
+			t.Fatalf("me: %d %s", res.status, res.body)
+		}
+		payload, ok := res.json()["session"].(map[string]any)
+		if !ok {
+			t.Fatalf("/me does not say anything about the session: %s", res.body)
+		}
+		value, ok := payload["idle_timeout_minutes"].(float64)
+		if !ok {
+			t.Fatalf("the idle timeout is reported as %v", payload["idle_timeout_minutes"])
+		}
+		return value
+	}
+
+	// Off by default, and reported as such rather than left out.
+	if got := timeout(admin); got != 0 {
+		t.Fatalf("with no policy set the idle timeout reads %v", got)
+	}
+
+	// What the administrator saves is what the screen is told.
+	if res := admin.do(http.MethodPut, "/api/v1/admin/settings/security", map[string]any{
+		"rate_limit_per_minute": 120, "login_rate_limit_per_minute": 30, "max_login_failures": 5,
+		"lockout_minutes": 15, "idle_timeout_minutes": 20, "trusted_proxies": []string{},
+		"require_totp_for_admins": false, "cors_origins": []string{},
+	}); res.status != http.StatusOK {
+		t.Fatalf("saving the security policy: %d %s", res.status, res.body)
+	}
+	// The policy is cached for a few seconds; the screen must not be told a
+	// value the server has stopped enforcing, so wait the cache out.
+	deadline := time.Now().Add(30 * time.Second)
+	for {
+		if got := timeout(admin); got == 20 {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("the saved idle timeout never reached /me")
+		}
+		time.Sleep(time.Second)
+	}
+	var stored int
+	if err := h.db.Pool.QueryRow(ctx, `SELECT (value_json->>'idle_timeout_minutes')::int FROM settings WHERE key='security'`).Scan(&stored); err != nil {
+		t.Fatal(err)
+	}
+	if stored != 20 {
+		t.Fatalf("the stored policy holds %d minutes", stored)
+	}
+}

@@ -190,7 +190,13 @@ func (s *Server) me(w http.ResponseWriter, r *http.Request) {
 	// The same caps the write handlers refuse on, so a long paragraph is
 	// stopped in the box instead of failing every auto-save.
 	limits := map[string]any{"long_text": longTextLimit, "short_text": shortTextLimit}
-	jsonResponse(w, 200, map[string]any{"user": publicUser(sess.User), "csrf_token": sess.CSRF, "version": s.Version, "totp_enrollment_required": sess.EnrollTOTP, "upload": map[string]any{"max_size_mb": upload.MaxSizeMB, "allowed_extensions": upload.AllowedExtensions}, "limits": limits, "timezone": s.Store.Location(r.Context()).String()})
+	// The inactivity timeout is enforced on the next request and until now was
+	// only known to the server: somebody reading a long checklist, which makes
+	// no requests at all, was dropped at the login screen without warning and
+	// lost whatever was typed but not yet auto-saved. The screen can only warn
+	// if it knows the rule.
+	session := map[string]any{"idle_timeout_minutes": s.Auth.Policy(r.Context()).IdleTimeoutMinutes}
+	jsonResponse(w, 200, map[string]any{"user": publicUser(sess.User), "csrf_token": sess.CSRF, "version": s.Version, "totp_enrollment_required": sess.EnrollTOTP, "upload": map[string]any{"max_size_mb": upload.MaxSizeMB, "allowed_extensions": upload.AllowedExtensions}, "limits": limits, "session": session, "timezone": s.Store.Location(r.Context()).String()})
 }
 func (s *Server) updateMe(w http.ResponseWriter, r *http.Request) {
 	var in struct {
