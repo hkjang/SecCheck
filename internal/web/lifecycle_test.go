@@ -559,3 +559,57 @@ func TestAReviewLeftWithAReviewerWhoCannotActGoesBackToTheQueue(t *testing.T) {
 		t.Error("the detail still reports the reviewer cannot act after the takeover")
 	}
 }
+
+// The new-review form asks for three service owners -- builder, developer and
+// operator. A checklist item may be assigned to any of them, and the assignment
+// even notifies them. Only the first two could open the review the notification
+// linked to: the operator was named on it and refused by it.
+func TestTheOperatorNamedOnAReviewCanOpenIt(t *testing.T) {
+	h := newHarness(t)
+	ctx := context.Background()
+	h.user("ops-requester", "REQUESTER")
+	operatorID := h.user("ops-operator", "REQUESTER")
+	requester, operator := h.login("ops-requester"), h.login("ops-operator")
+
+	reviewID := requester.createReview("운영 담당자 서비스")
+	if _, err := h.db.Pool.Exec(ctx, `UPDATE review_requests SET operator_id=$2 WHERE id=$1`, reviewID, operatorID); err != nil {
+		t.Fatal(err)
+	}
+	if res := operator.do(http.MethodGet, "/api/v1/review-requests/"+reviewID, nil); res.status != http.StatusOK {
+		t.Fatalf("the operator cannot open the review they are named on: %d %s", res.status, res.body)
+	}
+	listed := func(query string) bool {
+		t.Helper()
+		body := operator.do(http.MethodGet, "/api/v1/review-requests?"+query, nil).json()
+		rows, _ := body["items"].([]any)
+		for _, row := range rows {
+			if item, _ := row.(map[string]any); item != nil && item["id"] == reviewID {
+				return true
+			}
+		}
+		return false
+	}
+	if !listed("limit=100") {
+		t.Error("the review is missing from the operator's list")
+	}
+	// A draft is work for the people who run the service, so it is their turn.
+	if !listed("mine=1&limit=100") {
+		t.Error("a draft the operator can fill in is not in their queue")
+	}
+
+	// Assignment already believed the operator was a participant; opening the
+	// item and answering it has to agree.
+	var items []map[string]any
+	if err := json.Unmarshal([]byte(requester.do(http.MethodGet, "/api/v1/review-requests/"+reviewID+"/items", nil).body), &items); err != nil {
+		t.Fatal(err)
+	}
+	itemID := items[0]["id"].(string)
+	if res := requester.do(http.MethodPost, "/api/v1/review-requests/"+reviewID+"/responses/bulk",
+		map[string]any{"item_ids": []string{itemID}, "assigned_to": operatorID, "assign_only": true}); res.status != http.StatusOK {
+		t.Fatalf("assigning an item to the operator: %d %s", res.status, res.body)
+	}
+	if res := operator.do(http.MethodPut, "/api/v1/review-requests/"+reviewID+"/responses/"+itemID,
+		map[string]any{"applicability": "Y", "self_assessment": "COMPLIANT", "current_state": "운영 중"}); res.status != http.StatusOK {
+		t.Fatalf("the operator cannot answer the item assigned to them: %d %s", res.status, res.body)
+	}
+}

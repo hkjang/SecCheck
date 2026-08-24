@@ -463,7 +463,10 @@ func (s *Server) search(w http.ResponseWriter, r *http.Request) {
 }
 
 func accessFilter(sess auth.Session, start int) (string, []any) {
-	return fmt.Sprintf(`(review_requests.requester_id=$%d OR review_requests.builder_id=$%d OR review_requests.developer_id=$%d OR review_requests.reviewer_id=$%d OR review_requests.approver_id=$%d OR EXISTS(SELECT 1 FROM review_participants rp WHERE rp.review_request_id=review_requests.id AND rp.user_id=$%d))`, start, start, start, start, start, start), []any{sess.User.ID}
+	// The operator belongs here with the builder and the developer: the form
+	// asks for all three, an item may be assigned to any of them, and only
+	// these two could open what they were assigned.
+	return fmt.Sprintf(`(review_requests.requester_id=$%[1]d OR review_requests.builder_id=$%[1]d OR review_requests.developer_id=$%[1]d OR review_requests.operator_id=$%[1]d OR review_requests.reviewer_id=$%[1]d OR review_requests.approver_id=$%[1]d OR EXISTS(SELECT 1 FROM review_participants rp WHERE rp.review_request_id=review_requests.id AND rp.user_id=$%[1]d))`, start), []any{sess.User.ID}
 }
 
 // scanDynamic is used for small administrative lists where a stable JSON object is more useful than repetitive structs.
