@@ -461,7 +461,20 @@ func TestCompletingAReviewCatchesVerdictsTheAuthorEditedAway(t *testing.T) {
 		t.Errorf("the resubmission notice reads %q / %q", title, body)
 	}
 
-	// The screen has to say so before the reviewer presses the button.
+	// The screen has to say so before the reviewer presses the button, and with
+	// the same counts the button itself refuses on.
+	detail := reviewer.do(http.MethodGet, "/api/v1/review-requests/"+reviewID, nil).json()
+	blockers, _ := detail["completion_blockers"].(map[string]any)
+	if blockers == nil {
+		t.Fatalf("the review detail carries no completion_blockers: %v", detail["result_summary"])
+	}
+	if got, _ := blockers["stale_verdicts"].(float64); got != 2 {
+		t.Errorf("the screen reports %v edited-since-judged items before the button is pressed, want 2", blockers["stale_verdicts"])
+	}
+	if got, _ := blockers["unreviewed_items"].(float64); got != 0 {
+		t.Errorf("unreviewed_items = %v, want 0", blockers["unreviewed_items"])
+	}
+
 	summary, _ := reviewer.do(http.MethodGet, "/api/v1/review-requests/"+reviewID, nil).json()["result_summary"].(map[string]any)
 	if got, _ := summary["stale_verdicts"].(float64); got != 2 {
 		t.Errorf("the review summary reports %v edited-since-judged items, want 2", summary["stale_verdicts"])

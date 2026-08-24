@@ -516,6 +516,11 @@ func (s *Server) getReviewRequest(w http.ResponseWriter, r *http.Request) {
 	// move and nothing else says so.
 	var reviewerCanAct, approverCanAct bool
 	_ = s.Store.Pool.QueryRow(r.Context(), `SELECT `+stillHolds("reviewer_id", "SECURITY_REVIEWER")+`,`+stillHolds("approver_id", "APPROVER")+` FROM review_requests WHERE id=$1`, r.PathValue("id")).Scan(&reviewerCanAct, &approverCanAct)
+	// The same three counts the completion guard refuses on, so a reviewer can
+	// see what is left before pressing the button rather than after.
+	if missing, open, stale, err := s.reviewBlockers(r.Context(), r.PathValue("id")); err == nil {
+		out["completion_blockers"] = map[string]int{"unreviewed_items": missing, "unverified_changes": open, "stale_verdicts": stale}
+	}
 	out["reviewer_can_act"] = reviewerCanAct
 	out["approver_can_act"] = approverCanAct
 	out["template_versions"] = s.snapshotTemplateVersions(r, r.PathValue("id"))
@@ -1500,28 +1505,34 @@ func (s *Server) updateChangeRequest(w http.ResponseWriter, r *http.Request) {
 	jsonResponse(w, 200, map[string]string{"status": in.Status})
 }
 
+// reviewBlockers counts what stands between a review and being finished:
+// items with no verdict, change requests nobody verified, and verdicts the
+// author has edited away underneath. The completion guard refuses on these and
+// the screen shows them, so both read the same counts -- a screen that says
+// "ready" and a button that says otherwise is worse than no screen at all.
+func (s *Server) reviewBlockers(ctx context.Context, id string) (missing, open, stale int, err error) {
+	if err = s.Store.Pool.QueryRow(ctx, `SELECT count(*) FROM submissions sub JOIN submission_items si ON si.submission_id=sub.id LEFT JOIN review_results rr ON rr.submission_item_id=si.id WHERE sub.review_request_id=$1 AND sub.revision=(SELECT max(revision) FROM submissions WHERE review_request_id=$1) AND (rr.id IS NULL OR rr.result='')`, id).Scan(&missing); err != nil {
+		return 0, 0, 0, err
+	}
+	if err = s.Store.Pool.QueryRow(ctx, `SELECT count(*) FROM change_requests WHERE review_request_id=$1 AND status<>'VERIFIED'`, id).Scan(&open); err != nil {
+		return 0, 0, 0, err
+	}
+	stale, err = s.staleVerdicts(ctx, id)
+	if err != nil {
+		return 0, 0, 0, err
+	}
+	return missing, open, stale, nil
+}
+
 func (s *Server) completeReview(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 	if !s.canReview(r.Context(), session(r), id) {
 		problem(w, 403, "FORBIDDEN", "이 심의를 완료할 수 없습니다.", nil)
 		return
 	}
-	var missing, open int
-	// Completing a review while items are unjudged is exactly what this guard
-	// exists to prevent, and a failed count used to read as zero.
-	if err := s.Store.Pool.QueryRow(r.Context(), `SELECT count(*) FROM submissions sub JOIN submission_items si ON si.submission_id=sub.id LEFT JOIN review_results rr ON rr.submission_item_id=si.id WHERE sub.review_request_id=$1 AND sub.revision=(SELECT max(revision) FROM submissions WHERE review_request_id=$1) AND (rr.id IS NULL OR rr.result='')`, id).Scan(&missing); err != nil {
-		s.fault(w, r, "QUERY_FAILED", "남은 항목을 확인하지 못해 검토 완료를 중단했습니다.", err)
-		return
-	}
-	if err := s.Store.Pool.QueryRow(r.Context(), `SELECT count(*) FROM change_requests WHERE review_request_id=$1 AND status<>'VERIFIED'`, id).Scan(&open); err != nil {
-		s.fault(w, r, "QUERY_FAILED", "남은 항목을 확인하지 못해 검토 완료를 중단했습니다.", err)
-		return
-	}
-	// A change request sends the review back, and the author can edit any item
-	// while it is back -- not only the one that was asked about. A verdict
-	// recorded before that edit was made against an answer that no longer
-	// exists, so counting it as reviewed is a false all-clear.
-	stale, err := s.staleVerdicts(r.Context(), id)
+	// A count that failed used to read as zero, which let a review be completed
+	// with unjudged items in it.
+	missing, open, stale, err := s.reviewBlockers(r.Context(), id)
 	if err != nil {
 		s.fault(w, r, "QUERY_FAILED", "남은 항목을 확인하지 못해 검토 완료를 중단했습니다.", err)
 		return
