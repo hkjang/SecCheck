@@ -906,3 +906,49 @@ func contains(haystack []string, needle string) bool {
 	}
 	return false
 }
+
+// Each number on the landing page stands for a set of reviews, and each one now
+// opens that set. The filters behind them have to hold exactly what was
+// counted, or the link teaches people not to trust the card.
+func TestTheDashboardNumbersOpenTheSetTheyCount(t *testing.T) {
+	h := newHarness(t)
+	admin := h.login(adminOf(h))
+	ctx := context.Background()
+	h.user("card-requester", "REQUESTER")
+	requester := h.login("card-requester")
+
+	withChange := requester.createReview("보완 요청 있는 심의")
+	plain := requester.createReview("보완 요청 없는 심의")
+	var items []map[string]any
+	if err := json.Unmarshal([]byte(requester.do(http.MethodGet, "/api/v1/review-requests/"+withChange+"/items", nil).body), &items); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := h.db.Pool.Exec(ctx, `INSERT INTO change_requests(id,review_request_id,submission_item_id,reason,requester_id,status,due_date)
+              SELECT $1,$2,$3,'보완하세요',(SELECT id FROM users WHERE username='card-requester'),'OPEN',display_today()+7`,
+		store.NewID(), withChange, items[0]["id"].(string)); err != nil {
+		t.Fatal(err)
+	}
+
+	counted, _ := requester.do(http.MethodGet, "/api/v1/dashboard", nil).json()["open_change_requests"].(float64)
+	if counted < 1 {
+		t.Fatalf("the dashboard counts %v open change requests", counted)
+	}
+	body := requester.do(http.MethodGet, "/api/v1/review-requests?open_changes=1&limit=100", nil).json()
+	rows, _ := body["items"].([]any)
+	var ids []string
+	for _, raw := range rows {
+		if row, _ := raw.(map[string]any); row != nil {
+			ids = append(ids, row["id"].(string))
+		}
+	}
+	if !contains(ids, withChange) {
+		t.Errorf("the review with an open change request is missing from the list the card opens: %v", ids)
+	}
+	if contains(ids, plain) {
+		t.Error("a review with no change request is in the list")
+	}
+	// An administrator sees the same rule applied to everything they can see.
+	if res := admin.do(http.MethodGet, "/api/v1/review-requests?open_changes=1&limit=100", nil); res.status != http.StatusOK {
+		t.Errorf("the filter is refused for an administrator: %d", res.status)
+	}
+}

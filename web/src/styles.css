@@ -83,6 +83,11 @@ a { color: inherit; text-decoration: none; }
 .card-header h2,.card-header h3 { margin: 0; font-size: 15px; }
 .card-body { padding: 20px; }
 .stat-card { padding: 20px; display: flex; align-items: center; gap: 15px; }
+/* The cards are links now: they must not look like body text, and a keyboard
+   has to be able to see which one it is on. */
+a.stat-card { color: inherit; text-decoration: none; transition: border-color .12s ease, transform .12s ease; }
+a.stat-card:hover { border-color: #2f6fed; }
+a.stat-card:focus-visible { outline: 2px solid #2f6fed; outline-offset: 2px; }
 .stat-icon { width: 46px; height: 46px; display: grid; place-items: center; border-radius: 12px; background: var(--blue-soft); color: var(--blue); }
 .stat-icon.green { background: #e3f7f1; color: var(--green); }
 .stat-icon.amber { background: #fff2db; color: var(--amber); }
