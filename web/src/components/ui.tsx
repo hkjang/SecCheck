@@ -6,6 +6,23 @@ export function Button({ children, variant = '', small, ...props }: PropsWithChi
   return <button className={`button ${variant} ${small ? 'small' : ''}`} {...props}>{children}</button>
 }
 
+// LongText is a textarea that knows the limit the server enforces. Without it
+// a pasted paragraph was accepted by the box, refused by every auto-save that
+// followed, and the writer was left with a toast and no idea which field.
+export function LongText({ value, onChange, limit, short, ...rest }: { value: string; onChange: (v: string) => void; limit?: number; short?: boolean } & Omit<React.TextareaHTMLAttributes<HTMLTextAreaElement>, 'value' | 'onChange'>) {
+  const limits = useContext(LimitsContext)
+  const max = limit ?? (short ? limits.short_text : limits.long_text)
+  const used = value.length
+  return <>
+    <textarea className="textarea" maxLength={max} value={value} onChange={e => onChange(e.target.value)} {...rest} />
+    {max > 0 && used > max * 0.9 && <span className="subtle">{used.toLocaleString('ko-KR')} / {max.toLocaleString('ko-KR')}자</span>}
+  </>
+}
+
+// The limits travel with the session; a component that has not been given them
+// simply does not cap, which is how the product behaved before.
+export const LimitsContext = createContext<{ long_text: number; short_text: number }>({ long_text: 0, short_text: 0 })
+
 // PeopleField is the person picker. A directory of a few hundred fits in a
 // dropdown; one of several thousand does not, and the server caps what it
 // sends. When it was capped the field asks for a name instead of quietly

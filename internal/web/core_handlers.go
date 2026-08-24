@@ -187,7 +187,10 @@ func (s *Server) me(w http.ResponseWriter, r *http.Request) {
 	if upload.AllowedExtensions == nil {
 		upload.AllowedExtensions = []string{}
 	}
-	jsonResponse(w, 200, map[string]any{"user": publicUser(sess.User), "csrf_token": sess.CSRF, "version": s.Version, "totp_enrollment_required": sess.EnrollTOTP, "upload": map[string]any{"max_size_mb": upload.MaxSizeMB, "allowed_extensions": upload.AllowedExtensions}, "timezone": s.Store.Location(r.Context()).String()})
+	// The same caps the write handlers refuse on, so a long paragraph is
+	// stopped in the box instead of failing every auto-save.
+	limits := map[string]any{"long_text": longTextLimit, "short_text": shortTextLimit}
+	jsonResponse(w, 200, map[string]any{"user": publicUser(sess.User), "csrf_token": sess.CSRF, "version": s.Version, "totp_enrollment_required": sess.EnrollTOTP, "upload": map[string]any{"max_size_mb": upload.MaxSizeMB, "allowed_extensions": upload.AllowedExtensions}, "limits": limits, "timezone": s.Store.Location(r.Context()).String()})
 }
 func (s *Server) updateMe(w http.ResponseWriter, r *http.Request) {
 	var in struct {

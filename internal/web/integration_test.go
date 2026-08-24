@@ -4674,6 +4674,42 @@ func TestTheSessionCarriesTheUploadRules(t *testing.T) {
 		}
 		return out
 	}
+	// The text caps travel too: a paragraph longer than the server accepts was
+	// taken by the box and refused by every auto-save that followed.
+	body := admin.do(http.MethodGet, "/api/v1/me", nil).json()
+	limits, _ := body["limits"].(map[string]any)
+	if limits == nil {
+		t.Fatalf("the session carries no text limits: %v", body)
+	}
+	// The numbers are read from the running server rather than restated here:
+	// what matters is that the box is capped at exactly what the handler
+	// refuses, and a test that hard-codes the number tests itself.
+	long, _ := limits["long_text"].(float64)
+	if long < 100 {
+		t.Fatalf("long_text = %v", limits["long_text"])
+	}
+	if short, _ := limits["short_text"].(float64); short <= 0 || short > long {
+		t.Errorf("short_text = %v with long_text %v", limits["short_text"], long)
+	}
+	// One character over the advertised cap has to be the boundary the server
+	// itself draws, or the box lets through what the save will refuse.
+	reviewID := admin.createReview("길이 제한 확인")
+	var items []map[string]any
+	if err := json.Unmarshal([]byte(admin.do(http.MethodGet, "/api/v1/review-requests/"+reviewID+"/items", nil).body), &items); err != nil {
+		t.Fatal(err)
+	}
+	itemID := items[0]["id"].(string)
+	answer := func(size int) int {
+		return admin.do(http.MethodPut, "/api/v1/review-requests/"+reviewID+"/responses/"+itemID,
+			map[string]any{"applicability": "Y", "self_assessment": "COMPLIANT", "current_state": strings.Repeat("가", size)}).status
+	}
+	if got := answer(int(long)); got != http.StatusOK {
+		t.Errorf("text exactly at the advertised limit was refused: %d", got)
+	}
+	if got := answer(int(long) + 1); got != http.StatusUnprocessableEntity {
+		t.Errorf("text one character over the advertised limit returned %d", got)
+	}
+
 	first := rules()
 	if size, _ := first["max_size_mb"].(float64); size <= 0 {
 		t.Errorf("max_size_mb = %v", first["max_size_mb"])

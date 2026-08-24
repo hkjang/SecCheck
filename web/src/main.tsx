@@ -3,8 +3,8 @@ import ReactDOM from 'react-dom/client'
 import { BrowserRouter, Navigate, Route, Routes } from 'react-router-dom'
 import './styles.css'
 import { get, onSessionEvent, post, setCSRF } from './lib/api'
-import { AuthValue, UploadRules, User } from './lib/types'
-import { Loading, ToastProvider, setDisplayTimezone } from './components/ui'
+import { AuthValue, TextLimits, UploadRules, User } from './lib/types'
+import { LimitsContext, Loading, ToastProvider, setDisplayTimezone } from './components/ui'
 import Layout from './components/Layout'
 import Login from './pages/Login'
 import Dashboard from './pages/Dashboard'
@@ -34,8 +34,8 @@ export function useAuth() { const value = useContext(AuthContext); if (!value) t
 
 function App() {
   const [publicConfig, setPublicConfig] = useState({ service_name: 'SecCheck', version: 'dev', oidc_enabled: false, timezone: '' })
-  const [me, setMe] = useState<{ user: User; version: string; totp_enrollment_required?: boolean; upload?: UploadRules } | null | undefined>(undefined)
-  const refresh = async () => { try { const value = await get<{ user: User; csrf_token: string; version: string; totp_enrollment_required?: boolean; timezone?: string; upload?: UploadRules }>('/api/v1/me'); setCSRF(value.csrf_token); setDisplayTimezone(value.timezone || ''); setMe(value) } catch { setCSRF(''); setMe(null) } }
+  const [me, setMe] = useState<{ user: User; version: string; totp_enrollment_required?: boolean; upload?: UploadRules; limits?: TextLimits } | null | undefined>(undefined)
+  const refresh = async () => { try { const value = await get<{ user: User; csrf_token: string; version: string; totp_enrollment_required?: boolean; timezone?: string; upload?: UploadRules; limits?: TextLimits }>('/api/v1/me'); setCSRF(value.csrf_token); setDisplayTimezone(value.timezone || ''); setMe(value) } catch { setCSRF(''); setMe(null) } }
   const [expired, setExpired] = useState(false)
   useEffect(() => { get<typeof publicConfig>('/api/v1/public/config').then(value => { setDisplayTimezone(value.timezone || ''); setPublicConfig(value) }).catch(() => undefined); refresh() }, [])
   // Returning to the sign-in screen is the shell's job, so a screen that hits
@@ -50,9 +50,9 @@ function App() {
   // Policy can require a second factor before anything else is reachable, so
   // the router collapses to the enrolment screen until it exists.
   if (me.totp_enrollment_required) {
-    return <AuthContext.Provider value={{ user: me.user, version: me.version, upload: me.upload, refresh, logout, enrolling: true }}><Routes><Route element={<Layout />}><Route path="*" element={<SecurityPage />} /></Route></Routes></AuthContext.Provider>
+    return <LimitsContext.Provider value={me.limits || { long_text: 0, short_text: 0 }}><AuthContext.Provider value={{ user: me.user, version: me.version, upload: me.upload, limits: me.limits, refresh, logout, enrolling: true }}><Routes><Route element={<Layout />}><Route path="*" element={<SecurityPage />} /></Route></Routes></AuthContext.Provider></LimitsContext.Provider>
   }
-  return <AuthContext.Provider value={{ user: me.user, version: me.version, upload: me.upload, refresh, logout }}><Routes><Route element={<Layout />}><Route index element={<Dashboard />} /><Route path="reviews" element={<Reviews />} /><Route path="reviews/new" element={<NewReview />} /><Route path="reviews/:id" element={<ReviewDetail />} /><Route path="security" element={<Reviews security />} /><Route path="controls" element={<ControlsPage />} /><Route path="reports" element={<Reports />} /><Route path="templates" element={<Templates />} /><Route path="templates/import" element={<ImportWizard />} /><Route path="templates/rules" element={<RuleSimulator />} /><Route path="templates/:id" element={<TemplateDetail />} /><Route path="admin/users" element={<UsersPage />} /><Route path="admin/settings" element={<SettingsPage />} /><Route path="admin/audit" element={<AuditPage />} /><Route path="admin/logs" element={<LogsPage />} /><Route path="admin/jobs" element={<JobsPage />} /><Route path="admin/system" element={<SystemPage />} /><Route path="profile" element={<ProfilePage />} /><Route path="profile/keys" element={<KeysPage />} /><Route path="profile/security" element={<SecurityPage />} /><Route path="integrations" element={<Integrations />} /><Route path="notifications" element={<Notifications />} /><Route path="*" element={<Navigate to="/" replace />} /></Route></Routes></AuthContext.Provider>
+  return <LimitsContext.Provider value={me.limits || { long_text: 0, short_text: 0 }}><AuthContext.Provider value={{ user: me.user, version: me.version, upload: me.upload, limits: me.limits, refresh, logout }}><Routes><Route element={<Layout />}><Route index element={<Dashboard />} /><Route path="reviews" element={<Reviews />} /><Route path="reviews/new" element={<NewReview />} /><Route path="reviews/:id" element={<ReviewDetail />} /><Route path="security" element={<Reviews security />} /><Route path="controls" element={<ControlsPage />} /><Route path="reports" element={<Reports />} /><Route path="templates" element={<Templates />} /><Route path="templates/import" element={<ImportWizard />} /><Route path="templates/rules" element={<RuleSimulator />} /><Route path="templates/:id" element={<TemplateDetail />} /><Route path="admin/users" element={<UsersPage />} /><Route path="admin/settings" element={<SettingsPage />} /><Route path="admin/audit" element={<AuditPage />} /><Route path="admin/logs" element={<LogsPage />} /><Route path="admin/jobs" element={<JobsPage />} /><Route path="admin/system" element={<SystemPage />} /><Route path="profile" element={<ProfilePage />} /><Route path="profile/keys" element={<KeysPage />} /><Route path="profile/security" element={<SecurityPage />} /><Route path="integrations" element={<Integrations />} /><Route path="notifications" element={<Notifications />} /><Route path="*" element={<Navigate to="/" replace />} /></Route></Routes></AuthContext.Provider></LimitsContext.Provider>
 }
 
 ReactDOM.createRoot(document.getElementById('root')!).render(<React.StrictMode><BrowserRouter><ToastProvider><App /></ToastProvider></BrowserRouter></React.StrictMode>)

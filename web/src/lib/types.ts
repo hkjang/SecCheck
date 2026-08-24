@@ -119,11 +119,13 @@ export type TemplateVersion = {
 }
 
 export type UploadRules = { max_size_mb: number; allowed_extensions: string[] }
+export type TextLimits = { long_text: number; short_text: number }
 
 export type AuthValue = {
   user: User
   version: string
   upload?: UploadRules
+  limits?: TextLimits
   refresh: () => Promise<void>
   logout: () => Promise<void>
   enrolling?: boolean
