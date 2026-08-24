@@ -69,6 +69,7 @@ var objectScopedRoutes = map[string]bool{
 	"GET /api/v1/evidences/{id}/download":                        true,
 	"GET /api/v1/review-requests/{id}":                           true,
 	"GET /api/v1/review-requests/{id}/export/{format}":           true,
+	"GET /api/v1/review-requests/{id}/assignees":                 true,
 	"GET /api/v1/review-requests/{id}/completion-check":          true,
 	"GET /api/v1/review-requests/{id}/submission-check":          true,
 	"GET /api/v1/review-requests/{id}/history":                   true,

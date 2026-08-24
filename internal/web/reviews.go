@@ -817,6 +817,17 @@ func (s *Server) saveResponse(w http.ResponseWriter, r *http.Request) {
 		problem(w, 409, "RESPONSE_CONFLICT", "다른 사용자가 이 항목을 먼저 저장했습니다. 최신 내용을 확인한 뒤 다시 저장하세요.", conflict)
 		return
 	}
+	// Assigning an item from the editor went through no check at all, while
+	// the bulk path refused anybody who cannot open the review: a name picked
+	// from the directory could be written onto an item where its owner would
+	// never see it. And nothing was sent -- the same batch assignment tells
+	// the assignee, one item at a time told nobody.
+	var previousAssignee string
+	_ = s.Store.Pool.QueryRow(r.Context(), `SELECT COALESCE(assigned_to,'') FROM responses WHERE submission_item_id=$1`, itemID).Scan(&previousAssignee)
+	if in.AssignedTo != "" && in.AssignedTo != previousAssignee && !s.canAccessReviewAs(r.Context(), in.AssignedTo, reviewID) {
+		problem(w, 422, "NOT_A_PARTICIPANT", "이 심의에 참여하지 않는 사용자에게는 배정할 수 없습니다.", map[string]string{"assigned_to": "참여자가 아닙니다."})
+		return
+	}
 	answer, _ := json.Marshal(in.Answer)
 	id := store.NewID()
 	var savedAt time.Time
@@ -826,6 +837,15 @@ func (s *Server) saveResponse(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	_ = s.Store.Audit(r.Context(), auditFrom(r, "UPDATE_RESPONSE", "SUBMISSION_ITEM", itemID, nil, map[string]any{"applicability": in.Applicability, "self_assessment": in.SelfAssessment, "assigned_to": in.AssignedTo}))
+	// Only a change is worth a message: the editor auto-saves every couple of
+	// seconds and would otherwise repeat the same notice all afternoon.
+	if in.AssignedTo != "" && in.AssignedTo != previousAssignee && in.AssignedTo != session(r).User.ID {
+		var number, service, code string
+		if err = s.Store.Pool.QueryRow(r.Context(), `SELECT r.review_number,r.service_name,si.item_code FROM submission_items si JOIN submissions sub ON sub.id=si.submission_id JOIN review_requests r ON r.id=sub.review_request_id WHERE si.id=$1`, itemID).Scan(&number, &service, &code); err == nil {
+			s.addTargetedNotification(r.Context(), in.AssignedTo, "ITEM_ASSIGNED", "체크리스트 항목 배정",
+				fmt.Sprintf("%s(%s)의 %s 항목 담당자로 지정되었습니다.", number, service, code), "REVIEW_REQUEST", reviewID)
+		}
+	}
 	jsonResponse(w, 200, map[string]any{"saved_at": savedAt, "updated_at": savedAt})
 }
 
@@ -1951,6 +1971,39 @@ func (s *Server) decideApproval(w http.ResponseWriter, r *http.Request, decision
 // added through the API and nowhere else, and there was no way to read them
 // back at all -- so a requester could not see who they had given access to,
 // and the co-author feature the user guide describes had no screen behind it.
+// listAssignees answers "who can this item go to". The dropdown offered the
+// whole user directory, so a name that the service then refuses -- or worse,
+// accepts onto an item its owner cannot open -- was one click away.
+func (s *Server) listAssignees(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	if !s.canAccessReview(r.Context(), session(r), id) {
+		problem(w, 404, "NOT_FOUND", "심의를 찾을 수 없습니다.", nil)
+		return
+	}
+	rows, err := s.Store.Pool.Query(r.Context(), `SELECT u.id,u.display_name,u.department,
+                CASE WHEN u.id=r.requester_id THEN '요청자'
+                     WHEN u.id=r.builder_id THEN '구축'
+                     WHEN u.id=r.developer_id THEN '개발'
+                     WHEN u.id=r.operator_id THEN '운영'
+                     WHEN u.id=r.reviewer_id THEN '검토자'
+                     WHEN u.id=r.approver_id THEN '승인자'
+                     ELSE '참여자' END AS review_role
+                FROM review_requests r JOIN users u ON u.active AND (
+                        u.id IN (r.requester_id,r.builder_id,r.developer_id,r.operator_id,r.reviewer_id,r.approver_id)
+                        OR EXISTS(SELECT 1 FROM review_participants p WHERE p.review_request_id=r.id AND p.user_id=u.id AND p.participant_role='CONTRIBUTOR'))
+                WHERE r.id=$1 ORDER BY u.display_name`, id)
+	if err != nil {
+		s.fault(w, r, "QUERY_FAILED", "배정 가능한 사용자를 불러오지 못했습니다.", err)
+		return
+	}
+	items, err := scanDynamic(rows, []string{"id", "display_name", "department", "review_role"})
+	if err != nil {
+		s.fault(w, r, "QUERY_FAILED", "목록을 불러오지 못했습니다.", err)
+		return
+	}
+	jsonResponse(w, 200, map[string]any{"items": items, "total": len(items)})
+}
+
 func (s *Server) listParticipants(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 	if !s.canAccessReview(r.Context(), session(r), id) {

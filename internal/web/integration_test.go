@@ -4933,3 +4933,94 @@ func TestOlderAuditEventsAreReachablePageByPage(t *testing.T) {
 		}
 	}
 }
+
+// Dividing a checklist up is how a long review gets done. The bulk path
+// checked that the assignee can open the review and told them; assigning one
+// item from the editor did neither.
+func TestAssigningOneItemChecksAndTellsTheAssignee(t *testing.T) {
+	h := newHarness(t)
+	ctx := context.Background()
+	h.user("assign-owner", "REQUESTER")
+	helperID := h.user("assign-helper", "REQUESTER")
+	outsiderID := h.user("assign-outsider", "REQUESTER")
+	owner := h.login("assign-owner")
+
+	reviewID := owner.createReview("항목 배정 서비스")
+	items := []map[string]any{}
+	if err := json.Unmarshal([]byte(owner.do(http.MethodGet, "/api/v1/review-requests/"+reviewID+"/items", nil).body), &items); err != nil {
+		t.Fatal(err)
+	}
+	itemID := items[0]["id"].(string)
+	answer := func(assignee string) response {
+		t.Helper()
+		return owner.do(http.MethodPut, "/api/v1/review-requests/"+reviewID+"/responses/"+itemID,
+			map[string]any{"applicability": "Y", "self_assessment": "COMPLIANT", "assigned_to": assignee, "expected_updated_at": ""})
+	}
+	notices := func(userID string) []string {
+		t.Helper()
+		rows, err := h.db.Pool.Query(ctx, `SELECT body FROM notifications WHERE recipient_id=$1 AND event_type='ITEM_ASSIGNED' ORDER BY created_at`, userID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer rows.Close()
+		out := []string{}
+		for rows.Next() {
+			var body string
+			if err := rows.Scan(&body); err != nil {
+				t.Fatal(err)
+			}
+			out = append(out, body)
+		}
+		return out
+	}
+
+	// Somebody who cannot open the review cannot be made responsible for an
+	// item in it.
+	if res := answer(outsiderID); res.status != http.StatusUnprocessableEntity {
+		t.Fatalf("assigning to a non-participant: %d %s", res.status, res.body)
+	}
+	if res := answer(outsiderID); res.json()["error"].(map[string]any)["code"] != "NOT_A_PARTICIPANT" {
+		t.Fatalf("the refusal is reported as %s", res.body)
+	}
+	var stored string
+	if err := h.db.Pool.QueryRow(ctx, `SELECT COALESCE(assigned_to,'') FROM responses WHERE submission_item_id=$1`, itemID).Scan(&stored); err != nil && err.Error() != "no rows in result set" {
+		t.Fatal(err)
+	}
+	if stored != "" {
+		t.Fatalf("the item is assigned to %s after a refused save", stored)
+	}
+
+	// A participant can be assigned, and hears about it once.
+	if res := owner.do(http.MethodPost, "/api/v1/review-requests/"+reviewID+"/participants", map[string]string{"user_id": helperID, "role": "CONTRIBUTOR"}); res.status != http.StatusOK {
+		t.Fatalf("add participant: %d %s", res.status, res.body)
+	}
+	if res := answer(helperID); res.status != http.StatusOK {
+		t.Fatalf("assigning to a participant: %d %s", res.status, res.body)
+	}
+	if got := notices(helperID); len(got) != 1 {
+		t.Fatalf("the assignee received %d notices, want 1", len(got))
+	}
+	// The editor auto-saves; re-saving the same assignment must not repeat it.
+	if res := answer(helperID); res.status != http.StatusOK {
+		t.Fatalf("re-saving the same assignment: %d %s", res.status, res.body)
+	}
+	if got := notices(helperID); len(got) != 1 {
+		t.Fatalf("auto-save sent the notice again: %d notices", len(got))
+	}
+
+	// The dropdown is offered the same set the save enforces.
+	res := owner.do(http.MethodGet, "/api/v1/review-requests/"+reviewID+"/assignees", nil)
+	if res.status != http.StatusOK {
+		t.Fatalf("assignees: %d %s", res.status, res.body)
+	}
+	offered := map[string]bool{}
+	for _, raw := range res.json()["items"].([]any) {
+		offered[raw.(map[string]any)["id"].(string)] = true
+	}
+	if !offered[helperID] {
+		t.Fatal("the participant is not offered as an assignee")
+	}
+	if offered[outsiderID] {
+		t.Fatal("somebody outside the review is offered as an assignee")
+	}
+}

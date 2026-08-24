@@ -142,6 +142,7 @@ func (s *Server) routes() {
 	s.handle("POST", "/api/v1/review-requests/{id}/reject", "워크플로", "반려", []string{"APPROVER"}, false, s.rejectReview)
 	s.handle("POST", "/api/v1/review-requests/{id}/cancel", "워크플로", "요청자 본인의 심의 취소", []string{"REQUESTER"}, false, s.cancelReview)
 	s.handle("POST", "/api/v1/review-requests/{id}/close", "워크플로", "승인 또는 반려된 심의 종료", []string{"SECURITY_REVIEWER"}, false, s.closeReview)
+	s.handle("GET", "/api/v1/review-requests/{id}/assignees", "심의", "항목 담당자로 지정할 수 있는 사용자 목록", nil, false, s.listAssignees)
 	s.handle("GET", "/api/v1/review-requests/{id}/participants", "심의", "참여자 목록", nil, false, s.listParticipants)
 	s.handle("POST", "/api/v1/review-requests/{id}/participants", "심의", "참여자 추가. role은 CONTRIBUTOR 또는 VIEWER", nil, false, s.addParticipant)
 	s.handle("DELETE", "/api/v1/review-requests/{id}/participants/{userID}", "심의", "참여자 해제", nil, false, s.removeParticipant)
