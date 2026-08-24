@@ -4,6 +4,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"strconv"
 	"strings"
 	"testing"
 )
@@ -510,5 +511,43 @@ func TestClickableRowsCanBeOperatedFromTheKeyboard(t *testing.T) {
 			}
 			t.Errorf("%s: a container reacts to a click with no keyboard equivalent:\n%s", filepath.Base(page), strings.TrimSpace(m))
 		}
+	}
+}
+
+// The upgrade table is what an offline installation reads when it jumps many
+// releases at once, and it is the first document to fall behind: it stopped at
+// v0.98.0 while the product shipped forty-eight more releases, several of which
+// changed what an operator's alerts and scripts see. The leash is crude on
+// purpose -- it says the table has been looked at recently, not what it says.
+func TestTheUpgradeTableKeepsUpWithTheReleases(t *testing.T) {
+	manual := repoFile(t, "docs/operations.md")
+	version := strings.TrimSpace(repoFile(t, "VERSION"))
+	current := regexp.MustCompile(`^(\d+)\.(\d+)\.(\d+)$`).FindStringSubmatch(version)
+	if current == nil {
+		t.Fatalf("VERSION is %q, which this guard cannot read", version)
+	}
+	section := manual[strings.Index(manual, "## 여러 버전을 건너뛰어 올라올 때"):]
+	if cut := strings.Index(section, "### 마이그레이션"); cut > 0 {
+		section = section[:cut]
+	}
+	newest := -1
+	for _, m := range regexp.MustCompile(`v(\d+)\.(\d+)\.(\d+)`).FindAllStringSubmatch(section, -1) {
+		if m[1] != current[1] || m[2] != current[2] {
+			continue
+		}
+		if patch, err := strconv.Atoi(m[3]); err == nil && patch > newest {
+			newest = patch
+		}
+	}
+	if newest < 0 {
+		t.Fatalf("the upgrade table names no release on the current %s.%s line", current[1], current[2])
+	}
+	patch, err := strconv.Atoi(current[3])
+	if err != nil {
+		t.Fatal(err)
+	}
+	if patch-newest > 20 {
+		t.Errorf("the upgrade table stops at %s.%s.%d while the product is at %s: an offline installation skipping these releases is told nothing about them",
+			current[1], current[2], newest, version)
 	}
 }
