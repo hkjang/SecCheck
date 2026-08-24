@@ -839,3 +839,70 @@ func TestACarriedAnswerSaysThatItWasCarried(t *testing.T) {
 		t.Error("an answer the requester rewrote is still marked as carried over")
 	}
 }
+
+// The dashboard counted reviews nobody had picked up and reviews that had
+// stopped moving, and then showed neither: the numbers were computed on every
+// load of the busiest screen and read by no screen and no tool. They are worth
+// showing -- but a number a security lead cannot click is a fact they then have
+// to reproduce by hand, so the list has to hold exactly the same set.
+func TestTheQueueHealthNumbersMatchTheListBehindThem(t *testing.T) {
+	h := newHarness(t)
+	admin := h.login(adminOf(h))
+	ctx := context.Background()
+	h.user("queue-requester", "REQUESTER")
+	requester := h.login("queue-requester")
+
+	// One review waiting with nobody on it, one that a reviewer took and left.
+	waiting := requester.createReview("담당자 없는 심의")
+	stalled := requester.createReview("멈춘 심의")
+	reviewerID := h.user("queue-reviewer", "SECURITY_REVIEWER")
+	if _, err := h.db.Pool.Exec(ctx, `UPDATE review_requests SET status='SUBMITTED' WHERE id=$1`, waiting); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := h.db.Pool.Exec(ctx, `UPDATE review_requests SET status='REVIEWING',reviewer_id=$2,updated_at=now()-interval '30 days' WHERE id=$1`, stalled, reviewerID); err != nil {
+		t.Fatal(err)
+	}
+
+	data := admin.do(http.MethodGet, "/api/v1/dashboard", nil).json()
+	analytics, _ := data["security_analytics"].(map[string]any)
+	if analytics == nil {
+		t.Fatal("the dashboard carries no queue health for a security lead")
+	}
+	unassigned, _ := analytics["unassigned"].(float64)
+	longPending, _ := analytics["long_pending"].(float64)
+	if unassigned < 1 || longPending < 1 {
+		t.Fatalf("queue health reports unassigned=%v stalled=%v", unassigned, longPending)
+	}
+
+	listed := func(query string) []string {
+		t.Helper()
+		body := admin.do(http.MethodGet, "/api/v1/review-requests?"+query+"&limit=100", nil).json()
+		rows, _ := body["items"].([]any)
+		var ids []string
+		for _, raw := range rows {
+			if row, _ := raw.(map[string]any); row != nil {
+				ids = append(ids, row["id"].(string))
+			}
+		}
+		return ids
+	}
+	if got := listed("unassigned=1"); len(got) != int(unassigned) || !contains(got, waiting) {
+		t.Errorf("the unassigned filter returned %v for a count of %v", got, unassigned)
+	}
+	if got := listed("stalled=1"); len(got) != int(longPending) || !contains(got, stalled) {
+		t.Errorf("the stalled filter returned %v for a count of %v", got, longPending)
+	}
+	// Anything nobody counted must not appear in either list.
+	if got := listed("unassigned=1"); contains(got, stalled) {
+		t.Error("a review with a reviewer is listed as unassigned")
+	}
+}
+
+func contains(haystack []string, needle string) bool {
+	for _, v := range haystack {
+		if v == needle {
+			return true
+		}
+	}
+	return false
+}

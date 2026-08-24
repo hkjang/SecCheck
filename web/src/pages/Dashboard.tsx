@@ -1,15 +1,16 @@
 import { useEffect, useState } from 'react'
 import { Link } from 'react-router-dom'
-import { AlertTriangle, ArrowRight, CalendarClock, ClipboardCheck, ClipboardList, Inbox, Plus, ShieldCheck } from 'lucide-react'
+import { AlertTriangle, ArrowRight, CalendarClock, ClipboardCheck, ClipboardList, Hourglass, Inbox, Plus, ShieldCheck } from 'lucide-react'
 import { get } from '../lib/api'
 import { DueChange, Page, QueueEntry, Review } from '../lib/types'
 import { Badge, Button, Empty, formatDate, LoadFailed, Loading, StatusBadge } from '../components/ui'
 import { useAuth } from '../main'
 
 type FollowUp = { id: string; review_id: string; review_number: string; service_name: string; item_code: string; title: string; follow_up: string; due_date?: string; overdue: boolean; reported: boolean }
-type DashboardData = { status_counts: Record<string, number>; opening_soon: number; opening_soon_unfinished: number; open_change_requests: number; my_queue: QueueEntry[]; due_soon: DueChange[]; my_follow_ups?: FollowUp[] }
+type DashboardData = { status_counts: Record<string, number>; opening_soon: number; opening_soon_unfinished: number; open_change_requests: number; my_queue: QueueEntry[]; due_soon: DueChange[]; my_follow_ups?: FollowUp[]; security_analytics?: { unassigned?: number; long_pending?: number; long_pending_days?: number } }
 export default function Dashboard() {
   const { user } = useAuth()
+  // Only a security lead sees these; for everybody else the server omits them.
   const [data, setData] = useState<DashboardData>()
   const [recent, setRecent] = useState<Review[]>([])
   const [failed, setFailed] = useState<unknown>()
@@ -24,8 +25,16 @@ export default function Dashboard() {
   const queue = data.my_queue || []
   const due = data.due_soon || []
   const actions = data.my_follow_ups || []
+  const analytics = data.security_analytics
   return <div className="page"><div className="page-header"><div><h1 className="page-title">안녕하세요, {user.display_name}님</h1><p className="page-description">오늘 처리할 보안성 심의 업무를 확인하세요.</p></div><div className="header-actions">{user.roles.some(r => ['REQUESTER', 'SYSTEM_ADMIN'].includes(r)) && <Link to="/reviews/new"><Button variant="primary"><Plus size={15} /> 신규 심의 요청</Button></Link>}</div></div>
     <div className="grid stats"><div className="card stat-card"><div className="stat-icon"><ClipboardList /></div><div><span className="stat-value">{active}</span><div className="stat-label">진행 중 심의</div></div></div><div className="card stat-card"><div className="stat-icon amber"><AlertTriangle /></div><div><span className="stat-value">{reviewMode ? pending : data.open_change_requests}</span><div className="stat-label">{reviewMode ? '신규 검토 대기' : '미처리 보완 요청'}</div></div></div><div className="card stat-card"><div className="stat-icon red"><CalendarClock /></div><div><span className="stat-value">{data.opening_soon}</span><div className="stat-label">14일 내 오픈 예정{data.opening_soon_unfinished > 0 && <> · <strong data-sx="sx-060">미완료 {data.opening_soon_unfinished}건</strong></>}</div></div></div><div className="card stat-card"><div className="stat-icon green"><ShieldCheck /></div><div><span className="stat-value">{completed}</span><div className="stat-label">심의 완료</div></div></div></div>
+
+    {analytics && (Number(analytics.unassigned) > 0 || Number(analytics.long_pending) > 0) && <section className="card"><div className="card-header"><h2><Hourglass size={17} /> 대기열 상태</h2></div><div className="card-body" data-sx="sx-006">
+      {/* Both numbers are counted the same way the reminder mails count them,
+          and each links to the list that holds exactly those reviews. */}
+      <Link className="table-link" to="/reviews?unassigned=1">담당자 없는 심의 {analytics.unassigned ?? 0}건 <ArrowRight size={13} /></Link>
+      <Link className="table-link" to="/reviews?stalled=1">{analytics.long_pending_days ?? 3}일 이상 멈춘 심의 {analytics.long_pending ?? 0}건 <ArrowRight size={13} /></Link>
+    </div></section>}
 
     <section className="card"><div className="card-header"><h2><Inbox size={17} /> 내 차례</h2><div className="header-actions"><Badge tone={queue.length ? 'blue' : ''}>{queue.length}건</Badge><Link className="table-link" to="/reviews?mine=1">전체 보기 <ArrowRight size={13} /></Link></div></div>
       <div className="card-body">{queue.length ? queue.map(q => <div className="queue-row" key={q.id}><Badge tone="blue">{q.action}</Badge><div className="grow"><Link className="table-link" to={`/reviews/${q.id}`}>{q.review_number}</Link> <strong>{q.service_name}</strong><span className="subtle">오픈 예정 {formatDate(q.planned_open_date)} · 최근 변경 {formatDate(q.updated_at, true)}</span></div><StatusBadge status={q.status} /></div>) : <Empty title="지금 처리할 심의가 없습니다." description="새로 배정되면 상단 알림과 이 목록에 함께 표시됩니다." />}</div></section>

@@ -318,6 +318,7 @@ docker compose exec seccheck /app/seccheck selftest --username admin --password 
 | v1.0.42~43 | 유지보수 스윕이 매시 증적 20건을 되읽어 검증합니다. I/O가 조금 늘고, 실패 시 `증적 무결성 확인 실패` 알림이 발생합니다 |
 | v1.0.44 | **`seccheck_scan_failures`의 의미가 바뀝니다.** 격리·검사 중 파일을 제외하고 `ERROR`만 셉니다. 기존 알람 임계값을 다시 보십시오 |
 | v1.0.45 | `seccheck_evidence_version_bytes`가 파기된 버전을 제외합니다. 용량 추이 그래프가 한 번 내려갑니다 |
+| v1.0.56 | `/api/v1/dashboard`의 `security_analytics`에서 `category_findings`·`recurring_controls`가 제거됩니다(리포트 화면에 동일 정보 존재). 연계 스크립트가 이 필드를 읽는다면 리포트 API로 옮기십시오 |
 | v1.0.34~43 | 알림 이벤트 `API_KEY_EXPIRING`·`ACCOUNT_LOCKED`·`EVIDENCE_UNREADABLE`가 추가되었습니다. 수신 설정 화면에서 켜고 끌 수 있습니다 |
 
 ### 마이그레이션

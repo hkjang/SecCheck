@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/hkjang/SecCheck/internal/auth"
+	"github.com/hkjang/SecCheck/internal/maintenance"
 	"github.com/hkjang/SecCheck/internal/store"
 	"github.com/jackc/pgx/v5"
 )
@@ -100,6 +101,14 @@ func (s *Server) reviewFilter(r *http.Request) (string, []any) {
 	if strings.TrimSpace(query.Get("open_at_risk")) == "1" {
 		where += " AND review_requests.planned_open_date IS NOT NULL AND review_requests.planned_open_date <= display_today()+14" +
 			" AND review_requests.status NOT IN ('APPROVED','CLOSED','CANCELLED','REJECTED')"
+	}
+	// The dashboard counts these two; without a filter behind them the number
+	// is a fact nobody can act on.
+	if strings.TrimSpace(query.Get("unassigned")) == "1" {
+		where += " AND review_requests.reviewer_id IS NULL AND review_requests.status IN ('SUBMITTED','RESUBMITTED')"
+	}
+	if strings.TrimSpace(query.Get("stalled")) == "1" {
+		where += fmt.Sprintf(" AND review_requests.status IN ('SUBMITTED','RESUBMITTED','REVIEWING') AND review_requests.updated_at < now()-make_interval(days=>%d)", maintenance.StalledReviewDays)
 	}
 	if strings.TrimSpace(query.Get("overdue")) == "1" {
 		where += " AND EXISTS(SELECT 1 FROM change_requests oc WHERE oc.review_request_id=review_requests.id AND oc.status<>'VERIFIED' AND oc.due_date < display_today())"

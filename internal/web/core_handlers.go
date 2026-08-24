@@ -14,6 +14,7 @@ import (
 
 	"github.com/hkjang/SecCheck/internal/auth"
 	"github.com/hkjang/SecCheck/internal/cryptox"
+	"github.com/hkjang/SecCheck/internal/maintenance"
 	"github.com/hkjang/SecCheck/internal/store"
 	"golang.org/x/crypto/bcrypt"
 )
@@ -316,30 +317,24 @@ func (s *Server) dashboard(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
+	// Two counts a security lead acts on, and links that lead to the exact list.
+	// The two aggregations that used to sit here -- findings by category and the
+	// most repeated failures -- were computed on every load of the busiest
+	// screen and read by nobody: the report screen has both, and no other caller
+	// asked for them.
 	analytics := map[string]any{}
 	if admin {
 		unassigned, ok := count(`SELECT count(*) FROM review_requests WHERE reviewer_id IS NULL AND status IN ('SUBMITTED','RESUBMITTED')`)
 		if !ok {
 			return
 		}
-		longPending, ok := count(`SELECT count(*) FROM review_requests WHERE status IN ('SUBMITTED','RESUBMITTED','REVIEWING') AND updated_at<now()-interval '7 days'`)
+		longPending, ok := count(`SELECT count(*) FROM review_requests WHERE status IN ('SUBMITTED','RESUBMITTED','REVIEWING') AND updated_at<now()-make_interval(days=>$1)`, maintenance.StalledReviewDays)
 		if !ok {
 			return
 		}
-		rows, err := s.Store.Pool.Query(r.Context(), `SELECT si.category,rr.result,count(*) FROM review_results rr JOIN submission_items si ON si.id=rr.submission_item_id WHERE rr.result IN ('INSUFFICIENT','NON_COMPLIANT','CONDITIONAL') GROUP BY si.category,rr.result ORDER BY count(*) DESC LIMIT 20`)
-		if err == nil {
-			if grouped, groupErr := scanDynamic(rows, []string{"category", "result", "count"}); groupErr == nil {
-				analytics["category_findings"] = grouped
-			}
-		}
-		rows, err = s.Store.Pool.Query(r.Context(), `SELECT si.item_code,si.title,count(*) AS failures FROM review_results rr JOIN submission_items si ON si.id=rr.submission_item_id WHERE rr.result IN ('INSUFFICIENT','NON_COMPLIANT') GROUP BY si.item_code,si.title ORDER BY failures DESC LIMIT 10`)
-		if err == nil {
-			if grouped, groupErr := scanDynamic(rows, []string{"item_code", "title", "failures"}); groupErr == nil {
-				analytics["recurring_controls"] = grouped
-			}
-		}
 		analytics["unassigned"] = unassigned
 		analytics["long_pending"] = longPending
+		analytics["long_pending_days"] = maintenance.StalledReviewDays
 	}
 	jsonResponse(w, 200, map[string]any{"status_counts": counts, "opening_soon": overdue, "opening_soon_unfinished": openingUnfinished, "open_change_requests": openChanges, "security_analytics": analytics, "my_queue": s.myQueue(r), "due_soon": s.dueChangeRequests(r), "my_follow_ups": s.myFollowUps(r)})
 }

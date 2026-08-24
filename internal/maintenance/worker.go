@@ -18,6 +18,10 @@ import (
 
 // Deletes run in bounded batches so a first sweep over a long-neglected
 // installation never holds a single long transaction.
+// StalledReviewDays is how long a review may sit without moving before the
+// service treats it as stuck.
+const StalledReviewDays = 3
+
 const (
 	batchSize     = 5000
 	maxBatches    = 40
@@ -31,7 +35,9 @@ const (
 	stallReminder = 6 * time.Hour
 	// A review that has not moved in this long is waiting on a person, not on
 	// work in progress, and the same person is not told again for this long.
-	stalledReviewDays = 3
+	// Exported because the dashboard counts the same set: a screen that says
+	// "2 stalled" while the mail chases 5 is two answers to one question.
+	stalledReviewDays = StalledReviewDays
 	// How close a planned open date has to be before the people who can still
 	// finish the review are told, and how long before they are told again.
 	openDateWarningDays = 3
