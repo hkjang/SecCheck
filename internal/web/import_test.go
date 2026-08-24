@@ -79,3 +79,36 @@ func TestASheetWithOnlyAQuestionStillYieldsItems(t *testing.T) {
 		t.Errorf("severity 상 became %q", items[0].Severity)
 	}
 }
+
+// Two rows whose codes differ only past the fortieth character are two rows the
+// database sees as one: the column stores forty. Deduplicating before that
+// truncation let both land on the same stored code, and the import failed as a
+// whole -- on a three hundred row workbook, with a database error and no row
+// number.
+func TestLongCodesThatShareTheirFirstFortyCharactersStayDistinct(t *testing.T) {
+	long := "3.2.1 접근통제 정책 수립 및 이행 여부를 주기적으로 점검하고 기록한다 - "
+	rows := [][]string{
+		{"항목코드", "보안 요건 항목", "점검항목"},
+		{long + "서버", "서버 접근통제", "서버에 대한 접근통제가 이루어지는가?"},
+		{long + "네트워크", "네트워크 접근통제", "네트워크에 대한 접근통제가 이루어지는가?"},
+		{long + "서버", "중복된 행", "같은 코드가 두 번 나오는 경우"},
+	}
+	header, mapping := detectHeaders(rows)
+	items, report := parseImportRowsWithReport(rows, header, mapping, "INFRA")
+	if len(items) != 3 {
+		t.Fatalf("parsed %d items, want 3 (report %+v)", len(items), report)
+	}
+	seen := map[string]bool{}
+	for _, item := range items {
+		if len([]rune(item.ItemCode)) > itemFieldLimits["item_code"] {
+			t.Errorf("stored code is %d characters, over the column limit: %q", len([]rune(item.ItemCode)), item.ItemCode)
+		}
+		if seen[item.ItemCode] {
+			t.Errorf("two rows would be stored under the same code %q, which the unique index refuses", item.ItemCode)
+		}
+		seen[item.ItemCode] = true
+	}
+	if len(report.DuplicateCodes) == 0 {
+		t.Error("the wizard does not warn that codes collided")
+	}
+}

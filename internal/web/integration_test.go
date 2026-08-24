@@ -1549,6 +1549,13 @@ func TestPublishedVersionsAreImmutableAndSnapshotsAreStable(t *testing.T) {
 	}
 	itemID, _ := added.json()["id"].(string)
 
+	// The same code twice is a duplicate, not an immutable version: both
+	// failures came out of the same insert and were reported as the latter, so
+	// the administrator was told to look at a status that was fine.
+	if res := admin.do(http.MethodPost, itemPath, item); res.errorCode() != "DUPLICATE_ITEM_CODE" {
+		t.Errorf("adding the same item code twice reported %s (%d %s)", res.errorCode(), res.status, res.body)
+	}
+
 	if res := admin.do(http.MethodPost, fmt.Sprintf("/api/v1/templates/%s/versions/%s/publish", templateID, versionID), nil); res.status != http.StatusOK {
 		t.Fatalf("publish: %d %s", res.status, res.body)
 	}

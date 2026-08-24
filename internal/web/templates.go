@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -15,6 +16,7 @@ import (
 
 	"github.com/hkjang/SecCheck/internal/store"
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/xuri/excelize/v2"
 )
 
@@ -437,6 +439,13 @@ func (s *Server) createTemplateItem(w http.ResponseWriter, r *http.Request) {
 	}
 	defer tx.Rollback(r.Context())
 	tag, err := tx.Exec(r.Context(), `INSERT INTO checklist_items(id,version_id,section_id,item_code,category,title,question,guide,legal_basis,example,severity,required,answer_type,evidence_required,applicability_rule,options_json,sort_order) SELECT $1,v.id,NULLIF($2,''),$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16 FROM checklist_versions v WHERE v.id=$17 AND v.template_id=$18 AND v.status='DRAFT'`, id, secID, in.ItemCode, in.Category, in.Title, in.Question, in.Guide, in.LegalBasis, in.Example, valueDefault(in.Severity, "MEDIUM"), in.Required, valueDefault(in.AnswerType, "YNNA"), in.EvidenceRequired, rule, opts, in.SortOrder, r.PathValue("versionID"), r.PathValue("id"))
+	if duplicateKey(err) {
+		// The insert also fails when the version is published, and both cases
+		// used to be reported as that -- so an administrator adding a code the
+		// version already has was told to look at the version's status.
+		problem(w, 409, "DUPLICATE_ITEM_CODE", "이 버전에 같은 항목코드가 이미 있습니다.", map[string]string{"item_code": in.ItemCode})
+		return
+	}
 	if err != nil || tag.RowsAffected() == 0 {
 		problem(w, 409, "IMMUTABLE_VERSION", "게시된 버전은 수정할 수 없습니다.", nil)
 		return
@@ -889,15 +898,12 @@ func parseImportRowsWithReport(rows [][]string, header int, mapping []importColu
 			code = fmt.Sprintf("%s-%03d", strings.ToUpper(category), i-header)
 			report.GeneratedCodes++
 		}
-		seenCodes[code]++
-		if seenCodes[code] > 1 {
-			if !contains(report.DuplicateCodes, code) {
-				report.DuplicateCodes = append(report.DuplicateCodes, code)
-			}
-			code = fmt.Sprintf("%s-DUP%d", code, seenCodes[code])
+		code, taken := itemCodeFor(code, seenCodes)
+		if taken != "" && !contains(report.DuplicateCodes, taken) {
+			report.DuplicateCodes = append(report.DuplicateCodes, taken)
 		}
 		severity := normalizeSeverity(get("severity"))
-		parsedItem := itemInput{Section: cut(get("section"), itemFieldLimits["section"]), ItemCode: cut(code, itemFieldLimits["item_code"]), Category: category, Title: cut(title, itemFieldLimits["title"]), Question: cut(question, itemFieldLimits["question"]), Guide: cut(get("guide"), itemFieldLimits["guide"]), LegalBasis: cut(get("legal_basis"), itemFieldLimits["legal_basis"]), Example: cut(get("example"), itemFieldLimits["example"]), Severity: severity, AnswerType: "YNNA", Required: true, SortOrder: len(items) + 1}
+		parsedItem := itemInput{Section: cut(get("section"), itemFieldLimits["section"]), ItemCode: code, Category: category, Title: cut(title, itemFieldLimits["title"]), Question: cut(question, itemFieldLimits["question"]), Guide: cut(get("guide"), itemFieldLimits["guide"]), LegalBasis: cut(get("legal_basis"), itemFieldLimits["legal_basis"]), Example: cut(get("example"), itemFieldLimits["example"]), Severity: severity, AnswerType: "YNNA", Required: true, SortOrder: len(items) + 1}
 		if field, _ := checkedItemText(map[string]string{"item_code": code, "title": title, "question": question, "guide": get("guide"), "legal_basis": get("legal_basis"), "example": get("example"), "section": get("section")}); field != "" {
 			report.ShortenedFields++
 		}
@@ -910,6 +916,42 @@ func parseImportRowsWithReport(rows [][]string, header int, mapping []importColu
 		}
 	}
 	return items, report
+}
+
+// duplicateKey reports a unique-index violation, which is a request problem and
+// not a server fault.
+func duplicateKey(err error) bool {
+	var pgErr *pgconn.PgError
+	return errors.As(err, &pgErr) && pgErr.Code == "23505"
+}
+
+// itemCodeFor returns the code as it will be stored: inside the column's limit
+// and used by no other row of the sheet. The order matters. Codes were checked
+// for duplicates as written in the spreadsheet and truncated to forty
+// characters afterwards, so two different long codes that share their first
+// forty characters -- "3.2.1 접근통제 정책 수립 및 이행 여부 점검 - 서버" and the
+// same line ending in "- 네트워크" -- both became the same stored code, the
+// unique index refused the second one, and the entire import failed with a
+// database error rather than a word about which row was at fault.
+// The second return value is the code that was already taken, which is what the
+// wizard shows: the reader is looking for it in their spreadsheet, where the
+// suffix this function invents does not appear.
+func itemCodeFor(code string, seen map[string]int) (string, string) {
+	limit := itemFieldLimits["item_code"]
+	base := cut(code, limit)
+	if seen[base] == 0 {
+		seen[base] = 1
+		return base, ""
+	}
+	for n := seen[base] + 1; ; n++ {
+		suffix := fmt.Sprintf("-DUP%d", n)
+		candidate := cut(base, limit-len([]rune(suffix))) + suffix
+		if seen[candidate] == 0 {
+			seen[base] = n
+			seen[candidate] = 1
+			return candidate, base
+		}
+	}
 }
 
 func normalizeItemCode(code string) string {
