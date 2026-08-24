@@ -1,5 +1,5 @@
 import { ChangeEvent, useEffect, useMemo, useRef, useState } from 'react'
-import { Link, useNavigate, useParams } from 'react-router-dom'
+import { Link, useNavigate, useParams, useSearchParams } from 'react-router-dom'
 import { AlertTriangle, ArrowLeft, Check, CheckCircle2, CheckSquare, ChevronDown, ChevronRight, ChevronUp, Copy, Download, FileCheck2, FilePlus2, Filter, ListChecks, MessageSquareWarning, Paperclip, Play, RefreshCw, History, Save, Search, Send, ShieldCheck, SlidersHorizontal, Trash2, UserRound, Upload, ZoomIn } from 'lucide-react'
 import { api, del, directory, errorMessage, get, post, put, upload, ApiError } from '../lib/api'
 import { ChangeRequest, ChecklistItem, DirectoryUser, Review } from '../lib/types'
@@ -27,6 +27,9 @@ const carriedOver = (item: ChecklistItem) => Boolean(item.response?.carried_at)
 export default function ReviewDetail() {
   const save = useDownload()
   const { id = '' } = useParams(); const { user } = useAuth(); const toast = useToast(); const navigate = useNavigate()
+  // A notice about one item can now say which one, so arriving from the
+  // notification centre opens that item instead of a list of a few hundred.
+  const [search] = useSearchParams(); const focusRequest = search.get('item') || ''
   const [review, setReview] = useState<Review>(); const [items, setItems] = useState<ChecklistItem[]>(); const [selected, setSelected] = useState<string>(''); const [open, setOpen] = useState<Set<string>>(new Set()); const [query, setQuery] = useState(''); const [filter, setFilter] = useState('ALL'); const [validation, setValidation] = useState<Record<string, unknown>[] | null>(null); const [dialog, setDialog] = useState<'complete' | 'approval' | 'reject' | null>(null); const [ruleOpen, setRuleOpen] = useState(false); const [busy, setBusy] = useState(false); const [picked, setPicked] = useState<Set<string>>(new Set()); const [bulkOpen, setBulkOpen] = useState(false); const [historyOpen, setHistoryOpen] = useState(false); const [precheck, setPrecheck] = useState<{ ready: boolean; issues: Record<string, unknown>[] }>()
   const reviewer = user.roles.includes('SECURITY_REVIEWER'); const approver = user.roles.includes('APPROVER')
   // The submission rules live on the server and used to be reported only by
@@ -53,6 +56,13 @@ export default function ReviewDetail() {
   // Jumping straight to a flagged item is the point of the submission report;
   // the active filter is cleared first so the target is never hidden.
   const focusItem = (code: string) => { const target = (items || []).find(x => x.item_code === code); if (!target) return; setValidation(null); setFilter('ALL'); setQuery(''); setSelected(target.id); setOpen(v => new Set(v).add(target.id)); window.setTimeout(() => document.getElementById(`item-${target.id}`)?.scrollIntoView({ behavior: 'smooth', block: 'center' }), 60) }
+  useEffect(() => {
+    if (!focusRequest || !items?.some(x => x.id === focusRequest)) return
+    setFilter('ALL'); setQuery(''); setSelected(focusRequest)
+    setOpen(v => new Set(v).add(focusRequest))
+    const timer = window.setTimeout(() => document.getElementById(`item-${focusRequest}`)?.scrollIntoView({ behavior: 'smooth', block: 'center' }), 80)
+    return () => clearTimeout(timer)
+  }, [focusRequest, items])
   const current = items?.find(x => x.id === selected)
   // A reviewer works through every item in turn, and until now that meant
   // finding and clicking each one in a list of a few hundred.

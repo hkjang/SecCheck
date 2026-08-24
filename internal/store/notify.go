@@ -34,12 +34,34 @@ func (s *Store) Notify(ctx context.Context, recipient, event, title, body, targe
 // NotifyTx is Notify for a caller that already holds a transaction, so the
 // notification lives or dies with the change that caused it.
 func (s *Store) NotifyTx(ctx context.Context, tx pgx.Tx, recipient, event, title, body, targetType, targetID string) error {
+	return s.notifyTx(ctx, tx, recipient, event, title, body, targetType, targetID, "")
+}
+
+// NotifyItem is Notify for a message about one checklist item. The item
+// travels with the notice so the reader lands on it instead of on the review
+// that holds a few hundred of them.
+func (s *Store) NotifyItem(ctx context.Context, recipient, event, title, body, reviewID, itemID string) error {
+	if recipient == "" {
+		return errors.New("no recipient")
+	}
+	tx, err := s.Pool.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback(ctx)
+	if err = s.notifyTx(ctx, tx, recipient, event, title, body, "REVIEW_REQUEST", reviewID, itemID); err != nil {
+		return err
+	}
+	return tx.Commit(ctx)
+}
+
+func (s *Store) notifyTx(ctx context.Context, tx pgx.Tx, recipient, event, title, body, targetType, targetID, itemID string) error {
 	if recipient == "" {
 		return errors.New("no recipient")
 	}
 	id := NewID()
-	if _, err := tx.Exec(ctx, `INSERT INTO notifications(id,recipient_id,event_type,title,body,target_type,target_id) VALUES($1,$2,$3,$4,$5,$6,$7)`,
-		id, recipient, event, title, body, targetType, targetID); err != nil {
+	if _, err := tx.Exec(ctx, `INSERT INTO notifications(id,recipient_id,event_type,title,body,target_type,target_id,item_id) VALUES($1,$2,$3,$4,$5,$6,$7,NULLIF($8,''))`,
+		id, recipient, event, title, body, targetType, targetID, itemID); err != nil {
 		return err
 	}
 	if !s.WantsImmediateMail(ctx, tx, recipient, event) {

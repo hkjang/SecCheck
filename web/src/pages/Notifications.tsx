@@ -4,7 +4,7 @@ import { ArrowRight, Bell, Check, CheckCheck, Settings2 } from 'lucide-react'
 import { errorMessage, get, post, put } from '../lib/api'
 import { Badge, Button, Empty, Field, formatDate, LoadFailed, Loading, Modal, Toggle, useToast } from '../components/ui'
 
-type Notice = { id: string; event_type: string; title: string; body: string; status: string; target_type: string; target_id: string; read_at?: string; created_at: string }
+type Notice = { id: string; event_type: string; title: string; body: string; status: string; target_type: string; target_id: string; item_id?: string; read_at?: string; created_at: string }
 type Page = { items: Notice[]; total: number; has_more: boolean }
 // Administrator alerts carry no review to open, so they route by what they are about.
 const adminDestination: Record<string, { to: string; label: string }> = {
@@ -56,7 +56,7 @@ export default function Notifications() {
         <strong>{n.title}</strong> <Badge>{labelOf(n.event_type)}</Badge> {!n.read_at && <Badge tone="blue">새 알림</Badge>}
         <p className="subtle">{n.body}</p>
         <span className="subtle">{formatDate(n.created_at, true)}</span>
-        {n.target_type === 'REVIEW_REQUEST' && n.target_id ? <Link className="table-link" to={`/reviews/${n.target_id}`} onClick={() => { if (!n.read_at) read(n.id) }}> 심의 열기 <ArrowRight size={13} /></Link>
+        {n.target_type === 'REVIEW_REQUEST' && n.target_id ? <Link className="table-link" to={`/reviews/${n.target_id}${n.item_id ? `?item=${n.item_id}` : ''}`} onClick={() => { if (!n.read_at) read(n.id) }}> {n.item_id ? '해당 항목 열기' : '심의 열기'} <ArrowRight size={13} /></Link>
           : n.target_type === 'AUDIT_LOG' && n.target_id ? <Link className="table-link" to={`/admin/audit?event_id=${n.target_id}`} onClick={() => { if (!n.read_at) read(n.id) }}> 해당 감사 이벤트 열기 <ArrowRight size={13} /></Link>
           : adminDestination[n.event_type] && <Link className="table-link" to={adminDestination[n.event_type].to} onClick={() => { if (!n.read_at) read(n.id) }}> {adminDestination[n.event_type].label} <ArrowRight size={13} /></Link>}
       </div>

@@ -5144,3 +5144,83 @@ func TestTheScreenIsToldWhenTheSessionWillTimeOut(t *testing.T) {
 		t.Fatalf("the stored policy holds %d minutes", stored)
 	}
 }
+
+// A notice about one checklist item used to link to the review that holds a
+// few hundred of them, leaving the reader to find the item by scrolling.
+func TestANoticeAboutOneItemSaysWhichItem(t *testing.T) {
+	h := newHarness(t)
+	ctx := context.Background()
+	authorID := h.user("notice-author", "REQUESTER")
+	h.user("notice-reviewer", "SECURITY_REVIEWER")
+	author := h.login("notice-author")
+	reviewer := h.login("notice-reviewer")
+	var reviewerID string
+	if err := h.db.Pool.QueryRow(ctx, `SELECT id FROM users WHERE username='notice-reviewer'`).Scan(&reviewerID); err != nil {
+		t.Fatal(err)
+	}
+
+	reviewID := author.createReview("항목 알림 서비스")
+	items := []map[string]any{}
+	if err := json.Unmarshal([]byte(author.do(http.MethodGet, "/api/v1/review-requests/"+reviewID+"/items", nil).body), &items); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := h.db.Pool.Exec(ctx, `UPDATE review_requests SET reviewer_id=$2,status='REVIEWING' WHERE id=$1`, reviewID, reviewerID); err != nil {
+		t.Fatal(err)
+	}
+	itemID := items[0]["id"].(string)
+
+	noticed := func(userID, event string) string {
+		t.Helper()
+		var item string
+		if err := h.db.Pool.QueryRow(ctx, `SELECT COALESCE(item_id,'') FROM notifications WHERE recipient_id=$1 AND event_type=$2 ORDER BY created_at DESC LIMIT 1`, userID, event).Scan(&item); err != nil {
+			t.Fatalf("no %s notice for %s: %v", event, userID, err)
+		}
+		return item
+	}
+
+	// A comment and a correction are both about one item.
+	if res := reviewer.do(http.MethodPost, "/api/v1/review-requests/"+reviewID+"/items/"+itemID+"/comments", map[string]string{"body": "이 항목의 근거를 보완해 주세요"}); res.status != http.StatusCreated {
+		t.Fatalf("comment: %d %s", res.status, res.body)
+	}
+	if got := noticed(authorID, "COMMENT_ADDED"); got != itemID {
+		t.Fatalf("the comment notice points at %q, want the item", got)
+	}
+	if res := reviewer.do(http.MethodPost, "/api/v1/review-requests/"+reviewID+"/change-requests",
+		map[string]any{"item_id": itemID, "reason": "증적을 보완하세요", "assignee_id": authorID, "due_date": "2030-06-30"}); res.status != http.StatusCreated {
+		t.Fatalf("change request: %d %s", res.status, res.body)
+	}
+	if got := noticed(authorID, "CHANGE_REQUEST"); got != itemID {
+		t.Fatalf("the correction notice points at %q, want the item", got)
+	}
+
+	// A notice about a batch is about the review, not about one item, and it
+	// says so rather than pointing at whichever item happened to be first.
+	ids := []string{}
+	for _, item := range items[:3] {
+		ids = append(ids, item["id"].(string))
+	}
+	if res := author.do(http.MethodPost, "/api/v1/review-requests/"+reviewID+"/responses/bulk",
+		map[string]any{"item_ids": ids, "assigned_to": authorID, "assign_only": true}); res.status != http.StatusOK {
+		t.Fatalf("bulk assign: %d %s", res.status, res.body)
+	}
+	if got := noticed(authorID, "ITEM_ASSIGNED"); got != "" {
+		t.Fatalf("a batch notice claims item %q", got)
+	}
+	res := author.do(http.MethodGet, "/api/v1/notifications", nil)
+	if res.status != http.StatusOK {
+		t.Fatalf("notifications: %d %s", res.status, res.body)
+	}
+	seen := false
+	for _, raw := range res.json()["items"].([]any) {
+		row := raw.(map[string]any)
+		if row["event_type"] == "COMMENT_ADDED" {
+			if row["item_id"] != itemID {
+				t.Fatalf("the list reports the comment's item as %v", row["item_id"])
+			}
+			seen = true
+		}
+	}
+	if !seen {
+		t.Fatal("the comment notice is missing from the list")
+	}
+}

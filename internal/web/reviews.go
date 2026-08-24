@@ -771,7 +771,7 @@ func (s *Server) notifyComment(r *http.Request, reviewID, itemID, body string) {
 	title := "체크리스트 코멘트"
 	message := fmt.Sprintf("%s(%s) %s 항목에 %s님이 코멘트를 남겼습니다.\n\n%s", number, service, itemCode, author.DisplayName, truncate(body, 300))
 	for recipient := range recipients {
-		s.addTargetedNotification(r.Context(), recipient, "COMMENT_ADDED", title, message, "REVIEW_REQUEST", reviewID)
+		s.addItemNotification(r.Context(), recipient, "COMMENT_ADDED", title, message, reviewID, itemID)
 	}
 }
 
@@ -842,8 +842,8 @@ func (s *Server) saveResponse(w http.ResponseWriter, r *http.Request) {
 	if in.AssignedTo != "" && in.AssignedTo != previousAssignee && in.AssignedTo != session(r).User.ID {
 		var number, service, code string
 		if err = s.Store.Pool.QueryRow(r.Context(), `SELECT r.review_number,r.service_name,si.item_code FROM submission_items si JOIN submissions sub ON sub.id=si.submission_id JOIN review_requests r ON r.id=sub.review_request_id WHERE si.id=$1`, itemID).Scan(&number, &service, &code); err == nil {
-			s.addTargetedNotification(r.Context(), in.AssignedTo, "ITEM_ASSIGNED", "체크리스트 항목 배정",
-				fmt.Sprintf("%s(%s)의 %s 항목 담당자로 지정되었습니다.", number, service, code), "REVIEW_REQUEST", reviewID)
+			s.addItemNotification(r.Context(), in.AssignedTo, "ITEM_ASSIGNED", "체크리스트 항목 배정",
+				fmt.Sprintf("%s(%s)의 %s 항목 담당자로 지정되었습니다.", number, service, code), reviewID, itemID)
 		}
 	}
 	jsonResponse(w, 200, map[string]any{"saved_at": savedAt, "updated_at": savedAt})
@@ -1381,22 +1381,22 @@ func (s *Server) canCloseFollowUp(ctx context.Context, sess auth.Session, review
 }
 
 func (s *Server) notifyFollowUpStep(ctx context.Context, action, resultID, reviewID, note string) {
-	var number, service, reviewer, reported string
-	if err := s.Store.Pool.QueryRow(ctx, `SELECT r.review_number,r.service_name,COALESCE(r.reviewer_id,''),COALESCE(rr.follow_up_reported_by,'')
+	var number, service, reviewer, reported, itemID string
+	if err := s.Store.Pool.QueryRow(ctx, `SELECT r.review_number,r.service_name,COALESCE(r.reviewer_id,''),COALESCE(rr.follow_up_reported_by,''),si.id
                 FROM review_results rr
                 JOIN submission_items si ON si.id=rr.submission_item_id
                 JOIN submissions sub ON sub.id=si.submission_id
                 JOIN review_requests r ON r.id=sub.review_request_id
-                WHERE rr.id=$1`, resultID).Scan(&number, &service, &reviewer, &reported); err != nil {
+                WHERE rr.id=$1`, resultID).Scan(&number, &service, &reviewer, &reported, &itemID); err != nil {
 		return
 	}
 	switch action {
 	case "report":
-		s.addTargetedNotification(ctx, reviewer, "FOLLOW_UP_REPORTED", "후속조치 이행 보고",
-			fmt.Sprintf("%s(%s)의 후속조치가 완료 보고되었습니다. 확인 후 이행 완료 처리하세요. %s", number, service, note), "REVIEW_REQUEST", reviewID)
+		s.addItemNotification(ctx, reviewer, "FOLLOW_UP_REPORTED", "후속조치 이행 보고",
+			fmt.Sprintf("%s(%s)의 후속조치가 완료 보고되었습니다. 확인 후 이행 완료 처리하세요. %s", number, service, note), reviewID, itemID)
 	case "confirm":
-		s.addTargetedNotification(ctx, reported, "FOLLOW_UP_DONE", "후속조치 이행 확인",
-			fmt.Sprintf("%s(%s)에 보고한 후속조치가 확인되어 종료되었습니다.", number, service), "REVIEW_REQUEST", reviewID)
+		s.addItemNotification(ctx, reported, "FOLLOW_UP_DONE", "후속조치 이행 확인",
+			fmt.Sprintf("%s(%s)에 보고한 후속조치가 확인되어 종료되었습니다.", number, service), reviewID, itemID)
 	}
 }
 
@@ -1646,7 +1646,7 @@ func (s *Server) createChangeRequest(w http.ResponseWriter, r *http.Request) {
 	if recipient == "" {
 		_ = s.Store.Pool.QueryRow(r.Context(), `SELECT requester_id FROM review_requests WHERE id=$1`, id).Scan(&recipient)
 	}
-	s.addTargetedNotification(r.Context(), recipient, "CHANGE_REQUEST", "보완 요청", in.Reason, "REVIEW_REQUEST", id)
+	s.addItemNotification(r.Context(), recipient, "CHANGE_REQUEST", "보완 요청", in.Reason, id, in.ItemID)
 	_ = s.Store.Audit(r.Context(), auditFrom(r, "REQUEST_CHANGE", "CHANGE_REQUEST", crid, nil, in))
 	jsonResponse(w, 201, map[string]any{"id": crid, "status": "OPEN"})
 }
@@ -1705,7 +1705,9 @@ func (s *Server) updateChangeRequest(w http.ResponseWriter, r *http.Request) {
 	}
 	_ = s.Store.Audit(r.Context(), auditFrom(r, "UPDATE_CHANGE_REQUEST", "CHANGE_REQUEST", id, map[string]string{"status": status}, in))
 	if in.Status == "DONE" {
-		s.addTargetedNotification(r.Context(), requester, "CHANGE_DONE", "보완 조치 완료", in.Answer, "REVIEW_REQUEST", reviewID)
+		var itemID string
+		_ = s.Store.Pool.QueryRow(r.Context(), `SELECT COALESCE(submission_item_id,'') FROM change_requests WHERE id=$1`, id).Scan(&itemID)
+		s.addItemNotification(r.Context(), requester, "CHANGE_DONE", "보완 조치 완료", in.Answer, reviewID, itemID)
 	}
 	jsonResponse(w, 200, map[string]string{"status": in.Status})
 }
@@ -2331,6 +2333,17 @@ func (s *Server) canReview(ctx context.Context, sess auth.Session, id string) bo
 // recipient's own preferences, so nobody is forced to receive every event.
 func (s *Server) addNotification(ctx context.Context, recipient, event, title, body string) {
 	s.addTargetedNotification(ctx, recipient, event, title, body, "", "")
+}
+
+// addItemNotification records a notice about one checklist item, so the link
+// in the notification centre opens that item rather than the review.
+func (s *Server) addItemNotification(ctx context.Context, recipient, event, title, body, reviewID, itemID string) {
+	if recipient == "" {
+		return
+	}
+	if err := s.Store.NotifyItem(ctx, recipient, event, title, body, reviewID, itemID); err != nil {
+		s.Store.Log(ctx, "ERROR", "", "notification", "notification could not be recorded", map[string]any{"error": err.Error(), "event": event, "recipient": recipient})
+	}
 }
 
 func (s *Server) addTargetedNotification(ctx context.Context, recipient, event, title, body, targetType, targetID string) {

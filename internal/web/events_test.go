@@ -53,6 +53,7 @@ func emittedNotificationCodes(t *testing.T) []string {
 	// scan is bounded by distance rather than by the next closing bracket.
 	codes := emittedCodes(t,
 		`(?s)addTargetedNotification\(.{0,160}?"([A-Z_]{3,})"`,
+		`(?s)addItemNotification\(.{0,160}?"([A-Z_]{3,})"`,
 		`(?s)addNotification\(.{0,160}?"([A-Z_]{3,})"`,
 		`(?s)notifyReviewer\(.{0,160}?"([A-Z_]{3,})"`,
 		`(?s)INSERT INTO notifications\(.{0,200}?'([A-Z_]{3,})'`,

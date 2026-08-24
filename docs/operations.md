@@ -324,6 +324,7 @@ docker compose exec seccheck /app/seccheck selftest --username admin --password 
 | v1.0.42~43 | 유지보수 스윕이 매시 증적 20건을 되읽어 검증합니다. I/O가 조금 늘고, 실패 시 `증적 무결성 확인 실패` 알림이 발생합니다 |
 | v1.0.44 | **`seccheck_scan_failures`의 의미가 바뀝니다.** 격리·검사 중 파일을 제외하고 `ERROR`만 셉니다. 기존 알람 임계값을 다시 보십시오 |
 | v1.0.45 | `seccheck_evidence_version_bytes`가 파기된 버전을 제외합니다. 용량 추이 그래프가 한 번 내려갑니다 |
+| v1.0.76 | 마이그레이션 **027** 추가(`notifications.item_id`). `GET /api/v1/notifications` 응답에 `item_id`가 추가되고, 항목 단위 알림은 이 값을 채웁니다 |
 | v1.0.74 | 보완 요청의 `assignee_id`가 **심의 참여자인지 검증**됩니다. 외부 사용자를 조치 담당자로 넣던 호출은 422(`NOT_A_PARTICIPANT`)를 받습니다 |
 | v1.0.73 | 항목 저장 시 `assigned_to`가 **심의 참여자인지 검증**됩니다. 참여하지 않는 사용자를 배정하던 호출은 422(`NOT_A_PARTICIPANT`)를 받습니다 |
 | v1.0.72 | `GET /api/v1/admin/logs` 응답이 **배열에서 `{items, has_more, limit, offset}` 객체로** 바뀝니다. 감사로그·작업 큐는 `offset`과 `has_more`가 추가되고 기존 필드는 유지 |
@@ -365,6 +366,7 @@ docker compose exec seccheck /app/seccheck selftest --username admin --password 
 | 024 | 삭제분까지 포함한 항목별 증적 조회 인덱스(`evidence_touched_at()` 성능) |
 | 025 | 구축·개발·운영 담당자 열 인덱스(본인 심의 목록 조회 성능) |
 | 026 | 재심의로 이월된 답변 표시(`responses.carried_at`) |
+| 027 | 항목 단위 알림의 대상 항목(`notifications.item_id`) |
 
 ## 업그레이드와 롤백
 

@@ -555,13 +555,13 @@ func (s *Server) notifications(w http.ResponseWriter, r *http.Request) {
 	var total int64
 	_ = s.Store.Pool.QueryRow(r.Context(), `SELECT count(*) FROM notifications WHERE `+where, args...).Scan(&total)
 	args = append(args, limit, offset)
-	rows, err := s.Store.Pool.Query(r.Context(), `SELECT id,event_type,title,body,status,target_type,target_id,read_at,created_at FROM notifications WHERE `+where+
+	rows, err := s.Store.Pool.Query(r.Context(), `SELECT id,event_type,title,body,status,target_type,target_id,COALESCE(item_id,'') AS item_id,read_at,created_at FROM notifications WHERE `+where+
 		` ORDER BY created_at DESC,id DESC LIMIT $`+intString(len(args)-1)+` OFFSET $`+intString(len(args)), args...)
 	if err != nil {
 		s.fault(w, r, "QUERY_FAILED", "알림을 불러오지 못했습니다.", err)
 		return
 	}
-	items, err := scanDynamic(rows, []string{"id", "event_type", "title", "body", "status", "target_type", "target_id", "read_at", "created_at"})
+	items, err := scanDynamic(rows, []string{"id", "event_type", "title", "body", "status", "target_type", "target_id", "item_id", "read_at", "created_at"})
 	if err != nil {
 		s.fault(w, r, "QUERY_FAILED", "알림을 불러오지 못했습니다.", err)
 		return
