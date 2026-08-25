@@ -750,7 +750,10 @@ func (s *Server) snapshotTemplateVersions(r *http.Request, reviewID string) ([]m
 // with it; the verdict, the opinion and the follow-up from the previous round
 // were recorded and then reachable only by finding the old review and
 // scrolling to the same code. A reviewer re-judging an item now sees what was
-// said before, and only from reviews they could open themselves.
+// said before, and only from reviews they could open themselves. The names of
+// the files that were attached come with it: answers are carried into a
+// re-review but evidence is not, so the person filling it in otherwise has to
+// remember what they attached a year ago.
 func (s *Server) itemVerdictHistory(w http.ResponseWriter, r *http.Request) {
 	id, itemID := r.PathValue("id"), r.PathValue("itemID")
 	sess := session(r)
@@ -770,7 +773,8 @@ func (s *Server) itemVerdictHistory(w http.ResponseWriter, r *http.Request) {
 	rows, err := s.Store.Pool.Query(r.Context(), `SELECT review_requests.id AS review_id,review_requests.review_number,
                 to_char(display_date(COALESCE(review_requests.approved_at,review_requests.updated_at)),'YYYY-MM-DD') AS decided_on,
                 rr.result,rr.opinion,rr.evidence_adequacy,COALESCE(rr.follow_up,''),
-                COALESCE(u.display_name,'') AS reviewer_name
+                COALESCE(u.display_name,'') AS reviewer_name,
+                COALESCE((SELECT jsonb_agg(e.original_filename ORDER BY e.created_at) FROM evidences e WHERE e.submission_item_id=si.id AND e.deleted_at IS NULL),'[]') AS evidence_names
                 FROM review_results rr
                 JOIN submission_items si ON si.id=rr.submission_item_id
                 JOIN submissions sub ON sub.id=si.submission_id
@@ -786,7 +790,7 @@ func (s *Server) itemVerdictHistory(w http.ResponseWriter, r *http.Request) {
 		s.fault(w, r, "QUERY_FAILED", "이전 판정을 불러오지 못했습니다.", err)
 		return
 	}
-	items, err := scanDynamic(rows, []string{"review_id", "review_number", "decided_on", "result", "opinion", "evidence_adequacy", "follow_up", "reviewer_name"})
+	items, err := scanDynamic(rows, []string{"review_id", "review_number", "decided_on", "result", "opinion", "evidence_adequacy", "follow_up", "reviewer_name", "evidence_names"})
 	if err != nil {
 		s.fault(w, r, "QUERY_FAILED", "목록을 불러오지 못했습니다.", err)
 		return

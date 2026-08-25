@@ -6346,6 +6346,9 @@ func TestAnItemShowsWhatWasDecidedLastTime(t *testing.T) {
 	// Last year's review of the same service, judged and approved.
 	last := author.createReview("연례 심의 서비스")
 	lastItem := firstItemID(t, h, last)
+	if res := author.upload("/api/v1/review-requests/"+last+"/items/"+lastItem+"/evidences", "작년증적.txt", "내용"); res.status != http.StatusCreated {
+		t.Fatalf("attaching evidence while last year's review was open: %d %s", res.status, res.body)
+	}
 	if _, err := h.db.Pool.Exec(ctx, `UPDATE review_requests SET reviewer_id=$2,status='REVIEWING' WHERE id=$1`, last, reviewerID); err != nil {
 		t.Fatal(err)
 	}
@@ -6394,8 +6397,15 @@ func TestAnItemShowsWhatWasDecidedLastTime(t *testing.T) {
 	if res := outsider.do(http.MethodGet, "/api/v1/review-requests/"+now+"/items/"+nowItem+"/verdict-history", nil); res.status != http.StatusNotFound {
 		t.Fatalf("an outsider reads the history: %d %s", res.status, res.body)
 	}
-	// The author of both reviews sees their own service's earlier verdict.
-	if got := history(author, now, nowItem); len(got) != 1 {
-		t.Fatalf("the author sees %d earlier verdicts", len(got))
+	// The author of both reviews sees their own service's earlier verdict, and
+	// with it the files that were attached: a re-review carries the answers but
+	// not the evidence, so this is the list they have to re-attach.
+	authorRows := history(author, now, nowItem)
+	if len(authorRows) != 1 {
+		t.Fatalf("the author sees %d earlier verdicts", len(authorRows))
+	}
+	names, _ := authorRows[0].(map[string]any)["evidence_names"].([]any)
+	if len(names) != 1 || names[0] != "작년증적.txt" {
+		t.Fatalf("the earlier evidence reads %v", names)
 	}
 }
