@@ -208,6 +208,8 @@ func (s *Server) routes() {
 	s.handle("POST", "/api/v1/admin/settings/upload/test", "관리", "ClamAV 연결 테스트(clamd PING)", []string{"SYSTEM_ADMIN"}, false, s.testClamAV)
 	s.handle("GET", "/api/v1/admin/audit", "관리", "해시 체인 감사로그. 이벤트, 사용자, 기간 필터와 format=csv", []string{"SYSTEM_ADMIN", "AUDITOR"}, false, s.listAudit)
 	s.handle("GET", "/api/v1/admin/audit/verify", "관리", "해시 체인 검증. full=1이면 전체 재검증", []string{"SYSTEM_ADMIN", "AUDITOR"}, false, s.verifyAudit)
+	s.handle("GET", "/api/v1/admin/api-keys", "관리", "설치 전체의 API 키 목록과 소유자, 마지막 사용 시각", []string{"SYSTEM_ADMIN"}, false, s.listAllAPIKeys)
+	s.handle("POST", "/api/v1/admin/api-keys/{id}/revoke", "관리", "다른 사용자의 API 키 폐기", []string{"SYSTEM_ADMIN"}, false, s.revokeAnyAPIKey)
 	s.handle("GET", "/api/v1/admin/logs", "관리", "구조화 서버 로그. 메시지, 요청 ID, 필드 통합 검색", []string{"SYSTEM_ADMIN"}, false, s.listLogs)
 	s.handle("GET", "/api/v1/admin/jobs", "관리", "백그라운드 작업 큐 상태", []string{"SYSTEM_ADMIN"}, false, s.listJobs)
 	s.handle("POST", "/api/v1/admin/jobs/{id}/retry", "관리", "실패한 작업 재시도", []string{"SYSTEM_ADMIN"}, false, s.retryJob)

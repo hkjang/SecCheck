@@ -781,6 +781,64 @@ func (s *Server) reportChainBreak(r *http.Request, eventID string, sequence int6
 	}
 }
 
+// listAllAPIKeys answers "who holds machine credentials to this service".
+// Keys were visible only to the person who issued them, so the one question an
+// access review starts with -- which non-human credentials exist, who owns
+// them and when they were last used -- could not be asked at all. Closing an
+// account already stops its keys; this is for the ones on accounts that are
+// still open.
+func (s *Server) listAllAPIKeys(w http.ResponseWriter, r *http.Request) {
+	where := "TRUE"
+	if r.URL.Query().Get("only") == "ACTIVE" {
+		where = "k.revoked_at IS NULL AND (k.expires_at IS NULL OR k.expires_at>now()) AND u.active"
+	}
+	limit, offset := parsePage(r)
+	rows, err := s.Store.Pool.Query(r.Context(), `SELECT k.id,k.name,k.prefix,k.scopes,k.expires_at,k.last_used_at,k.revoked_at,k.created_at,
+                u.id AS user_id,u.username,u.display_name,u.department,u.active AS owner_active,
+                (k.revoked_at IS NULL AND (k.expires_at IS NULL OR k.expires_at>now()) AND u.active) AS usable
+                FROM api_keys k JOIN users u ON u.id=k.user_id WHERE `+where+`
+                ORDER BY (k.revoked_at IS NULL) DESC,k.last_used_at DESC NULLS LAST,k.created_at DESC LIMIT $1 OFFSET $2`, limit+1, offset)
+	if err != nil {
+		s.fault(w, r, "QUERY_FAILED", "API 키를 불러오지 못했습니다.", err)
+		return
+	}
+	items, err := scanDynamic(rows, []string{"id", "name", "prefix", "scopes", "expires_at", "last_used_at", "revoked_at", "created_at", "user_id", "username", "display_name", "department", "owner_active", "usable"})
+	if err != nil {
+		s.fault(w, r, "QUERY_FAILED", "목록을 불러오지 못했습니다.", err)
+		return
+	}
+	hasMore := len(items) > limit
+	if hasMore {
+		items = items[:limit]
+	}
+	var usable int64
+	if err = s.Store.Pool.QueryRow(r.Context(), `SELECT count(*) FROM api_keys k JOIN users u ON u.id=k.user_id WHERE k.revoked_at IS NULL AND (k.expires_at IS NULL OR k.expires_at>now()) AND u.active`).Scan(&usable); err != nil {
+		s.fault(w, r, "QUERY_FAILED", "사용 가능한 키 수를 확인하지 못했습니다.", err)
+		return
+	}
+	jsonResponse(w, 200, map[string]any{"items": items, "usable": usable, "has_more": hasMore, "limit": limit, "offset": offset})
+}
+
+// revokeAnyAPIKey withdraws somebody else's credential. The owner is told,
+// because a key that stops working without explanation is an outage they will
+// spend the afternoon debugging.
+func (s *Server) revokeAnyAPIKey(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	var owner, name, prefix string
+	if err := s.Store.Pool.QueryRow(r.Context(), `SELECT user_id,name,prefix FROM api_keys WHERE id=$1 AND revoked_at IS NULL`, id).Scan(&owner, &name, &prefix); err != nil {
+		problem(w, 404, "NOT_FOUND", "API 키를 찾을 수 없습니다.", nil)
+		return
+	}
+	if _, err := s.Store.Pool.Exec(r.Context(), `UPDATE api_keys SET revoked_at=now() WHERE id=$1 AND revoked_at IS NULL`, id); err != nil {
+		s.fault(w, r, "UPDATE_FAILED", "API 키를 폐기하지 못했습니다.", err)
+		return
+	}
+	_ = s.Store.Audit(r.Context(), auditFrom(r, "REVOKE_API_KEY", "API_KEY", id, map[string]any{"name": name, "prefix": prefix, "owner": owner}, nil))
+	s.addTargetedNotification(r.Context(), owner, "API_KEY_REVOKED", "API 키 폐기",
+		fmt.Sprintf("관리자가 API 키 %s(%s...)를 폐기했습니다. 이 키를 쓰는 연동은 즉시 중단됩니다.", name, prefix), "API_KEY", id)
+	w.WriteHeader(204)
+}
+
 func (s *Server) listLogs(w http.ResponseWriter, r *http.Request) {
 	limit, offset := parsePage(r)
 	level := strings.TrimSpace(r.URL.Query().Get("level"))

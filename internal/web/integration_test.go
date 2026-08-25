@@ -6032,3 +6032,83 @@ func TestTheUserListNamesAccountsHoldingAnIssuedPassword(t *testing.T) {
 		t.Fatalf("the count still reports %v", count)
 	}
 }
+
+// Machine credentials were visible only to the person who issued them, so the
+// question an access review opens with -- which non-human credentials exist,
+// whose are they, when were they last used -- could not be asked at all.
+func TestAnAdministratorCanSeeAndWithdrawMachineCredentials(t *testing.T) {
+	h := newHarness(t)
+	ctx := context.Background()
+	admin := h.login(adminOf(h))
+	ownerID := h.user("key-owner", "REQUESTER")
+	owner := h.login("key-owner")
+
+	issued := owner.do(http.MethodPost, "/api/v1/me/api-keys", map[string]any{"name": "연동 스크립트", "scopes": []string{"read"}})
+	if issued.status != http.StatusCreated && issued.status != http.StatusOK {
+		t.Fatalf("issue a key: %d %s", issued.status, issued.body)
+	}
+	keyID := issued.json()["id"].(string)
+
+	inventory := func(only string) (map[string]any, float64) {
+		t.Helper()
+		res := admin.do(http.MethodGet, "/api/v1/admin/api-keys?only="+only, nil)
+		if res.status != http.StatusOK {
+			t.Fatalf("key inventory: %d %s", res.status, res.body)
+		}
+		payload := res.json()
+		var found map[string]any
+		for _, raw := range payload["items"].([]any) {
+			row := raw.(map[string]any)
+			if row["id"] == keyID {
+				found = row
+			}
+		}
+		usable, _ := payload["usable"].(float64)
+		return found, usable
+	}
+
+	row, usable := inventory("")
+	if row == nil {
+		t.Fatal("the inventory does not list a key somebody else issued")
+	}
+	if row["username"] != "key-owner" || row["usable"] != true {
+		t.Fatalf("the inventory describes the key as %v", row)
+	}
+	if usable != 1 {
+		t.Fatalf("the inventory counts %v usable keys, want 1", usable)
+	}
+
+	// Somebody who is not an administrator has no business reading it.
+	if res := owner.do(http.MethodGet, "/api/v1/admin/api-keys", nil); res.status != http.StatusForbidden {
+		t.Fatalf("a non-administrator reads the inventory: %d %s", res.status, res.body)
+	}
+
+	// Withdrawing it stops the credential, tells its owner and is recorded.
+	if res := admin.do(http.MethodPost, "/api/v1/admin/api-keys/"+keyID+"/revoke", map[string]any{}); res.status != http.StatusNoContent {
+		t.Fatalf("revoke: %d %s", res.status, res.body)
+	}
+	row, usable = inventory("")
+	if row["usable"] != false || row["revoked_at"] == nil {
+		t.Fatalf("after revoking, the inventory describes the key as %v", row)
+	}
+	if usable != 0 {
+		t.Fatalf("after revoking, %v keys are still counted as usable", usable)
+	}
+	if filtered, _ := inventory("ACTIVE"); filtered != nil {
+		t.Fatal("a revoked key is still listed among the active ones")
+	}
+	var told int
+	if err := h.db.Pool.QueryRow(ctx, `SELECT count(*) FROM notifications WHERE recipient_id=$1 AND event_type='API_KEY_REVOKED'`, ownerID).Scan(&told); err != nil {
+		t.Fatal(err)
+	}
+	if told != 1 {
+		t.Fatalf("the owner received %d notices about their withdrawn key", told)
+	}
+	var recorded int
+	if err := h.db.Pool.QueryRow(ctx, `SELECT count(*) FROM audit_logs WHERE event_type='REVOKE_API_KEY' AND target_id=$1`, keyID).Scan(&recorded); err != nil {
+		t.Fatal(err)
+	}
+	if recorded != 1 {
+		t.Fatalf("the withdrawal is in the audit log %d times", recorded)
+	}
+}

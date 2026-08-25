@@ -285,6 +285,7 @@ var notificationEvents = []map[string]string{
 	{"code": "JOB_QUEUE_STALLED", "label": "작업 큐 정체", "description": "알림·검사 작업이 처리되지 않고 쌓일 때 (시스템 관리자)"},
 	{"code": "JOB_FAILED", "label": "작업 재시도 소진", "description": "재시도를 모두 소진해 중단된 작업이 있을 때"},
 	{"code": "API_KEY_EXPIRING", "label": "API 키 만료 임박", "description": "발급한 API 키의 만료일이 일주일 안으로 다가왔을 때"},
+	{"code": "API_KEY_REVOKED", "label": "API 키 폐기", "description": "관리자가 내 API 키를 폐기했을 때"},
 	{"code": "ACCOUNT_LOCKED", "label": "권한 계정 자동 잠금", "description": "권한 계정이 장기 미접속으로 잠겼을 때 (시스템 관리자)"},
 	{"code": "EVIDENCE_UNREADABLE", "label": "증적 무결성 확인 실패", "description": "저장된 증적이 사라졌거나 기록과 다를 때 (시스템 관리자)"},
 	{"code": "REVIEW_STALLED", "label": "심의 정체", "description": "담당한 심의가 며칠째 다음 단계로 넘어가지 않을 때"},
