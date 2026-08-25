@@ -156,20 +156,29 @@ func (w *Worker) sendDigests(ctx context.Context) {
 		// marked as sent. Marking every unsent notification instead swallowed
 		// anything that arrived while the digest was being delivered: it was
 		// stamped as emailed without ever appearing in one.
-		items, err := w.Store.Pool.Query(ctx, `SELECT id,title,body,created_at FROM notifications WHERE recipient_id=$1 AND emailed_at IS NULL AND event_type <> ALL($2::text[]) ORDER BY created_at LIMIT 200`, rec.id, rec.muted)
+		items, err := w.Store.Pool.Query(ctx, `SELECT id,title,body,created_at,COALESCE(target_type,''),COALESCE(target_id,''),COALESCE(item_id,'') FROM notifications WHERE recipient_id=$1 AND emailed_at IS NULL AND event_type <> ALL($2::text[]) ORDER BY created_at LIMIT 200`, rec.id, rec.muted)
 		if err != nil {
 			continue
 		}
 		var lines []string
 		var included []string
 		for items.Next() {
-			var id, title, body string
+			var id, title, body, targetType, targetID, itemID string
 			var at time.Time
-			if items.Scan(&id, &title, &body, &at) != nil {
+			if items.Scan(&id, &title, &body, &at, &targetType, &targetID, &itemID) != nil {
 				continue
 			}
 			included = append(included, id)
-			lines = append(lines, fmt.Sprintf("[%s] %s\n%s", at.In(w.Store.Location(ctx)).Format("01-02 15:04"), title, truncate(body, 300)))
+			line := fmt.Sprintf("[%s] %s\n%s", at.In(w.Store.Location(ctx)).Format("01-02 15:04"), title, truncate(body, 300))
+			// A summary of twenty notices is a list of twenty places to go, so
+			// each line carries its own way there instead of one link to the
+			// notification centre for all of them.
+			if targetType == "REVIEW_REQUEST" {
+				if link := serviceItemLink(ctx, w.Store, targetID, itemID); link != "" {
+					line += "\n" + link
+				}
+			}
+			lines = append(lines, line)
 		}
 		items.Close()
 		if len(lines) == 0 {
@@ -195,8 +204,14 @@ func (w *Worker) sendDigests(ctx context.Context) {
 
 // serviceLink turns a notification target into an address people can click.
 // Without a configured base URL the e-mail simply omits the link rather than
-// guessing a hostname.
+// guessing a hostname. A notice about one checklist item carries that item, so
+// the link opens the item rather than a review with a few hundred of them --
+// the same landing the notification centre gives.
 func serviceLink(ctx context.Context, s *store.Store, targetID string) string {
+	return serviceItemLink(ctx, s, targetID, "")
+}
+
+func serviceItemLink(ctx context.Context, s *store.Store, targetID, itemID string) string {
 	var general struct {
 		BaseURL string `json:"base_url"`
 	}
@@ -209,6 +224,9 @@ func serviceLink(ctx context.Context, s *store.Store, targetID string) string {
 	}
 	if targetID == "" {
 		return base + "/notifications"
+	}
+	if itemID != "" {
+		return base + "/reviews/" + targetID + "?item=" + itemID
 	}
 	return base + "/reviews/" + targetID
 }
@@ -237,8 +255,8 @@ func (w *Worker) deliver(ctx context.Context, j job) error {
 	if err := json.Unmarshal(j.Payload, &payload); err != nil || payload.NotificationID == "" {
 		return undeliverable{"invalid email job payload"}
 	}
-	var to, title, body, targetType, targetID string
-	err := w.Store.Pool.QueryRow(ctx, `SELECT u.email,n.title,n.body,n.target_type,n.target_id FROM notifications n JOIN users u ON u.id=n.recipient_id WHERE n.id=$1`, payload.NotificationID).Scan(&to, &title, &body, &targetType, &targetID)
+	var to, title, body, targetType, targetID, itemID string
+	err := w.Store.Pool.QueryRow(ctx, `SELECT u.email,n.title,n.body,n.target_type,n.target_id,COALESCE(n.item_id,'') FROM notifications n JOIN users u ON u.id=n.recipient_id WHERE n.id=$1`, payload.NotificationID).Scan(&to, &title, &body, &targetType, &targetID, &itemID)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return undeliverable{"the notification this job refers to no longer exists"}
 	}
@@ -246,7 +264,7 @@ func (w *Worker) deliver(ctx context.Context, j job) error {
 		return err
 	}
 	if targetType == "REVIEW_REQUEST" {
-		if link := serviceLink(ctx, w.Store, targetID); link != "" {
+		if link := serviceItemLink(ctx, w.Store, targetID, itemID); link != "" {
 			body = body + "\n\n" + link
 		}
 	}

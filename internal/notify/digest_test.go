@@ -204,3 +204,52 @@ func TestADigestIsNotSentWhenEverythingIsMuted(t *testing.T) {
 		t.Errorf("%d digests went out with nothing in them", sent)
 	}
 }
+
+// A notice about one checklist item said which item in the notification
+// centre but not in the mail: both the immediate message and the daily summary
+// pointed at the review, leaving the reader to find the item among a few
+// hundred.
+func TestMailLandsOnTheItemTheNoticeIsAbout(t *testing.T) {
+	worker, db, userID := digestWorker(t)
+	ctx := context.Background()
+	if _, err := db.Pool.Exec(ctx, `UPDATE settings SET value_json = value_json || '{"base_url":"https://seccheck.example"}'::jsonb WHERE key='general'`); err != nil {
+		t.Fatal(err)
+	}
+	// The notice points at a real item, because the column is a foreign key --
+	// a link that outlives the thing it points at is not what we want either.
+	reviewID, submissionID, itemID := store.NewID(), store.NewID(), store.NewID()
+	if _, err := db.Pool.Exec(ctx, `INSERT INTO review_requests(id,review_number,service_name,description,service_type,change_type,builder_id,developer_id,department,requester_id,exposure,status)
+                VALUES($1,'SR-MAIL','메일 링크 서비스','d','WEB','NEW',$2,$2,'보안팀',$2,'INTERNAL','DRAFT')`, reviewID, userID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Pool.Exec(ctx, `INSERT INTO submissions(id,review_request_id,revision,status) VALUES($1,$2,1,'DRAFT')`, submissionID, reviewID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Pool.Exec(ctx, `INSERT INTO submission_items(id,submission_id,template_name,template_version,item_code,section,category,title,question,severity,required,answer_type,evidence_required,sort_order)
+                VALUES($1,$2,'기본','1.0','M-01','일반','보안','제목','질문','HIGH',true,'YNNA',false,1)`, itemID, submissionID); err != nil {
+		t.Fatal(err)
+	}
+
+	aboutItem := store.NewID()
+	if _, err := db.Pool.Exec(ctx, `INSERT INTO notifications(id,recipient_id,event_type,title,body,target_type,target_id,item_id) VALUES($1,$2,'COMMENT_ADDED','항목 코멘트','본문','REVIEW_REQUEST',$3,$4)`, aboutItem, userID, reviewID, itemID); err != nil {
+		t.Fatal(err)
+	}
+	aboutReview := store.NewID()
+	if _, err := db.Pool.Exec(ctx, `INSERT INTO notifications(id,recipient_id,event_type,title,body,target_type,target_id) VALUES($1,$2,'REVIEW_ASSIGNED','심의 배정','본문','REVIEW_REQUEST',$3)`, aboutReview, userID, reviewID); err != nil {
+		t.Fatal(err)
+	}
+
+	var delivered string
+	worker.Sender = func(_ context.Context, _ emailSettings, _, subject, body string) error {
+		delivered = subject + "\n" + body
+		return nil
+	}
+	worker.sendDigests(ctx)
+
+	if !strings.Contains(delivered, "https://seccheck.example/reviews/"+reviewID+"?item="+itemID) {
+		t.Fatalf("the summary does not link to the item the notice is about:\n%s", delivered)
+	}
+	if !strings.Contains(delivered, "https://seccheck.example/reviews/"+reviewID+"\n") {
+		t.Fatalf("the summary does not link a review-wide notice to the review:\n%s", delivered)
+	}
+}
