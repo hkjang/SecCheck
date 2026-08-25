@@ -72,3 +72,61 @@ func TestRestartingKeepsTheAdminRolesTheOperatorChose(t *testing.T) {
 		t.Error("a restart did not restore the bootstrap account's system administrator role")
 	}
 }
+
+// Closing the shared bootstrap account once named administrators exist is the
+// ordinary hardening step, and every restart undid it: the account came back
+// active, with the password from the environment file.
+func TestRestartingLeavesAClosedBootstrapAccountClosed(t *testing.T) {
+	db := testdb.New(t)
+	ctx := context.Background()
+	active := func(username string) bool {
+		t.Helper()
+		var on bool
+		if err := db.Pool.QueryRow(ctx, `SELECT active FROM users WHERE username=$1`, username).Scan(&on); err != nil {
+			t.Fatal(err)
+		}
+		return on
+	}
+
+	if err := db.UpsertBootstrap(ctx, store.NewID(), "closed-admin", "hash"); err != nil {
+		t.Fatal(err)
+	}
+	// A named administrator takes over, which is what makes closing the shared
+	// account safe.
+	named := store.NewID()
+	if _, err := db.Pool.Exec(ctx, `INSERT INTO users(id,username,display_name,password_hash) VALUES($1,'named-admin','이름 있는 관리자','hash')`, named); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Pool.Exec(ctx, `INSERT INTO user_roles(user_id,role_code) VALUES($1,'SYSTEM_ADMIN')`, named); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Pool.Exec(ctx, `UPDATE users SET active=false WHERE username='closed-admin'`); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := db.UpsertBootstrap(ctx, store.NewID(), "closed-admin", "hash"); err != nil {
+		t.Fatal(err)
+	}
+	if active("closed-admin") {
+		t.Fatal("a restart reopened the bootstrap account the operator had closed")
+	}
+
+	// The one case that must not become a locked-out installation: nothing
+	// else can administer it, so the account comes back and says so.
+	if _, err := db.Pool.Exec(ctx, `UPDATE users SET active=false WHERE id=$1`, named); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.UpsertBootstrap(ctx, store.NewID(), "closed-admin", "hash"); err != nil {
+		t.Fatal(err)
+	}
+	if !active("closed-admin") {
+		t.Fatal("with no active administrator left, the bootstrap account was not restored")
+	}
+	var warned int
+	if err := db.Pool.QueryRow(ctx, `SELECT count(*) FROM application_logs WHERE component='bootstrap' AND level='WARN'`).Scan(&warned); err != nil {
+		t.Fatal(err)
+	}
+	if warned == 0 {
+		t.Fatal("restoring the bootstrap account was not recorded")
+	}
+}

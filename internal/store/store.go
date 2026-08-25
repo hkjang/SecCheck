@@ -307,19 +307,44 @@ func (s *Store) UserRoles(ctx context.Context, id string) ([]string, error) {
 // reviewer role off the shared admin account -- so that account cannot review
 // what it requested -- found it back after the next restart, and nothing said
 // so.
+// UpsertBootstrap makes sure the account named by BOOTSTRAP_ADMIN exists at
+// start-up. It used to also set active=true and re-grant SYSTEM_ADMIN on every
+// boot, which undid an administrator's decision: an installation that closed
+// the bootstrap account after creating named administrators -- the ordinary
+// hardening step -- got it back, with its old password, on the next deploy.
+// The account is now left as the administrators left it, with one exception:
+// if nothing else can administer the installation, it is restored, because
+// the alternative is a service nobody can get into.
 func (s *Store) UpsertBootstrap(ctx context.Context, id, username, passwordHash string) error {
 	return pgx.BeginFunc(ctx, s.Pool, func(tx pgx.Tx) error {
 		var uid string
-		var created bool
-		if err := tx.QueryRow(ctx, `INSERT INTO users(id,username,display_name,password_hash,auth_source) VALUES($1,$2,$2,$3,'local') ON CONFLICT(username) DO UPDATE SET password_hash=CASE WHEN users.password_hash='' THEN EXCLUDED.password_hash ELSE users.password_hash END,active=true,updated_at=now() RETURNING id,(xmax=0)`, id, username, passwordHash).Scan(&uid, &created); err != nil {
+		var created, active bool
+		if err := tx.QueryRow(ctx, `INSERT INTO users(id,username,display_name,password_hash,auth_source) VALUES($1,$2,$2,$3,'local')
+                        ON CONFLICT(username) DO UPDATE SET password_hash=CASE WHEN users.password_hash='' THEN EXCLUDED.password_hash ELSE users.password_hash END,updated_at=now()
+                        RETURNING id,(xmax=0),active`, id, username, passwordHash).Scan(&uid, &created, &active); err != nil {
 			return err
 		}
-		roles := []string{"SYSTEM_ADMIN"}
 		if created {
-			roles = append(roles, "TEMPLATE_ADMIN", "SECURITY_REVIEWER", "REQUESTER", "APPROVER", "AUDITOR")
+			_, err := tx.Exec(ctx, `INSERT INTO user_roles(user_id,role_code) SELECT $1,unnest($2::text[]) ON CONFLICT DO NOTHING`,
+				uid, []string{"SYSTEM_ADMIN", "TEMPLATE_ADMIN", "SECURITY_REVIEWER", "REQUESTER", "APPROVER", "AUDITOR"})
+			return err
 		}
-		_, err := tx.Exec(ctx, `INSERT INTO user_roles(user_id,role_code) SELECT $1,unnest($2::text[]) ON CONFLICT DO NOTHING`, uid, roles)
-		return err
+		var administered bool
+		if err := tx.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM user_roles ur JOIN users u ON u.id=ur.user_id WHERE ur.role_code='SYSTEM_ADMIN' AND u.active AND u.id<>$1)`, uid).Scan(&administered); err != nil {
+			return err
+		}
+		if administered {
+			return nil
+		}
+		if _, err := tx.Exec(ctx, `UPDATE users SET active=true,failed_login_count=0,locked_until=NULL,updated_at=now() WHERE id=$1`, uid); err != nil {
+			return err
+		}
+		if _, err := tx.Exec(ctx, `INSERT INTO user_roles(user_id,role_code) VALUES($1,'SYSTEM_ADMIN') ON CONFLICT DO NOTHING`, uid); err != nil {
+			return err
+		}
+		s.Log(ctx, "WARN", "", "bootstrap", "부트스트랩 관리자 계정을 복구했습니다. 활성 상태의 시스템 관리자가 없었습니다.",
+			map[string]any{"username": username, "was_active": active})
+		return nil
 	})
 }
 
