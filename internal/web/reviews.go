@@ -564,6 +564,14 @@ func (s *Server) getReviewRequest(w http.ResponseWriter, r *http.Request) {
 	// finding out only when the save came back 403.
 	out["can_edit"] = s.canEditReview(r.Context(), session(r), r.PathValue("id"))
 	out["can_review"] = s.canReview(r.Context(), session(r), r.PathValue("id"))
+	// Approval follows the same shape: the named approver decides, and anybody
+	// holding the role may step in only when that person cannot act. Deciding
+	// your own request is refused whatever the role says.
+	approverID, _ := out["approver_id"].(string)
+	status, _ := out["status"].(string)
+	out["can_approve"] = status == "APPROVAL_PENDING" && hasAnyRole(session(r).User, "APPROVER") &&
+		(approverID == session(r).User.ID || !approverCanAct) &&
+		!s.selfReviewBlocked(r.Context(), r.PathValue("id"), session(r).User.ID)
 	versions, err := s.snapshotTemplateVersions(r, r.PathValue("id"))
 	if err != nil {
 		s.fault(w, r, "QUERY_FAILED", "템플릿 버전을 확인하지 못했습니다.", err)
@@ -2455,8 +2463,16 @@ func (s *Server) canAccessReview(ctx context.Context, sess auth.Session, id stri
 		_ = s.Store.Pool.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM review_requests WHERE id=$1)`, id).Scan(&ok)
 		return ok
 	}
+	// An approval waiting for somebody who can no longer act is offered to
+	// every approver by the queue, and pressing it used to answer "심의를 찾을
+	// 수 없습니다": the only people who could take the review over were the
+	// only ones not allowed to open it.
 	var ok bool
-	_ = s.Store.Pool.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM review_requests r WHERE r.id=$1 AND (r.requester_id=$2 OR r.builder_id=$2 OR r.developer_id=$2 OR r.operator_id=$2 OR r.reviewer_id=$2 OR r.approver_id=$2 OR EXISTS(SELECT 1 FROM review_participants p WHERE p.review_request_id=r.id AND p.user_id=$2)))`, id, sess.User.ID).Scan(&ok)
+	_ = s.Store.Pool.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM review_requests r WHERE r.id=$1 AND (
+                r.requester_id=$2 OR r.builder_id=$2 OR r.developer_id=$2 OR r.operator_id=$2 OR r.reviewer_id=$2 OR r.approver_id=$2
+                OR EXISTS(SELECT 1 FROM review_participants p WHERE p.review_request_id=r.id AND p.user_id=$2)
+                OR ($3::bool AND r.status='APPROVAL_PENDING' AND (r.approver_id IS NULL OR NOT `+stillHolds("r.approver_id", "APPROVER")+`))))`,
+		id, sess.User.ID, hasAnyRole(sess.User, "APPROVER")).Scan(&ok)
 	return ok
 }
 func (s *Server) canEditReview(ctx context.Context, sess auth.Session, id string) bool {

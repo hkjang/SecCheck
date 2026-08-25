@@ -5749,6 +5749,45 @@ func TestTheReviewSaysWhatThisReaderMayDo(t *testing.T) {
 		map[string]any{"result": "COMPLIANT", "opinion": "남의 심의", "expected_updated_at": ""}); res.status != http.StatusForbidden {
 		t.Fatalf("an unrelated reviewer judging: %d %s", res.status, res.body)
 	}
+
+	// Approval is the same shape: the named approver decides, and holding the
+	// role is not on its own an invitation to decide somebody else's review.
+	approverID := h.user("acts-approver", "APPROVER")
+	strangerApprover := h.user("acts-approver-2", "APPROVER")
+	_ = strangerApprover
+	approver := h.login("acts-approver")
+	stranger := h.login("acts-approver-2")
+	if _, err := h.db.Pool.Exec(ctx, `UPDATE review_requests SET status='APPROVAL_PENDING',approver_id=$2 WHERE id=$1`, reviewID, approverID); err != nil {
+		t.Fatal(err)
+	}
+	canApprove := func(c *client) bool {
+		t.Helper()
+		res := c.do(http.MethodGet, "/api/v1/review-requests/"+reviewID, nil)
+		if res.status != http.StatusOK {
+			t.Fatalf("review detail: %d %s", res.status, res.body)
+		}
+		out, ok := res.json()["can_approve"].(bool)
+		if !ok {
+			t.Fatalf("the review does not say whether this reader may approve: %s", res.body)
+		}
+		return out
+	}
+	if !canApprove(approver) {
+		t.Fatal("the named approver is not offered the decision")
+	}
+	// While the named approver can act, an approver with no part in the review
+	// has no business reading it at all.
+	if res := stranger.do(http.MethodGet, "/api/v1/review-requests/"+reviewID, nil); res.status != http.StatusNotFound {
+		t.Fatalf("an unrelated approver reads the review: %d %s", res.status, res.body)
+	}
+	// When the named approver can no longer act, anybody holding the role may
+	// step in -- and the screen says so rather than hiding the only way out.
+	if _, err := h.db.Pool.Exec(ctx, `DELETE FROM user_roles WHERE user_id=$1 AND role_code='APPROVER'`, approverID); err != nil {
+		t.Fatal(err)
+	}
+	if !canApprove(stranger) {
+		t.Fatal("with the named approver unable to act, nobody is offered the decision")
+	}
 }
 
 func firstItemID(t *testing.T, h *harness, reviewID string) string {
