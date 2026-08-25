@@ -2,9 +2,7 @@ package web
 
 import (
 	"context"
-	"crypto/sha256"
 	"encoding/csv"
-	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -709,57 +707,33 @@ func (s *Server) verifyAudit(w http.ResponseWriter, r *http.Request) {
 	var fromSequence int64
 	previous := ""
 	if !full {
-		_ = s.Store.Pool.QueryRow(r.Context(), `SELECT verified_sequence,verified_hash FROM audit_chain_state WHERE id=1`).Scan(&fromSequence, &previous)
-		if previous == "" {
-			// Nothing has been proved yet, so an incremental run has no anchor.
-			fromSequence = 0
+		var err error
+		if fromSequence, previous, err = s.Store.AuditCheckpoint(r.Context()); err != nil {
+			s.fault(w, r, "VERIFY_FAILED", "감사로그를 검증하지 못했습니다.", err)
+			return
 		}
 	}
-	rows, err := s.Store.Pool.Query(r.Context(), `SELECT event_id,previous_hash,canonical_payload,event_hash,chain_sequence FROM audit_logs WHERE chain_sequence>$1 ORDER BY chain_sequence`, fromSequence)
+	// The walk itself lives in the store, because the maintenance worker runs
+	// the same check on its own schedule and two implementations of "is this
+	// chain intact" would eventually disagree.
+	result, err := s.Store.VerifyAuditChain(r.Context(), fromSequence, previous)
 	if err != nil {
 		s.fault(w, r, "VERIFY_FAILED", "감사로그를 검증하지 못했습니다.", err)
 		return
 	}
-	defer rows.Close()
-	checked := 0
-	expectedSequence := fromSequence + 1
-	for rows.Next() {
-		var id, linked, payload, storedHash string
-		var sequence int64
-		if err = rows.Scan(&id, &linked, &payload, &storedHash, &sequence); err != nil {
-			s.fault(w, r, "VERIFY_FAILED", "감사로그를 검증하지 못했습니다.", err)
-			return
+	if !result.Valid {
+		s.reportChainBreak(r, result.FailedEventID, result.FailedSequence, result.Reason)
+		out := map[string]any{"valid": false, "checked": result.Checked, "from_sequence": fromSequence, "reason": result.Reason}
+		if result.FailedEventID != "" {
+			out["failed_event_id"] = result.FailedEventID
 		}
-		checked++
-		if payload == "" || linked != previous || sequence != expectedSequence {
-			s.reportChainBreak(r, id, sequence, "chain link or canonical payload mismatch")
-			jsonResponse(w, 200, map[string]any{"valid": false, "checked": checked, "from_sequence": fromSequence, "failed_event_id": id, "reason": "chain link or canonical payload mismatch"})
-			return
-		}
-		hash := sha256.Sum256([]byte(payload))
-		if hex.EncodeToString(hash[:]) != storedHash {
-			s.reportChainBreak(r, id, sequence, "event hash mismatch")
-			jsonResponse(w, 200, map[string]any{"valid": false, "checked": checked, "from_sequence": fromSequence, "failed_event_id": id, "reason": "event hash mismatch"})
-			return
-		}
-		previous = storedHash
-		expectedSequence++
-	}
-	if err = rows.Err(); err != nil {
-		s.fault(w, r, "VERIFY_FAILED", "감사로그를 검증하지 못했습니다.", err)
-		return
-	}
-	var head string
-	var sequence int64
-	if err = s.Store.Pool.QueryRow(r.Context(), `SELECT head_hash,sequence FROM audit_chain_state WHERE id=1`).Scan(&head, &sequence); err != nil || head != previous || sequence != expectedSequence-1 {
-		s.reportChainBreak(r, "", sequence, "chain head state mismatch")
-		jsonResponse(w, 200, map[string]any{"valid": false, "checked": checked, "from_sequence": fromSequence, "reason": "chain head state mismatch"})
+		jsonResponse(w, 200, out)
 		return
 	}
 	// Record how far the chain is proved so the next routine check is cheap.
-	_, _ = s.Store.Pool.Exec(r.Context(), `UPDATE audit_chain_state SET verified_sequence=$1,verified_hash=$2,verified_at=now() WHERE id=1`, sequence, head)
-	_ = s.Store.Audit(r.Context(), auditFrom(r, "VERIFY_AUDIT_CHAIN", "AUDIT_LOG", "", nil, map[string]any{"checked": checked, "from_sequence": fromSequence, "full": full, "head_sequence": sequence}))
-	jsonResponse(w, 200, map[string]any{"valid": true, "checked": checked, "from_sequence": fromSequence, "total": sequence, "full": full, "head_hash": previous})
+	_ = s.Store.MarkAuditChainVerified(r.Context(), result.HeadSequence, result.HeadHash)
+	_ = s.Store.Audit(r.Context(), auditFrom(r, "VERIFY_AUDIT_CHAIN", "AUDIT_LOG", "", nil, map[string]any{"checked": result.Checked, "from_sequence": fromSequence, "full": full, "head_sequence": result.HeadSequence}))
+	jsonResponse(w, 200, map[string]any{"valid": true, "checked": result.Checked, "from_sequence": fromSequence, "total": result.HeadSequence, "full": full, "head_hash": result.HeadHash})
 }
 
 // reportChainBreak makes tampering loud: it is a server-log ERROR and an

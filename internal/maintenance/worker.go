@@ -103,6 +103,7 @@ func (w *Worker) Sweep(ctx context.Context) map[string]int64 {
 	removed["storage_alerts"] = w.alertLowStorage(ctx)
 	removed["requeued_jobs"] = w.requeueAbandonedJobs(ctx)
 	removed["evidence_checked"] = w.verifyEvidenceSample(ctx)
+	removed["audit_chain_checked"] = w.verifyAuditChain(ctx)
 	removed["api_key_reminders"] = w.remindExpiringAPIKeys(ctx)
 	removed["purged_evidence_files"] = w.purgeDeletedEvidence(ctx)
 	total := int64(0)
@@ -113,6 +114,48 @@ func (w *Worker) Sweep(ctx context.Context) map[string]int64 {
 		w.Store.Log(ctx, "INFO", "", "maintenance", "retention sweep completed", map[string]any{"retention_days": retention, "removed": removed})
 	}
 	return removed
+}
+
+// verifyAuditChain proves the tamper-evidence the audit log is built on. The
+// console has always been able to check it, but only when somebody remembered
+// to press the button: a row edited in the database, or a restore that lost
+// events, could sit undetected for as long as nobody looked. The anchor makes
+// the routine check cheap -- only what was appended since the last run is
+// re-hashed -- and a break is reported to administrators the same way the
+// console reports it.
+func (w *Worker) verifyAuditChain(ctx context.Context) int64 {
+	from, previous, err := w.Store.AuditCheckpoint(ctx)
+	if err != nil {
+		w.Store.Log(ctx, "ERROR", "", "maintenance", "audit chain checkpoint unreadable", map[string]any{"error": err.Error()})
+		return 0
+	}
+	result, err := w.Store.VerifyAuditChain(ctx, from, previous)
+	if err != nil {
+		w.Store.Log(ctx, "ERROR", "", "maintenance", "audit chain verification failed to run", map[string]any{"error": err.Error()})
+		return 0
+	}
+	if !result.Valid {
+		w.Store.Log(ctx, "ERROR", "", "audit", "audit chain verification failed", map[string]any{"event_id": result.FailedEventID, "sequence": result.FailedSequence, "reason": result.Reason, "source": "maintenance"})
+		// The anchor is deliberately left where it was: moving it forward past
+		// a break would declare the tampered stretch proved.
+		admins, adminErr := w.uninformedAdmins(ctx, "AUDIT_CHAIN_BROKEN")
+		if adminErr != nil {
+			return 0
+		}
+		body := fmt.Sprintf("정기 점검에서 감사로그 %d번 이벤트의 무결성 검증에 실패했습니다 (%s). 데이터베이스 직접 변경 여부를 즉시 확인하세요.", result.FailedSequence, result.Reason)
+		for _, admin := range admins {
+			if notifyErr := w.Store.Notify(ctx, admin, "AUDIT_CHAIN_BROKEN", "감사로그 체인 검증 실패", body, "AUDIT_LOG", result.FailedEventID); notifyErr != nil {
+				w.Store.Log(ctx, "ERROR", "", "audit", "could not notify an administrator of the chain break", map[string]any{"recipient": admin, "error": notifyErr.Error()})
+			}
+		}
+		return 0
+	}
+	if result.Checked > 0 {
+		if err = w.Store.MarkAuditChainVerified(ctx, result.HeadSequence, result.HeadHash); err != nil {
+			w.Store.Log(ctx, "ERROR", "", "maintenance", "audit chain checkpoint could not be advanced", map[string]any{"error": err.Error()})
+		}
+	}
+	return int64(result.Checked)
 }
 
 // verifyEvidenceSample reads a few stored files back and compares them with

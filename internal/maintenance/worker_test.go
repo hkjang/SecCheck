@@ -1068,3 +1068,74 @@ func TestStoredEvidenceIsReadBackAndFailuresAreReported(t *testing.T) {
 		t.Errorf("a restored file is still marked broken: %q", reason)
 	}
 }
+
+// The audit log is tamper-evident only if somebody checks. Until now that
+// somebody was an administrator remembering to press a button, so a row edited
+// in the database could sit undetected for as long as nobody looked.
+func TestTheSweepProvesTheAuditChainAndReportsABreak(t *testing.T) {
+	db := testdb.New(t)
+	ctx := context.Background()
+	adminID := testdb.Bootstrap(t, db, "chain-watcher")
+	if _, err := db.Pool.Exec(ctx, `INSERT INTO user_roles(user_id,role_code) VALUES($1,'SYSTEM_ADMIN') ON CONFLICT DO NOTHING`, adminID); err != nil {
+		t.Fatal(err)
+	}
+	for i := 0; i < 3; i++ {
+		if err := db.Audit(ctx, store.AuditEvent{UserID: adminID, EventType: "TEST", TargetType: "USER", TargetID: adminID}); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	checkpoint := func() (int64, string) {
+		t.Helper()
+		sequence, hash, err := db.AuditCheckpoint(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return sequence, hash
+	}
+	alerts := func() int {
+		t.Helper()
+		var n int
+		if err := db.Pool.QueryRow(ctx, `SELECT count(*) FROM notifications WHERE event_type='AUDIT_CHAIN_BROKEN'`).Scan(&n); err != nil {
+			t.Fatal(err)
+		}
+		return n
+	}
+
+	// An intact chain is proved and the anchor moves forward, so the next
+	// sweep only reads what was appended since.
+	maintenance.New(db, nil).Sweep(ctx)
+	proved, hash := checkpoint()
+	if proved == 0 || hash == "" {
+		t.Fatalf("after a sweep the chain is proved only to %d (%q)", proved, hash)
+	}
+	if got := alerts(); got != 0 {
+		t.Fatalf("an intact chain raised %d alerts", got)
+	}
+
+	// Somebody edits an event in the database. The stored hash no longer
+	// describes the row, and the sweep says so.
+	if _, err := db.Pool.Exec(ctx, `UPDATE audit_logs SET canonical_payload=canonical_payload||'tampered' WHERE chain_sequence=$1`, proved); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Pool.Exec(ctx, `UPDATE audit_chain_state SET verified_sequence=$1,verified_hash=$2 WHERE id=1`, proved-1, ""); err != nil {
+		t.Fatal(err)
+	}
+	// With no anchor the check starts from the beginning, which is what an
+	// installation that has never verified also does.
+	maintenance.New(db, nil).Sweep(ctx)
+	if got := alerts(); got == 0 {
+		t.Fatal("a tampered event raised no alert")
+	}
+	after, _ := checkpoint()
+	if after != 0 {
+		t.Fatalf("the anchor moved to %d past a break, declaring the tampered stretch proved", after)
+	}
+	var broken int
+	if err := db.Pool.QueryRow(ctx, `SELECT count(*) FROM application_logs WHERE level='ERROR' AND message='audit chain verification failed'`).Scan(&broken); err != nil {
+		t.Fatal(err)
+	}
+	if broken == 0 {
+		t.Fatal("the break was not recorded in the server log")
+	}
+}
