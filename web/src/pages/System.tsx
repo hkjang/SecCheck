@@ -10,7 +10,7 @@ type Info = {
   version: string; schema_version: number; go_version: string
   users: number; reviews: number; templates: number; evidences: number; logs: number
   evidence_bytes: number
-  database_size: string; pdf_font: string; pdf_export_available: boolean; storage: Storage; role_coverage: Coverage[]; evidence_integrity: Integrity; now: string
+  database_size: string; pdf_font: string; pdf_export_available: boolean; storage: Storage; role_coverage: Coverage[]; evidence_integrity: Integrity; maintenance?: { last_run_at?: string | null; stale?: boolean; last_summary?: Record<string, number> }; now: string
 }
 
 const roleLabel: Record<string, string> = { SYSTEM_ADMIN: '서비스 관리자', SECURITY_REVIEWER: '보안 담당자', APPROVER: '승인자', TEMPLATE_ADMIN: '체크리스트 관리자', AUDITOR: '감사' }
@@ -40,12 +40,24 @@ export default function SystemPage() {
     ['PDF 글꼴', info.pdf_font || '-'],
   ]
   const counts: [string, number][] = [['사용자', info.users], ['심의', info.reviews], ['템플릿', info.templates], ['증적', info.evidences], ['서버 로그', info.logs]]
+  // Housekeeping is what sends the reminders, samples the evidence and proves
+  // the audit chain. When it stops, nothing else on any screen changes, so its
+  // last completed run is stated here rather than left to be inferred.
+  const upkeep = info.maintenance
+  const upkeepStale = !upkeep || upkeep.stale !== false
   return <div className="page">
     <div className="page-header"><div><h1 className="page-title">시스템 정보</h1><p className="page-description">업그레이드와 장애 대응에서 먼저 확인하는 값입니다.</p></div><div className="header-actions"><Button onClick={load}><RefreshCw size={14} /> 새로고침</Button></div></div>
     <div className="grid stats">
       <div className="card stat-card"><div className={`stat-icon ${storageTone === 'green' ? 'green' : ''}`}><HardDrive /></div><div><span className="stat-value">{info.storage.total_bytes > 0 ? formatBytes(info.storage.free_bytes) : '-'}</span><div className="stat-label">증적 볼륨 남은 공간</div></div></div>
       <div className="card stat-card"><div className="stat-icon"><Database /></div><div><span className="stat-value">{info.database_size}</span><div className="stat-label">데이터베이스 크기</div></div></div>
     </div>
+    <section className="card"><div className="card-header"><h2>정기 점검</h2><Badge tone={upkeepStale ? 'red' : 'green'}>{upkeepStale ? '멈춘 것으로 보입니다' : '정상'}</Badge></div>
+      <div className="table-wrap"><table><tbody>
+        <tr><th>마지막 완료</th><td>{upkeep?.last_run_at ? formatDate(upkeep.last_run_at, true) : '기록 없음'}</td></tr>
+        <tr><th>수행 항목</th><td className="subtle">기한 알림 · 심의 정체 알림 · 증적 무결성 표본 검사 · 감사로그 체인 검증 · 보존 기간 정리 (매시간)</td></tr>
+        {upkeepStale && <tr><th>확인</th><td>3시간 넘게 완료 기록이 없습니다. 서버 로그의 <code>maintenance</code> 항목과 데이터베이스 연결을 확인하세요. 이 상태에서는 알림과 무결성 검사가 모두 멈춰 있습니다.</td></tr>}
+      </tbody></table></div>
+    </section>
     <section className="card"><div className="card-header"><h2>증적 저장소</h2><Badge tone={storageTone}>{info.storage.writable ? (free < 0.1 ? '여유 부족' : '정상') : '쓰기 불가'}</Badge></div>
       <div className="table-wrap"><table><tbody>
         <tr><th>경로</th><td><code>{info.storage.path}</code></td></tr>

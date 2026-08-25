@@ -6,6 +6,7 @@ package maintenance
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"math"
 	"os"
@@ -112,6 +113,13 @@ func (w *Worker) Sweep(ctx context.Context) map[string]int64 {
 	}
 	if total > 0 {
 		w.Store.Log(ctx, "INFO", "", "maintenance", "retention sweep completed", map[string]any{"retention_days": retention, "removed": removed})
+	}
+	// A completed run is recorded so that a housekeeping goroutine that has
+	// died shows up as an ageing timestamp instead of as reminders that
+	// quietly stopped arriving.
+	summary, _ := json.Marshal(removed)
+	if _, err := w.Store.Pool.Exec(ctx, `UPDATE maintenance_state SET last_run_at=now(),last_summary=$1 WHERE id=1`, summary); err != nil {
+		w.Store.Log(ctx, "ERROR", "", "maintenance", "could not record the sweep", map[string]any{"error": err.Error()})
 	}
 	return removed
 }

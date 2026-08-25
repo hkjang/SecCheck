@@ -1139,3 +1139,50 @@ func TestTheSweepProvesTheAuditChainAndReportsABreak(t *testing.T) {
 		t.Fatal("the break was not recorded in the server log")
 	}
 }
+
+// Housekeeping runs in a goroutine with nothing watching it: reminders,
+// evidence sampling, the audit-chain check and retention purges all stop
+// together if it dies, and every screen goes on looking normal.
+func TestASweepRecordsThatItRan(t *testing.T) {
+	db := testdb.New(t)
+	ctx := context.Background()
+	testdb.Bootstrap(t, db, "upkeep-watcher")
+
+	var before *time.Time
+	if err := db.Pool.QueryRow(ctx, `SELECT last_run_at FROM maintenance_state WHERE id=1`).Scan(&before); err != nil {
+		t.Fatalf("the housekeeping state row is missing: %v", err)
+	}
+	if before != nil {
+		t.Fatalf("a fresh installation already claims a sweep at %v", before)
+	}
+
+	maintenance.New(db, nil).Sweep(ctx)
+
+	var after *time.Time
+	var summary []byte
+	if err := db.Pool.QueryRow(ctx, `SELECT last_run_at,last_summary FROM maintenance_state WHERE id=1`).Scan(&after, &summary); err != nil {
+		t.Fatal(err)
+	}
+	if after == nil {
+		t.Fatal("a completed sweep left no record of itself")
+	}
+	if time.Since(*after) > time.Minute {
+		t.Fatalf("the recorded sweep is %v old", time.Since(*after))
+	}
+	// The summary is what the run actually did, so an operator reading a stale
+	// timestamp can also see what the last healthy run looked like.
+	if !strings.Contains(string(summary), "audit_chain_checked") {
+		t.Fatalf("the recorded summary does not describe the run: %s", summary)
+	}
+
+	// A second sweep moves it forward rather than leaving the first one to age.
+	first := *after
+	time.Sleep(1100 * time.Millisecond)
+	maintenance.New(db, nil).Sweep(ctx)
+	if err := db.Pool.QueryRow(ctx, `SELECT last_run_at FROM maintenance_state WHERE id=1`).Scan(&after); err != nil {
+		t.Fatal(err)
+	}
+	if !after.After(first) {
+		t.Fatalf("the second sweep did not move the record forward (%v)", *after)
+	}
+}

@@ -5519,3 +5519,51 @@ func TestClosingAnAccountReportsTheWorkItStillOwns(t *testing.T) {
 		t.Fatalf("the deactivation reports %v outstanding, want 2", summary["total"])
 	}
 }
+
+// The screen has to be able to say that housekeeping has stopped, because
+// nothing else changes when it does.
+func TestTheSystemScreenReportsWhenHousekeepingStopped(t *testing.T) {
+	h := newHarness(t)
+	ctx := context.Background()
+	admin := h.login(adminOf(h))
+
+	state := func() map[string]any {
+		t.Helper()
+		res := admin.do(http.MethodGet, "/api/v1/admin/system", nil)
+		if res.status != http.StatusOK {
+			t.Fatalf("system: %d %s", res.status, res.body)
+		}
+		out, ok := res.json()["maintenance"].(map[string]any)
+		if !ok {
+			t.Fatalf("the system screen says nothing about housekeeping: %s", res.body)
+		}
+		return out
+	}
+
+	// Never run: reported as stale, not as healthy-with-no-data.
+	if got := state(); got["stale"] != true || got["last_run_at"] != nil {
+		t.Fatalf("before any sweep the screen reports %v", got)
+	}
+	if _, err := h.db.Pool.Exec(ctx, `UPDATE maintenance_state SET last_run_at=now() WHERE id=1`); err != nil {
+		t.Fatal(err)
+	}
+	if got := state(); got["stale"] != false {
+		t.Fatalf("just after a sweep the screen reports %v", got)
+	}
+	// Three missed turns of an hourly sweep is a stopped one.
+	if _, err := h.db.Pool.Exec(ctx, `UPDATE maintenance_state SET last_run_at=now()-interval '4 hours' WHERE id=1`); err != nil {
+		t.Fatal(err)
+	}
+	if got := state(); got["stale"] != true {
+		t.Fatalf("four hours without a sweep reports %v", got)
+	}
+
+	// The scrape carries the same fact as a number an alert can watch.
+	res := admin.do(http.MethodGet, "/metrics", nil)
+	if res.status != http.StatusOK {
+		t.Fatalf("metrics: %d", res.status)
+	}
+	if !strings.Contains(res.body, "seccheck_maintenance_last_run_seconds") {
+		t.Fatal("/metrics does not report the age of the last housekeeping run")
+	}
+}

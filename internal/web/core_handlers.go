@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
@@ -56,7 +57,7 @@ func (s *Server) metrics(w http.ResponseWriter, r *http.Request) {
 	// fills, and it was the one figure nothing exported.
 	space := s.vault().Space()
 	w.Header().Set("Content-Type", "text/plain; version=0.0.4")
-	fmt.Fprintf(w, "# HELP seccheck_info SecCheck build information\n# TYPE seccheck_info gauge\nseccheck_info{version=%q} 1\n# TYPE seccheck_users_total gauge\nseccheck_users_total %d\n# TYPE seccheck_reviews_total gauge\nseccheck_reviews_total %d\n# TYPE seccheck_jobs_pending gauge\nseccheck_jobs_pending %d\n# TYPE seccheck_jobs_failed gauge\nseccheck_jobs_failed %d\n# HELP seccheck_jobs_oldest_pending_seconds How long the oldest already-due job has waited; a queue that is draining keeps this near zero\n# TYPE seccheck_jobs_oldest_pending_seconds gauge\nseccheck_jobs_oldest_pending_seconds %.0f\n# HELP seccheck_audit_write_failures Audit events lost since start-up; any value above zero means an action happened with no record of it\n# TYPE seccheck_audit_write_failures gauge\nseccheck_audit_write_failures %d\n# TYPE seccheck_http_requests_5m gauge\nseccheck_http_requests_5m %d\n# TYPE seccheck_http_errors_5m gauge\nseccheck_http_errors_5m %d\n# TYPE seccheck_http_duration_ms_5m gauge\nseccheck_http_duration_ms_5m %.3f\n# TYPE seccheck_login_success_24h gauge\nseccheck_login_success_24h %d\n# TYPE seccheck_login_failure_24h gauge\nseccheck_login_failure_24h %d\n# TYPE seccheck_evidence_version_bytes gauge\nseccheck_evidence_version_bytes %d\n# TYPE seccheck_scan_failures gauge\nseccheck_scan_failures %d\n# TYPE seccheck_submission_failures_24h gauge\nseccheck_submission_failures_24h %d\n# TYPE seccheck_sessions_active gauge\nseccheck_sessions_active %d\n# TYPE seccheck_accounts_locked gauge\nseccheck_accounts_locked %d\n# TYPE seccheck_evidence_scan_pending gauge\nseccheck_evidence_scan_pending %d\n# TYPE seccheck_evidence_unreadable gauge\nseccheck_evidence_unreadable %d\n# TYPE seccheck_evidence_unverified gauge\nseccheck_evidence_unverified %d\n# TYPE seccheck_db_connections gauge\nseccheck_db_connections{state=\"total\"} %d\nseccheck_db_connections{state=\"acquired\"} %d\nseccheck_db_connections{state=\"idle\"} %d\n# TYPE seccheck_storage_free_bytes gauge\nseccheck_storage_free_bytes %d\n# TYPE seccheck_storage_writable gauge\nseccheck_storage_writable %d\n", s.Version, users, reviews, pending, failedJobs, oldestPending, s.Store.AuditFailures(), requests, requestErrors, avgDuration, loginOK, loginFail, storageBytes, scanFailures, submissionFailures, sessions, lockedAccounts, pendingScans, unreadableEvidence, uncheckedEvidence, pool.TotalConns(), pool.AcquiredConns(), pool.IdleConns(), space.FreeBytes, boolGauge(space.Writable))
+	fmt.Fprintf(w, "# HELP seccheck_info SecCheck build information\n# TYPE seccheck_info gauge\nseccheck_info{version=%q} 1\n# TYPE seccheck_users_total gauge\nseccheck_users_total %d\n# TYPE seccheck_reviews_total gauge\nseccheck_reviews_total %d\n# TYPE seccheck_jobs_pending gauge\nseccheck_jobs_pending %d\n# TYPE seccheck_jobs_failed gauge\nseccheck_jobs_failed %d\n# HELP seccheck_jobs_oldest_pending_seconds How long the oldest already-due job has waited; a queue that is draining keeps this near zero\n# TYPE seccheck_jobs_oldest_pending_seconds gauge\nseccheck_jobs_oldest_pending_seconds %.0f\n# HELP seccheck_audit_write_failures Audit events lost since start-up; any value above zero means an action happened with no record of it\n# TYPE seccheck_audit_write_failures gauge\nseccheck_audit_write_failures %d\n# TYPE seccheck_http_requests_5m gauge\nseccheck_http_requests_5m %d\n# TYPE seccheck_http_errors_5m gauge\nseccheck_http_errors_5m %d\n# TYPE seccheck_http_duration_ms_5m gauge\nseccheck_http_duration_ms_5m %.3f\n# TYPE seccheck_login_success_24h gauge\nseccheck_login_success_24h %d\n# TYPE seccheck_login_failure_24h gauge\nseccheck_login_failure_24h %d\n# TYPE seccheck_evidence_version_bytes gauge\nseccheck_evidence_version_bytes %d\n# TYPE seccheck_scan_failures gauge\nseccheck_scan_failures %d\n# TYPE seccheck_submission_failures_24h gauge\nseccheck_submission_failures_24h %d\n# TYPE seccheck_sessions_active gauge\nseccheck_sessions_active %d\n# TYPE seccheck_accounts_locked gauge\nseccheck_accounts_locked %d\n# TYPE seccheck_evidence_scan_pending gauge\nseccheck_evidence_scan_pending %d\n# TYPE seccheck_evidence_unreadable gauge\nseccheck_evidence_unreadable %d\n# TYPE seccheck_evidence_unverified gauge\nseccheck_evidence_unverified %d\n# TYPE seccheck_db_connections gauge\nseccheck_db_connections{state=\"total\"} %d\nseccheck_db_connections{state=\"acquired\"} %d\nseccheck_db_connections{state=\"idle\"} %d\n# TYPE seccheck_storage_free_bytes gauge\nseccheck_storage_free_bytes %d\n# TYPE seccheck_storage_writable gauge\nseccheck_storage_writable %d\n# HELP seccheck_maintenance_last_run_seconds Age of the last completed housekeeping sweep; it runs hourly, so a value that keeps climbing means reminders, evidence checks and the audit-chain check have all stopped\n# TYPE seccheck_maintenance_last_run_seconds gauge\nseccheck_maintenance_last_run_seconds %.0f\n", s.Version, users, reviews, pending, failedJobs, oldestPending, s.Store.AuditFailures(), requests, requestErrors, avgDuration, loginOK, loginFail, storageBytes, scanFailures, submissionFailures, sessions, lockedAccounts, pendingScans, unreadableEvidence, uncheckedEvidence, pool.TotalConns(), pool.AcquiredConns(), pool.IdleConns(), space.FreeBytes, boolGauge(space.Writable), s.maintenanceAge(r.Context()))
 }
 
 // boolGauge renders a yes/no fact the way Prometheus expects to read one.
@@ -606,6 +607,26 @@ func (s *Server) userDirectory(w http.ResponseWriter, r *http.Request) {
 	jsonResponse(w, 200, map[string]any{"items": items, "total": total, "has_more": total > int64(len(items))})
 }
 
+// maintenanceAge reports how long ago the housekeeping sweep last finished.
+// A sweep that has never run reads as a very large age rather than as zero,
+// because zero is what a healthy service looks like.
+func (s *Server) maintenanceAge(ctx context.Context) float64 {
+	var lastRun *time.Time
+	if err := s.Store.Pool.QueryRow(ctx, `SELECT last_run_at FROM maintenance_state WHERE id=1`).Scan(&lastRun); err != nil || lastRun == nil {
+		return neverRanSeconds
+	}
+	return time.Since(*lastRun).Seconds()
+}
+
+// neverRanSeconds stands in for "no sweep has ever finished" so a scrape can
+// alert on the same threshold either way.
+const neverRanSeconds = 99999999
+
+// maintenanceStaleAfter is when a missing housekeeping run stops being a late
+// one and starts being a stopped one. The sweep runs hourly, so three missed
+// turns is not a slow night.
+const maintenanceStaleAfter = 3 * time.Hour
+
 // directoryLimit bounds one picker's worth of names.
 const directoryLimit = 200
 
@@ -685,7 +706,19 @@ func (s *Server) systemInfo(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	integrity["failures"] = broken
-	jsonResponse(w, 200, map[string]any{"evidence_bytes": evidenceBytes, "evidence_integrity": integrity, "version": s.Version, "schema_version": s.Store.SchemaVersion(r.Context()), "go_version": runtime.Version(), "users": users, "reviews": reviews, "templates": templates, "evidences": evidences, "logs": logs, "database_size": dbSize, "pdf_font": pdfFont, "pdf_export_available": pdfFont != "", "storage": storage, "role_coverage": coverage, "now": time.Now()})
+	// Housekeeping runs in a goroutine with nothing watching it. Reminders,
+	// evidence sampling, retention purges and the audit-chain check all stop
+	// together if it dies, and nothing else on any screen changes -- so the
+	// time of the last completed run is reported here and in /metrics.
+	maintenanceState := map[string]any{"last_run_at": nil, "stale": true}
+	var lastRun *time.Time
+	var lastSummary []byte
+	if err := s.Store.Pool.QueryRow(r.Context(), `SELECT last_run_at,last_summary FROM maintenance_state WHERE id=1`).Scan(&lastRun, &lastSummary); err == nil {
+		var summary map[string]any
+		_ = json.Unmarshal(lastSummary, &summary)
+		maintenanceState = map[string]any{"last_run_at": lastRun, "stale": lastRun == nil || time.Since(*lastRun) > maintenanceStaleAfter, "last_summary": summary}
+	}
+	jsonResponse(w, 200, map[string]any{"maintenance": maintenanceState, "evidence_bytes": evidenceBytes, "evidence_integrity": integrity, "version": s.Version, "schema_version": s.Store.SchemaVersion(r.Context()), "go_version": runtime.Version(), "users": users, "reviews": reviews, "templates": templates, "evidences": evidences, "logs": logs, "database_size": dbSize, "pdf_font": pdfFont, "pdf_export_available": pdfFont != "", "storage": storage, "role_coverage": coverage, "now": time.Now()})
 }
 
 func (s *Server) ensureUserDataKey(ctx context.Context, userID string) error {

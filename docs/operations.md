@@ -88,6 +88,7 @@ scrape_configs:
 | `seccheck_scan_failures` | 검사를 끝내지 못한(`ERROR`) 현재 증적 수 | `> 0`이면 clamd 확인 후 작업 재시도 |
 | `seccheck_evidence_unreadable` | 되읽기 확인에 실패한 증적 수 | `> 0`이면 즉시 조사(백업 복구 필요) |
 | `seccheck_evidence_unverified` | 아직 한 번도 되읽기 확인하지 않은 증적 수 | 신규 업로드분이며 시간이 지나도 줄지 않으면 스윕 확인 |
+| `seccheck_maintenance_last_run_seconds` | 마지막 정기 점검이 끝난 뒤 경과 시간(초). 점검은 매시간 실행 | **10800초(3시간) 초과면 경보.** 이 값이 계속 오르면 기한 알림·증적 표본 검사·감사로그 체인 검증·보존 정리가 모두 멈춘 상태이며, 한 번도 실행되지 않은 설치는 매우 큰 값으로 보고 |
 | `seccheck_submission_failures_24h` | 24시간 제출 실패(4xx 이상) 수 | 급증 시 규칙·증적 정책 확인 |
 | `seccheck_db_connections` | 커넥션 풀 상태 (`state` label: total/acquired/idle) | `acquired`가 `total`에 근접하면 포화 |
 
@@ -369,6 +370,7 @@ docker compose exec seccheck /app/seccheck selftest --username admin --password 
 | 026 | 재심의로 이월된 답변 표시(`responses.carried_at`) |
 | 027 | 항목 단위 알림의 대상 항목(`notifications.item_id`) |
 | 028 | 임시 비밀번호 표시(`users.must_change_password`) |
+| 029 | 정기 점검 실행 기록(`maintenance_state`) |
 
 ## 업그레이드와 롤백
 
