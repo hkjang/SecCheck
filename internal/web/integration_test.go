@@ -5567,3 +5567,107 @@ func TestTheSystemScreenReportsWhenHousekeepingStopped(t *testing.T) {
 		t.Fatal("/metrics does not report the age of the last housekeeping run")
 	}
 }
+
+// The screen's item filters used to re-derive the rules from the raw rows, and
+// one of those derivations disagreed with the service: an N/A item that
+// requires evidence was counted as "증적 누락" on screen while the submission
+// guard exempted it, so the count could never be worked down to zero.
+func TestTheItemFlagsAgreeWithTheSubmissionGuard(t *testing.T) {
+	h := newHarness(t)
+	ctx := context.Background()
+	requesterID := h.user("flags-requester", "REQUESTER")
+	h.user("flags-reviewer", "SECURITY_REVIEWER")
+	requester := h.login("flags-requester")
+	reviewer := h.login("flags-reviewer")
+	var reviewerID string
+	if err := h.db.Pool.QueryRow(ctx, `SELECT id FROM users WHERE username='flags-reviewer'`).Scan(&reviewerID); err != nil {
+		t.Fatal(err)
+	}
+
+	reviewID := requester.createReview("항목 플래그 서비스")
+	items := []map[string]any{}
+	if err := json.Unmarshal([]byte(requester.do(http.MethodGet, "/api/v1/review-requests/"+reviewID+"/items", nil).body), &items); err != nil {
+		t.Fatal(err)
+	}
+	// An item that demands evidence is the one the disagreement was about.
+	var demanding string
+	for _, item := range items {
+		if item["evidence_required"] == true {
+			demanding = item["id"].(string)
+			break
+		}
+	}
+	if demanding == "" {
+		if _, err := h.db.Pool.Exec(ctx, `UPDATE submission_items SET evidence_required=true WHERE id=$1`, items[0]["id"].(string)); err != nil {
+			t.Fatal(err)
+		}
+		demanding = items[0]["id"].(string)
+	}
+
+	flags := func(itemID string) map[string]any {
+		t.Helper()
+		fresh := []map[string]any{}
+		if err := json.Unmarshal([]byte(requester.do(http.MethodGet, "/api/v1/review-requests/"+reviewID+"/items", nil).body), &fresh); err != nil {
+			t.Fatal(err)
+		}
+		for _, item := range fresh {
+			if item["id"] == itemID {
+				out, ok := item["flags"].(map[string]any)
+				if !ok {
+					t.Fatalf("the item carries no flags: %v", item)
+				}
+				return out
+			}
+		}
+		t.Fatalf("item %s is missing from the list", itemID)
+		return nil
+	}
+
+	// Unanswered and demanding evidence: both flags are set.
+	if got := flags(demanding); got["missing_answer"] != true || got["missing_evidence"] != true {
+		t.Fatalf("an unanswered item that demands evidence reads %v", got)
+	}
+
+	// Answered N/A: the submission guard exempts it from the evidence rule, so
+	// the screen must stop asking for it too.
+	if res := requester.do(http.MethodPut, "/api/v1/review-requests/"+reviewID+"/responses/"+demanding,
+		map[string]any{"applicability": "N/A", "na_reason": "이 서비스에 해당하지 않음", "self_assessment": "N/A", "expected_updated_at": ""}); res.status != http.StatusOK {
+		t.Fatalf("answering N/A: %d %s", res.status, res.body)
+	}
+	got := flags(demanding)
+	if got["missing_answer"] != false || got["missing_evidence"] != false {
+		t.Fatalf("an N/A item that demands evidence still reads %v", got)
+	}
+	// And the guard agrees: this item is not among the reasons submission is
+	// refused.
+	res := requester.do(http.MethodGet, "/api/v1/review-requests/"+reviewID+"/submission-check", nil)
+	if res.status != http.StatusOK {
+		t.Fatalf("submission check: %d %s", res.status, res.body)
+	}
+	for _, raw := range res.json()["issues"].([]any) {
+		issue := raw.(map[string]any)
+		if issue["item_id"] == demanding {
+			t.Fatalf("the guard still blocks on the N/A item: %v", issue["reasons"])
+		}
+	}
+
+	// A comment and a correction show up as flags, and so does the verdict.
+	if res := requester.do(http.MethodPost, "/api/v1/review-requests/"+reviewID+"/items/"+demanding+"/comments", map[string]string{"body": "이 항목은 대상이 아닙니다"}); res.status != http.StatusCreated {
+		t.Fatalf("comment: %d %s", res.status, res.body)
+	}
+	if _, err := h.db.Pool.Exec(ctx, `UPDATE review_requests SET reviewer_id=$2,status='REVIEWING' WHERE id=$1`, reviewID, reviewerID); err != nil {
+		t.Fatal(err)
+	}
+	if res := reviewer.do(http.MethodPut, "/api/v1/review-requests/"+reviewID+"/review-results/"+demanding,
+		map[string]any{"result": "INSUFFICIENT", "opinion": "근거가 부족합니다", "expected_updated_at": ""}); res.status != http.StatusOK {
+		t.Fatalf("verdict: %d %s", res.status, res.body)
+	}
+	if res := reviewer.do(http.MethodPost, "/api/v1/review-requests/"+reviewID+"/change-requests",
+		map[string]any{"item_id": demanding, "reason": "근거를 보완하세요", "assignee_id": requesterID, "due_date": "2030-07-31"}); res.status != http.StatusCreated {
+		t.Fatalf("change request: %d %s", res.status, res.body)
+	}
+	got = flags(demanding)
+	if got["commented"] != true || got["open_change"] != true || got["result"] != "INSUFFICIENT" {
+		t.Fatalf("after a comment, a verdict and a correction the item reads %v", got)
+	}
+}

@@ -77,6 +77,7 @@ export type ChecklistItem = {
   change_requests: ChangeRequest[]
 	comments: { id: string; author_name: string; body: string; created_at: string }[]
   stale_verdict?: boolean
+  flags?: { missing_answer: boolean; missing_evidence: boolean; open_change: boolean; stale_verdict: boolean; carried: boolean; commented: boolean; result: string }
 }
 
 export type Evidence = {
