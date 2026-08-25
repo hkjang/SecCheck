@@ -103,7 +103,7 @@ function FollowUpTable({ rows, total, includeDone, onToggleScope, onChanged }: {
     {rows.length ? <div className="table-wrap"><table><caption className="sr-only">미조치 항목</caption>
       <thead><tr><th scope="col">심의</th><th scope="col">항목</th><th scope="col">판정</th><th scope="col">조치 사항</th><th scope="col">상태</th><th scope="col"><span className="sr-only">작업</span></th></tr></thead>
       <tbody>{rows.map(row => <tr key={String(row.id)}>
-        <td>{row.review_id ? <Link className="table-link" to={`/reviews/${row.review_id}`}>{String(row.review_number)}</Link> : String(row.review_number)}<div className="subtle">{String(row.service_name)}{row.department ? ` · ${row.department}` : ''}</div></td>
+        <td>{row.review_id ? <Link className="table-link" to={`/reviews/${row.review_id}${row.item_id ? `?item=${row.item_id}` : ''}`}>{String(row.review_number)}</Link> : String(row.review_number)}<div className="subtle">{String(row.service_name)}{row.department ? ` · ${row.department}` : ''}</div></td>
         <td>{String(row.item_code)}<div className="subtle">{String(row.title)}</div></td>
         <td>{resultLabel[String(row.result)] || String(row.result)}</td>
         <td>{String(row.follow_up)}<div className="subtle">{String(row.decided_on)} 판정{row.due_on ? ` · 기한 ${row.due_on}` : ''}</div></td>

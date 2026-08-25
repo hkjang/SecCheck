@@ -6,7 +6,7 @@ import { DueChange, Page, QueueEntry, Review } from '../lib/types'
 import { Badge, Button, Empty, formatDate, LoadFailed, Loading, StatusBadge } from '../components/ui'
 import { useAuth } from '../main'
 
-type FollowUp = { id: string; review_id: string; review_number: string; service_name: string; item_code: string; title: string; follow_up: string; due_date?: string; overdue: boolean; reported: boolean }
+type FollowUp = { id: string; review_id: string; item_id?: string; review_number: string; service_name: string; item_code: string; title: string; follow_up: string; due_date?: string; overdue: boolean; reported: boolean }
 type DashboardData = { status_counts: Record<string, number>; opening_soon: number; opening_soon_unfinished: number; open_change_requests: number; my_queue: QueueEntry[]; due_soon: DueChange[]; my_follow_ups?: FollowUp[]; security_analytics?: { unassigned?: number; long_pending?: number; long_pending_days?: number } }
 export default function Dashboard() {
   const { user } = useAuth()
@@ -43,14 +43,14 @@ export default function Dashboard() {
       <div className="card-body">{queue.length ? queue.map(q => <div className="queue-row" key={q.id}><Badge tone="blue">{q.action}</Badge><div className="grow"><Link className="table-link" to={`/reviews/${q.id}`}>{q.review_number}</Link> <strong>{q.service_name}</strong><span className="subtle">오픈 예정 {formatDate(q.planned_open_date)} · 최근 변경 {formatDate(q.updated_at, true)}</span></div><StatusBadge status={q.status} /></div>) : <Empty title="지금 처리할 심의가 없습니다." description="새로 배정되면 상단 알림과 이 목록에 함께 표시됩니다." />}</div></section>
 
     {due.length > 0 && <section className="card"><div className="card-header"><h2><CalendarClock size={17} /> 보완 조치 기한</h2><Badge tone={due.some(d => d.overdue) ? 'red' : 'amber'}>{due.length}건</Badge></div>
-      <div className="table-wrap"><table><caption className="sr-only">기한이 임박했거나 지난 보완 요청</caption><thead><tr><th scope="col">심의</th><th scope="col">항목</th><th scope="col">기한</th><th scope="col">상태</th></tr></thead><tbody>{due.map(d => <tr key={d.id}><td><Link className="table-link" to={`/reviews/${d.review_request_id}`}>{d.review_number}</Link><div className="subtle">{d.service_name}</div></td><td><strong>{d.item_code}</strong><div className="subtle">{d.title}</div></td><td>{formatDate(d.due_date)}</td><td><Badge tone={d.overdue ? 'red' : 'amber'}>{d.overdue ? '기한 초과' : '임박'}</Badge></td></tr>)}</tbody></table></div></section>}
+      <div className="table-wrap"><table><caption className="sr-only">기한이 임박했거나 지난 보완 요청</caption><thead><tr><th scope="col">심의</th><th scope="col">항목</th><th scope="col">기한</th><th scope="col">상태</th></tr></thead><tbody>{due.map(d => <tr key={d.id}><td><Link className="table-link" to={`/reviews/${d.review_request_id}${d.item_id ? `?item=${d.item_id}` : ''}`}>{d.review_number}</Link><div className="subtle">{d.service_name}</div></td><td><strong>{d.item_code}</strong><div className="subtle">{d.title}</div></td><td>{formatDate(d.due_date)}</td><td><Badge tone={d.overdue ? 'red' : 'amber'}>{d.overdue ? '기한 초과' : '임박'}</Badge></td></tr>)}</tbody></table></div></section>}
 
     {actions.length > 0 && <section className="card">
       <div className="card-header"><h2><ClipboardCheck size={17} /> 내 후속조치</h2><Badge tone={actions.some(a => a.overdue) ? 'red' : 'amber'}>{actions.length}건</Badge></div>
       <div className="table-wrap"><table><caption className="sr-only">이행해야 할 후속조치</caption>
         <thead><tr><th scope="col">심의</th><th scope="col">항목</th><th scope="col">조치 사항</th><th scope="col">기한</th><th scope="col">상태</th></tr></thead>
         <tbody>{actions.map(a => <tr key={a.id}>
-          <td><Link className="table-link" to={`/reviews/${a.review_id}`}>{a.review_number}</Link><div className="subtle">{a.service_name}</div></td>
+          <td><Link className="table-link" to={`/reviews/${a.review_id}${a.item_id ? `?item=${a.item_id}` : ''}`}>{a.review_number}</Link><div className="subtle">{a.service_name}</div></td>
           <td><strong>{a.item_code}</strong><div className="subtle">{a.title}</div></td>
           <td>{a.follow_up}</td>
           <td>{a.due_date ? formatDate(a.due_date) : <span className="subtle">기한 없음</span>}</td>

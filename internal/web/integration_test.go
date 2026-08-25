@@ -6262,3 +6262,66 @@ func TestTheTemplateListShowsWhatIsBeingAssigned(t *testing.T) {
 		t.Fatalf("the template still reads active=%v", got["active"])
 	}
 }
+
+// Every list that says "you have work on this item" used to drop the reader at
+// the top of a review holding a few hundred of them. The item travels with the
+// row so the link can land on it, the way the notification centre and the mail
+// already do.
+func TestWorkListsPointAtTheItem(t *testing.T) {
+	h := newHarness(t)
+	ctx := context.Background()
+	requesterID := h.user("worklist-requester", "REQUESTER")
+	h.user("worklist-reviewer", "SECURITY_REVIEWER")
+	requester := h.login("worklist-requester")
+	reviewer := h.login("worklist-reviewer")
+	var reviewerID string
+	if err := h.db.Pool.QueryRow(ctx, `SELECT id FROM users WHERE username='worklist-reviewer'`).Scan(&reviewerID); err != nil {
+		t.Fatal(err)
+	}
+
+	reviewID := requester.createReview("작업 목록 서비스")
+	itemID := firstItemID(t, h, reviewID)
+	if _, err := h.db.Pool.Exec(ctx, `UPDATE review_requests SET reviewer_id=$2,status='REVIEWING' WHERE id=$1`, reviewID, reviewerID); err != nil {
+		t.Fatal(err)
+	}
+	// A correction with a deadline, and a follow-up promised on the verdict.
+	if res := reviewer.do(http.MethodPost, "/api/v1/review-requests/"+reviewID+"/change-requests",
+		map[string]any{"item_id": itemID, "reason": "증적을 보완하세요", "assignee_id": requesterID, "due_date": "2030-01-31"}); res.status != http.StatusCreated {
+		t.Fatalf("change request: %d %s", res.status, res.body)
+	}
+	if _, err := h.db.Pool.Exec(ctx, `UPDATE change_requests SET due_date=display_today()+1 WHERE review_request_id=$1`, reviewID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := h.db.Pool.Exec(ctx, `INSERT INTO review_results(id,submission_item_id,reviewer_id,result,opinion,follow_up,follow_up_due_date) VALUES($1,$2,$3,'CONDITIONAL','조건부','로그 보존 연장',current_date+30)`, store.NewID(), itemID, reviewerID); err != nil {
+		t.Fatal(err)
+	}
+
+	dash := requester.do(http.MethodGet, "/api/v1/dashboard", nil)
+	if dash.status != http.StatusOK {
+		t.Fatalf("dashboard: %d %s", dash.status, dash.body)
+	}
+	payload := dash.json()
+	for _, list := range []string{"due_soon", "my_follow_ups"} {
+		rows, _ := payload[list].([]any)
+		if len(rows) == 0 {
+			t.Fatalf("%s is empty, so the link cannot be checked", list)
+		}
+		row := rows[0].(map[string]any)
+		if row["item_id"] != itemID {
+			t.Fatalf("%s points at item %v, want %s", list, row["item_id"], itemID)
+		}
+	}
+
+	// The register on the report screen is the same kind of list.
+	report := reviewer.do(http.MethodGet, "/api/v1/reports/reviews", nil)
+	if report.status != http.StatusOK {
+		t.Fatalf("report: %d %s", report.status, report.body)
+	}
+	entries, _ := report.json()["follow_ups"].([]any)
+	if len(entries) == 0 {
+		t.Fatal("the register is empty, so the link cannot be checked")
+	}
+	if entry := entries[0].(map[string]any); entry["item_id"] != itemID {
+		t.Fatalf("the register points at item %v, want %s", entry["item_id"], itemID)
+	}
+}

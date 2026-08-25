@@ -51,7 +51,7 @@ export type Page<T> = { items: T[]; total: number; limit: number; offset: number
 
 export type QueueEntry = { id: string; review_number: string; service_name: string; status: string; planned_open_date?: string; updated_at: string; action: string }
 
-export type DueChange = { id: string; review_request_id: string; review_number: string; service_name: string; item_code: string; title: string; due_date: string; status: string; overdue: boolean }
+export type DueChange = { id: string; review_request_id: string; review_number: string; service_name: string; item_id?: string; item_code: string; title: string; due_date: string; status: string; overdue: boolean }
 
 export type SessionInfo = { id: string; source_ip: string; user_agent: string; created_at: string; last_seen_at: string; expires_at: string; current: boolean }
 

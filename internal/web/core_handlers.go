@@ -396,7 +396,7 @@ func (s *Server) myFollowUps(r *http.Request) []map[string]any {
 		where = "TRUE"
 		args = nil
 	}
-	rows, err := s.Store.Pool.Query(r.Context(), `SELECT rr.id,review_requests.id AS review_id,review_requests.review_number,review_requests.service_name,si.item_code,si.title,
+	rows, err := s.Store.Pool.Query(r.Context(), `SELECT rr.id,review_requests.id AS review_id,review_requests.review_number,review_requests.service_name,si.id AS item_id,si.item_code,si.title,
                 rr.follow_up,to_char(rr.follow_up_due_date,'YYYY-MM-DD') AS due_date,
                 (rr.follow_up_due_date IS NOT NULL AND rr.follow_up_due_date < display_today()) AS overdue,
                 (rr.follow_up_reported_at IS NOT NULL) AS reported
@@ -409,7 +409,7 @@ func (s *Server) myFollowUps(r *http.Request) []map[string]any {
 	if err != nil {
 		return []map[string]any{}
 	}
-	rows2, scanErr := scanDynamic(rows, []string{"id", "review_id", "review_number", "service_name", "item_code", "title", "follow_up", "due_date", "overdue", "reported"})
+	rows2, scanErr := scanDynamic(rows, []string{"id", "review_id", "review_number", "service_name", "item_id", "item_code", "title", "follow_up", "due_date", "overdue", "reported"})
 	if scanErr != nil {
 		return []map[string]any{}
 	}
@@ -423,7 +423,7 @@ func (s *Server) dueChangeRequests(r *http.Request) []map[string]any {
 		where = "TRUE"
 		args = nil
 	}
-	rows, err := s.Store.Pool.Query(r.Context(), `SELECT c.id,c.review_request_id,review_requests.review_number,review_requests.service_name,si.item_code,si.title,c.due_date,c.status,(c.due_date < display_today()) AS overdue
+	rows, err := s.Store.Pool.Query(r.Context(), `SELECT c.id,c.review_request_id,review_requests.review_number,review_requests.service_name,si.id AS item_id,si.item_code,si.title,c.due_date,c.status,(c.due_date < display_today()) AS overdue
                 FROM change_requests c
                 JOIN review_requests ON review_requests.id=c.review_request_id
                 JOIN submission_items si ON si.id=c.submission_item_id
@@ -432,7 +432,7 @@ func (s *Server) dueChangeRequests(r *http.Request) []map[string]any {
 	if err != nil {
 		return []map[string]any{}
 	}
-	rows2, scanErr := scanDynamic(rows, []string{"id", "review_request_id", "review_number", "service_name", "item_code", "title", "due_date", "status", "overdue"})
+	rows2, scanErr := scanDynamic(rows, []string{"id", "review_request_id", "review_number", "service_name", "item_id", "item_code", "title", "due_date", "status", "overdue"})
 	if scanErr != nil {
 		return []map[string]any{}
 	}
