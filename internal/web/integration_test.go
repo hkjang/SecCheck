@@ -5224,3 +5224,48 @@ func TestANoticeAboutOneItemSaysWhichItem(t *testing.T) {
 		t.Fatal("the comment notice is missing from the list")
 	}
 }
+
+// A count that cannot be made is not zero. The review screen used to swallow
+// the failure of every aggregate on it and serve "적합 0 · 조건부 0 · 판정 후
+// 변경 0" -- a review that looks finished -- alongside a missing warning that
+// the named reviewer can no longer act.
+func TestTheReviewScreenRefusesToInventZeros(t *testing.T) {
+	h := newHarness(t)
+	ctx := context.Background()
+	h.user("zeros-author", "REQUESTER")
+	author := h.login("zeros-author")
+	reviewID := author.createReview("집계 실패 서비스")
+
+	// Healthy first: the screen carries the counts and the blockers.
+	res := author.do(http.MethodGet, "/api/v1/review-requests/"+reviewID, nil)
+	if res.status != http.StatusOK {
+		t.Fatalf("review detail: %d %s", res.status, res.body)
+	}
+	payload := res.json()
+	if _, ok := payload["result_summary"].(map[string]any); !ok {
+		t.Fatalf("the review detail carries no result_summary")
+	}
+	if _, ok := payload["completion_blockers"].(map[string]any); !ok {
+		t.Fatalf("the review detail carries no completion_blockers")
+	}
+
+	// Each aggregate is taken away in turn; the screen must fail rather than
+	// report the zero it did not count.
+	for _, table := range []string{"review_results", "change_requests", "checklist_versions"} {
+		if _, err := h.db.Pool.Exec(ctx, `ALTER TABLE `+table+` RENAME TO `+table+`_hidden`); err != nil {
+			t.Fatal(err)
+		}
+		res := author.do(http.MethodGet, "/api/v1/review-requests/"+reviewID, nil)
+		if _, err := h.db.Pool.Exec(ctx, `ALTER TABLE `+table+`_hidden RENAME TO `+table); err != nil {
+			t.Fatal(err)
+		}
+		if res.status != http.StatusInternalServerError {
+			t.Fatalf("with %s unreadable the review detail answers %d %s", table, res.status, res.body)
+		}
+	}
+
+	// And it recovers once the aggregate can be read again.
+	if res := author.do(http.MethodGet, "/api/v1/review-requests/"+reviewID, nil); res.status != http.StatusOK {
+		t.Fatalf("after the tables came back: %d %s", res.status, res.body)
+	}
+}

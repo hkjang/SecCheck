@@ -511,13 +511,28 @@ func (s *Server) getReviewRequest(w http.ResponseWriter, r *http.Request) {
 	row := s.Store.Pool.QueryRow(r.Context(), `SELECT to_jsonb(r)-'description'||jsonb_build_object('description',r.description,'requester_name',ru.display_name,'reviewer_name',rv.display_name,'approver_name',ap.display_name,'decisions',(SELECT COALESCE(jsonb_agg(jsonb_build_object('decision',a.decision,'comment',a.comment,'decided_at',a.created_at,'approver_name',au.display_name) ORDER BY a.created_at),'[]') FROM approvals a JOIN users au ON au.id=a.approver_id WHERE a.review_request_id=r.id),'progress',(SELECT jsonb_build_object('total',count(*),'answered',count(resp.id),'evidence',count(DISTINCT ev.id)) FROM submissions sub JOIN submission_items si ON si.submission_id=sub.id LEFT JOIN responses resp ON resp.submission_item_id=si.id LEFT JOIN evidences ev ON ev.submission_item_id=si.id AND ev.deleted_at IS NULL WHERE sub.review_request_id=r.id AND sub.revision=(SELECT max(revision) FROM submissions WHERE review_request_id=r.id)),'risk_score',(SELECT COALESCE(sum(CASE si.severity WHEN 'CRITICAL' THEN 10 WHEN 'HIGH' THEN 7 WHEN 'MEDIUM' THEN 3 ELSE 1 END) FILTER(WHERE rr.result IN ('INSUFFICIENT','NON_COMPLIANT','CONDITIONAL','RECHECK')),0) FROM submissions sub JOIN submission_items si ON si.submission_id=sub.id LEFT JOIN review_results rr ON rr.submission_item_id=si.id WHERE sub.review_request_id=r.id AND sub.revision=(SELECT max(revision) FROM submissions WHERE review_request_id=r.id))) FROM review_requests r JOIN users ru ON ru.id=r.requester_id LEFT JOIN users rv ON rv.id=r.reviewer_id LEFT JOIN users ap ON ap.id=r.approver_id WHERE r.id=$1`, r.PathValue("id"))
 	var data []byte
 	if err := row.Scan(&data); err != nil {
-		problem(w, 404, "NOT_FOUND", "심의를 찾을 수 없습니다.", nil)
+		// A review that is not there and a query that could not run are
+		// different answers. Reporting both as "찾을 수 없습니다" sent a reader
+		// looking for a deleted review while the service was the broken part.
+		if errors.Is(err, pgx.ErrNoRows) {
+			problem(w, 404, "NOT_FOUND", "심의를 찾을 수 없습니다.", nil)
+			return
+		}
+		s.fault(w, r, "QUERY_FAILED", "심의를 불러오지 못했습니다.", err)
 		return
 	}
 	var out map[string]any
 	_ = json.Unmarshal(data, &out)
+	// Every number on this screen is a claim about the review. A count whose
+	// query failed used to read as zero -- "적합 0, 조건부 0, 판정 후 변경 0",
+	// a clean-looking review with nothing outstanding -- and the same silence
+	// hid the warning that the named reviewer can no longer act and the list
+	// of what still blocks completion. A screen that cannot count says so.
 	var total, compliant, conditional, insufficient, nonCompliant, na, followUp, staleVerdicts int
-	_ = s.Store.Pool.QueryRow(r.Context(), `SELECT count(*),count(*) FILTER(WHERE rr.result='COMPLIANT'),count(*) FILTER(WHERE rr.result='CONDITIONAL'),count(*) FILTER(WHERE rr.result='INSUFFICIENT'),count(*) FILTER(WHERE rr.result='NON_COMPLIANT'),count(*) FILTER(WHERE rr.result='NA_ACCEPTED' OR resp.applicability='N/A'),count(*) FILTER(WHERE COALESCE(rr.follow_up,'')<>''),count(*) FILTER(WHERE `+staleVerdictSQL+`) FROM submissions sub JOIN submission_items si ON si.submission_id=sub.id LEFT JOIN responses resp ON resp.submission_item_id=si.id LEFT JOIN review_results rr ON rr.submission_item_id=si.id WHERE sub.review_request_id=$1 AND sub.revision=(SELECT max(revision) FROM submissions WHERE review_request_id=$1)`, r.PathValue("id")).Scan(&total, &compliant, &conditional, &insufficient, &nonCompliant, &na, &followUp, &staleVerdicts)
+	if err := s.Store.Pool.QueryRow(r.Context(), `SELECT count(*),count(*) FILTER(WHERE rr.result='COMPLIANT'),count(*) FILTER(WHERE rr.result='CONDITIONAL'),count(*) FILTER(WHERE rr.result='INSUFFICIENT'),count(*) FILTER(WHERE rr.result='NON_COMPLIANT'),count(*) FILTER(WHERE rr.result='NA_ACCEPTED' OR resp.applicability='N/A'),count(*) FILTER(WHERE COALESCE(rr.follow_up,'')<>''),count(*) FILTER(WHERE `+staleVerdictSQL+`) FROM submissions sub JOIN submission_items si ON si.submission_id=sub.id LEFT JOIN responses resp ON resp.submission_item_id=si.id LEFT JOIN review_results rr ON rr.submission_item_id=si.id WHERE sub.review_request_id=$1 AND sub.revision=(SELECT max(revision) FROM submissions WHERE review_request_id=$1)`, r.PathValue("id")).Scan(&total, &compliant, &conditional, &insufficient, &nonCompliant, &na, &followUp, &staleVerdicts); err != nil {
+		s.fault(w, r, "QUERY_FAILED", "심의 집계를 불러오지 못했습니다.", err)
+		return
+	}
 	naRatio := 0.0
 	if total > 0 {
 		naRatio = float64(na) * 100 / float64(total)
@@ -527,15 +542,26 @@ func (s *Server) getReviewRequest(w http.ResponseWriter, r *http.Request) {
 	// no longer act, because until somebody takes the review over it does not
 	// move and nothing else says so.
 	var reviewerCanAct, approverCanAct bool
-	_ = s.Store.Pool.QueryRow(r.Context(), `SELECT `+stillHolds("reviewer_id", "SECURITY_REVIEWER")+`,`+stillHolds("approver_id", "APPROVER")+` FROM review_requests WHERE id=$1`, r.PathValue("id")).Scan(&reviewerCanAct, &approverCanAct)
+	if err := s.Store.Pool.QueryRow(r.Context(), `SELECT `+stillHolds("reviewer_id", "SECURITY_REVIEWER")+`,`+stillHolds("approver_id", "APPROVER")+` FROM review_requests WHERE id=$1`, r.PathValue("id")).Scan(&reviewerCanAct, &approverCanAct); err != nil {
+		s.fault(w, r, "QUERY_FAILED", "담당자 상태를 확인하지 못했습니다.", err)
+		return
+	}
 	// The same three counts the completion guard refuses on, so a reviewer can
 	// see what is left before pressing the button rather than after.
-	if missing, open, stale, err := s.reviewBlockers(r.Context(), r.PathValue("id")); err == nil {
-		out["completion_blockers"] = map[string]int{"unreviewed_items": missing, "unverified_changes": open, "stale_verdicts": stale}
+	missing, open, stale, err := s.reviewBlockers(r.Context(), r.PathValue("id"))
+	if err != nil {
+		s.fault(w, r, "QUERY_FAILED", "남은 항목을 확인하지 못했습니다.", err)
+		return
 	}
+	out["completion_blockers"] = map[string]int{"unreviewed_items": missing, "unverified_changes": open, "stale_verdicts": stale}
 	out["reviewer_can_act"] = reviewerCanAct
 	out["approver_can_act"] = approverCanAct
-	out["template_versions"] = s.snapshotTemplateVersions(r, r.PathValue("id"))
+	versions, err := s.snapshotTemplateVersions(r, r.PathValue("id"))
+	if err != nil {
+		s.fault(w, r, "QUERY_FAILED", "템플릿 버전을 확인하지 못했습니다.", err)
+		return
+	}
+	out["template_versions"] = versions
 	_ = s.Store.Audit(r.Context(), auditFrom(r, "VIEW_SUBMISSION", "REVIEW_REQUEST", r.PathValue("id"), nil, nil))
 	jsonResponse(w, 200, out)
 }
@@ -600,7 +626,7 @@ func (s *Server) reassignApprover(w http.ResponseWriter, r *http.Request, id, ap
 // The snapshot deliberately never moves, but nobody was told that, so a
 // reviewer comparing a review against today's checklist had no way to know
 // they were looking at an older edition.
-func (s *Server) snapshotTemplateVersions(r *http.Request, reviewID string) []map[string]any {
+func (s *Server) snapshotTemplateVersions(r *http.Request, reviewID string) ([]map[string]any, error) {
 	rows, err := s.Store.Pool.Query(r.Context(), `SELECT DISTINCT si.template_name,si.template_version,
                 COALESCE((SELECT v.version FROM checklist_versions v JOIN checklist_templates t ON t.id=v.template_id
                           WHERE t.name=si.template_name AND v.status='PUBLISHED'
@@ -609,18 +635,18 @@ func (s *Server) snapshotTemplateVersions(r *http.Request, reviewID string) []ma
                 WHERE sub.review_request_id=$1 AND sub.revision=(SELECT max(revision) FROM submissions WHERE review_request_id=$1)
                 ORDER BY si.template_name`, reviewID)
 	if err != nil {
-		return []map[string]any{}
+		return nil, err
 	}
 	out, scanErr := scanDynamic(rows, []string{"template_name", "snapshot_version", "current_version"})
 	if scanErr != nil {
-		return []map[string]any{}
+		return nil, scanErr
 	}
 	for _, entry := range out {
 		snapshot, _ := entry["snapshot_version"].(string)
 		current, _ := entry["current_version"].(string)
 		entry["outdated"] = current != "" && current != snapshot
 	}
-	return out
+	return out, nil
 }
 
 // reviewHistory assembles what happened to one review from the audit log.
