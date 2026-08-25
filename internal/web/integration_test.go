@@ -5352,3 +5352,95 @@ func TestAPasswordSomebodyElseChoseMustBeReplaced(t *testing.T) {
 		t.Fatalf("working with an administrator's reset password: %d %s", res.status, res.body)
 	}
 }
+
+// Every other name on a review has a way out when the person leaves: the
+// reviewer is taken over, the approver reassigned, a participant replaced.
+// The requester was written once at creation and never again, and that name
+// is who may cancel the review and who every default notice goes to.
+func TestAReviewCanBeHandedToAnotherRequester(t *testing.T) {
+	h := newHarness(t)
+	ctx := context.Background()
+	admin := h.login(adminOf(h))
+	ownerID := h.user("handover-owner", "REQUESTER")
+	nextID := h.user("handover-next", "REQUESTER")
+	h.user("handover-outsider", "REQUESTER")
+	plainID := h.user("handover-plain")
+	reviewerID := h.user("handover-reviewer", "SECURITY_REVIEWER")
+	owner := h.login("handover-owner")
+	next := h.login("handover-next")
+	outsider := h.login("handover-outsider")
+
+	reviewID := owner.createReview("인계 서비스")
+	if _, err := h.db.Pool.Exec(ctx, `UPDATE review_requests SET reviewer_id=$2 WHERE id=$1`, reviewID, reviewerID); err != nil {
+		t.Fatal(err)
+	}
+	transfer := func(c *client, target string) response {
+		t.Helper()
+		return c.do(http.MethodPost, "/api/v1/review-requests/"+reviewID+"/transfer-requester", map[string]string{"requester_id": target})
+	}
+	requesterOf := func() string {
+		t.Helper()
+		var id string
+		if err := h.db.Pool.QueryRow(ctx, `SELECT requester_id FROM review_requests WHERE id=$1`, reviewID).Scan(&id); err != nil {
+			t.Fatal(err)
+		}
+		return id
+	}
+
+	// Somebody with no part in the review cannot take it, and cannot give it
+	// away either.
+	if res := transfer(outsider, nextID); res.status != http.StatusForbidden {
+		t.Fatalf("an outsider handing the review over: %d %s", res.status, res.body)
+	}
+	// An account without the requester role cannot be made the owner.
+	if res := transfer(owner, plainID); res.status != http.StatusUnprocessableEntity {
+		t.Fatalf("handing the review to an account without the role: %d %s", res.status, res.body)
+	}
+	// Nor the person judging it: that is the self-review rule.
+	if res := transfer(owner, reviewerID); res.status != http.StatusUnprocessableEntity {
+		t.Fatalf("handing the review to its reviewer: %d %s", res.status, res.body)
+	}
+	if got := requesterOf(); got != ownerID {
+		t.Fatalf("a refused transfer moved the review to %s", got)
+	}
+
+	// The owner hands it over, and ownership actually moves: the new owner can
+	// cancel it and the old one cannot.
+	if res := transfer(owner, nextID); res.status != http.StatusOK {
+		t.Fatalf("handing the review over: %d %s", res.status, res.body)
+	}
+	if got := requesterOf(); got != nextID {
+		t.Fatalf("after the transfer the review belongs to %s", got)
+	}
+	var told int
+	if err := h.db.Pool.QueryRow(ctx, `SELECT count(*) FROM notifications WHERE recipient_id=$1 AND event_type='REVIEW_TRANSFERRED'`, nextID).Scan(&told); err != nil {
+		t.Fatal(err)
+	}
+	if told != 1 {
+		t.Fatalf("the new owner received %d handover notices", told)
+	}
+	var recorded string
+	if err := h.db.Pool.QueryRow(ctx, `SELECT after_value->>'requester_id' FROM audit_logs WHERE event_type='TRANSFER_REQUESTER' AND target_id=$1`, reviewID).Scan(&recorded); err != nil {
+		t.Fatalf("the handover is not in the audit log: %v", err)
+	}
+	if recorded != nextID {
+		t.Fatalf("the audit log records the new owner as %s", recorded)
+	}
+	if res := owner.do(http.MethodPost, "/api/v1/review-requests/"+reviewID+"/cancel", map[string]any{}); res.status == http.StatusOK {
+		t.Fatal("the previous owner can still cancel the review")
+	}
+
+	// An administrator can hand it over on behalf of somebody who has gone.
+	if _, err := h.db.Pool.Exec(ctx, `UPDATE users SET active=false WHERE id=$1`, nextID); err != nil {
+		t.Fatal(err)
+	}
+	if res := transfer(admin, ownerID); res.status != http.StatusOK {
+		t.Fatalf("an administrator handing the review over: %d %s", res.status, res.body)
+	}
+	if got := requesterOf(); got != ownerID {
+		t.Fatalf("after the administrator's transfer the review belongs to %s", got)
+	}
+	if res := next.do(http.MethodGet, "/api/v1/review-requests/"+reviewID, nil); res.status == http.StatusOK {
+		t.Log("the deactivated account can still read the review it handed over")
+	}
+}

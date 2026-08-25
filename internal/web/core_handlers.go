@@ -579,15 +579,21 @@ func (s *Server) userDirectory(w http.ResponseWriter, r *http.Request) {
 		args = append(args, "%"+q+"%")
 		where += ` AND (display_name ILIKE $1 OR username ILIKE $1 OR department ILIKE $1)`
 	}
+	// A picker that offers people the action will refuse teaches nothing. The
+	// caller says which role the name has to hold and gets only those.
+	if role := strings.ToUpper(strings.TrimSpace(r.URL.Query().Get("role"))); role != "" {
+		args = append(args, role)
+		where += ` AND EXISTS(SELECT 1 FROM user_roles ur WHERE ur.user_id=users.id AND ur.role_code=$` + intString(len(args)) + `)`
+	}
 	var total int64
-	if err := s.Store.Pool.QueryRow(r.Context(), `SELECT count(*) FROM users WHERE `+where, args...).Scan(&total); err != nil {
+	if err := s.Store.Pool.QueryRow(r.Context(), `SELECT count(*) FROM users users WHERE `+where, args...).Scan(&total); err != nil {
 		s.fault(w, r, "QUERY_FAILED", "사용자 목록을 불러오지 못했습니다.", err)
 		return
 	}
 	// The picker is a list somebody reads, and a directory of thousands is not
 	// one. It is capped, and the caller is told when the cap hid people so it
 	// can ask for a name instead of pretending the list is everybody.
-	rows, err := s.Store.Pool.Query(r.Context(), `SELECT id,username,display_name,department FROM users WHERE `+where+` ORDER BY display_name LIMIT $`+intString(len(args)+1), append(args, directoryLimit)...)
+	rows, err := s.Store.Pool.Query(r.Context(), `SELECT id,username,display_name,department FROM users users WHERE `+where+` ORDER BY display_name LIMIT $`+intString(len(args)+1), append(args, directoryLimit)...)
 	if err != nil {
 		s.fault(w, r, "QUERY_FAILED", "사용자 목록을 불러오지 못했습니다.", err)
 		return

@@ -605,6 +605,86 @@ func (s *Server) updateReviewRequest(w http.ResponseWriter, r *http.Request) {
 	jsonResponse(w, 200, map[string]any{"id": id})
 }
 
+// canEditRequester answers who may hand a review to somebody else: the owner
+// while they still can, and afterwards a system administrator -- the same
+// shape as reassigning an approver who has left.
+func (s *Server) canEditRequester(ctx context.Context, sess auth.Session, reviewID string) bool {
+	if hasAnyRole(sess.User, "SYSTEM_ADMIN") {
+		return true
+	}
+	var ok bool
+	_ = s.Store.Pool.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM review_requests WHERE id=$1 AND requester_id=$2)`, reviewID, sess.User.ID).Scan(&ok)
+	return ok
+}
+
+// transferRequester hands a review to another owner. Every other role has a
+// way out when the person leaves -- a reviewer is taken over by beginning the
+// review again, an approver is reassigned, a participant is replaced -- but
+// the requester was written once at creation and never again. That name is who
+// may cancel the review, who every default notice goes to, and who the
+// follow-up register chases long after approval, so an account that is gone
+// took all of it with it.
+func (s *Server) transferRequester(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	var in struct {
+		RequesterID string `json:"requester_id"`
+	}
+	if !decodeJSON(w, r, &in) {
+		return
+	}
+	if strings.TrimSpace(in.RequesterID) == "" {
+		problem(w, 422, "VALIDATION_FAILED", "넘겨받을 사람을 선택하세요.", map[string]string{"requester_id": "필수 입력 항목입니다."})
+		return
+	}
+	sess := session(r)
+	var current, status, reviewer, approver, number, service string
+	if err := s.Store.Pool.QueryRow(r.Context(), `SELECT requester_id,status,COALESCE(reviewer_id,''),COALESCE(approver_id,''),review_number,service_name FROM review_requests WHERE id=$1`, id).
+		Scan(&current, &status, &reviewer, &approver, &number, &service); err != nil {
+		problem(w, 404, "NOT_FOUND", "심의를 찾을 수 없습니다.", nil)
+		return
+	}
+	if !s.canEditRequester(r.Context(), sess, id) {
+		problem(w, 403, "FORBIDDEN", "요청자 본인 또는 시스템 관리자만 인계할 수 있습니다.", nil)
+		return
+	}
+	if status == "CANCELLED" {
+		problem(w, 409, "STATE_CONFLICT", "취소된 심의는 인계할 수 없습니다.", map[string]string{"status": status})
+		return
+	}
+	if in.RequesterID == current {
+		problem(w, 422, "VALIDATION_FAILED", "이미 이 사람의 심의입니다.", map[string]string{"requester_id": "현재 요청자입니다."})
+		return
+	}
+	var eligible bool
+	if err := s.Store.Pool.QueryRow(r.Context(), `SELECT EXISTS(SELECT 1 FROM users u JOIN user_roles ur ON ur.user_id=u.id WHERE u.id=$1 AND u.active AND ur.role_code='REQUESTER')`, in.RequesterID).Scan(&eligible); err != nil {
+		s.fault(w, r, "QUERY_FAILED", "인계 대상을 확인하지 못했습니다.", err)
+		return
+	}
+	if !eligible {
+		problem(w, 422, "VALIDATION_FAILED", "심의 요청 권한이 있는 활성 계정에만 인계할 수 있습니다.", map[string]string{"requester_id": "요청자 권한이 없습니다."})
+		return
+	}
+	// Handing the review to the person judging or approving it would strand
+	// the review under the same rule that refuses self-review.
+	var workflow struct {
+		AllowSelfReview bool `json:"allow_self_review"`
+	}
+	_, _ = s.Store.Setting(r.Context(), "workflow", &workflow)
+	if !workflow.AllowSelfReview && (in.RequesterID == reviewer || in.RequesterID == approver) {
+		problem(w, 422, "SELF_REVIEW_FORBIDDEN", "이 심의의 검토자·승인자에게는 인계할 수 없습니다. 본인 심의는 본인이 검토·승인할 수 없기 때문입니다.", map[string]string{"requester_id": "검토자 또는 승인자입니다."})
+		return
+	}
+	tag, err := s.Store.Pool.Exec(r.Context(), `UPDATE review_requests SET requester_id=$2,updated_at=now() WHERE id=$1 AND requester_id=$3`, id, in.RequesterID, current)
+	if err != nil || tag.RowsAffected() == 0 {
+		problem(w, 409, "STATE_CONFLICT", "요청자를 변경하지 못했습니다.", nil)
+		return
+	}
+	_ = s.Store.Audit(r.Context(), auditFrom(r, "TRANSFER_REQUESTER", "REVIEW_REQUEST", id, map[string]string{"requester_id": current}, map[string]string{"requester_id": in.RequesterID}))
+	s.addTargetedNotification(r.Context(), in.RequesterID, "REVIEW_TRANSFERRED", "심의 요청자 인계",
+		fmt.Sprintf("%s(%s) 심의를 넘겨받았습니다. 이후 알림과 후속조치 안내가 이 계정으로 갑니다.", number, service), "REVIEW_REQUEST", id)
+	jsonResponse(w, 200, map[string]any{"id": id, "requester_id": in.RequesterID})
+}
+
 // reassignApprover moves a pending approval to another approver. It reports
 // whether it applied, so the caller can fall through to the ordinary refusal
 // when the review is not actually waiting for approval.

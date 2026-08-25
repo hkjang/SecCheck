@@ -268,6 +268,7 @@ func (s *Server) bulkAssign(w http.ResponseWriter, r *http.Request, reviewID str
 var notificationEvents = []map[string]string{
 	{"code": "REVIEW_SUBMITTED", "label": "심의 제출·재제출", "description": "담당 심의가 제출되거나 재제출되었을 때"},
 	{"code": "REVIEW_ASSIGNED", "label": "심의 배정", "description": "심의 담당자로 배정되었을 때"},
+	{"code": "REVIEW_TRANSFERRED", "label": "심의 요청자 인계", "description": "다른 사람의 심의를 넘겨받았을 때"},
 	{"code": "CHANGE_REQUEST", "label": "보완 요청", "description": "작성한 항목에 보완 요청이 등록되었을 때"},
 	{"code": "CHANGE_DONE", "label": "보완 조치 완료", "description": "요청한 보완이 조치되었을 때"},
 	{"code": "CHANGE_REQUEST_DUE", "label": "보완 기한 임박·초과", "description": "보완 조치 기한이 다가오거나 지났을 때"},

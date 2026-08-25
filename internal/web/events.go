@@ -22,6 +22,7 @@ var auditEventLabels = map[string]string{
 	"PURGE_EVIDENCE":                 "증적 보존기간 만료 파기",
 	"QUARANTINE_EVIDENCE":            "증적 악성코드 격리",
 	"REASSIGN_APPROVER":              "최종 승인자 변경",
+	"TRANSFER_REQUESTER":             "심의 요청자 인계",
 	"SYNC_OIDC_ROLES":                "디렉터리 역할 동기화",
 	"TOTP_ENROLLMENT_STARTED":        "일회용 코드 등록 시작",
 	"TOTP_ENABLED":                   "일회용 코드 활성화",
