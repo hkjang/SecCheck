@@ -745,6 +745,55 @@ func (s *Server) snapshotTemplateVersions(r *http.Request, reviewID string) ([]m
 	return out, nil
 }
 
+// itemVerdictHistory answers "what did we decide about this last time".
+// A service comes back for review every year and the same checklist item comes
+// with it; the verdict, the opinion and the follow-up from the previous round
+// were recorded and then reachable only by finding the old review and
+// scrolling to the same code. A reviewer re-judging an item now sees what was
+// said before, and only from reviews they could open themselves.
+func (s *Server) itemVerdictHistory(w http.ResponseWriter, r *http.Request) {
+	id, itemID := r.PathValue("id"), r.PathValue("itemID")
+	sess := session(r)
+	if !s.canAccessReview(r.Context(), sess, id) || !s.itemBelongsToReview(r.Context(), itemID, id) {
+		problem(w, 404, "NOT_FOUND", "체크리스트 항목을 찾을 수 없습니다.", nil)
+		return
+	}
+	where, args := accessFilter(sess, 3)
+	if hasAnyRole(sess.User, "SECURITY_REVIEWER", "AUDITOR") {
+		where = "TRUE"
+		args = nil
+	}
+	// The same item of the same service, judged in an earlier review. Matching
+	// on the item code rather than the identifier is deliberate: a snapshot is
+	// taken per review, so the row that carried last year's verdict is a
+	// different row with the same code.
+	rows, err := s.Store.Pool.Query(r.Context(), `SELECT review_requests.id AS review_id,review_requests.review_number,
+                to_char(display_date(COALESCE(review_requests.approved_at,review_requests.updated_at)),'YYYY-MM-DD') AS decided_on,
+                rr.result,rr.opinion,rr.evidence_adequacy,COALESCE(rr.follow_up,''),
+                COALESCE(u.display_name,'') AS reviewer_name
+                FROM review_results rr
+                JOIN submission_items si ON si.id=rr.submission_item_id
+                JOIN submissions sub ON sub.id=si.submission_id
+                JOIN review_requests ON review_requests.id=sub.review_request_id
+                LEFT JOIN users u ON u.id=rr.reviewer_id
+                WHERE review_requests.id<>$1
+                  AND si.item_code=(SELECT item_code FROM submission_items WHERE id=$2)
+                  AND review_requests.service_name=(SELECT service_name FROM review_requests WHERE id=$1)
+                  AND COALESCE(rr.result,'')<>'' AND `+where+`
+                ORDER BY COALESCE(review_requests.approved_at,review_requests.updated_at) DESC LIMIT 5`,
+		append([]any{id, itemID}, args...)...)
+	if err != nil {
+		s.fault(w, r, "QUERY_FAILED", "이전 판정을 불러오지 못했습니다.", err)
+		return
+	}
+	items, err := scanDynamic(rows, []string{"review_id", "review_number", "decided_on", "result", "opinion", "evidence_adequacy", "follow_up", "reviewer_name"})
+	if err != nil {
+		s.fault(w, r, "QUERY_FAILED", "목록을 불러오지 못했습니다.", err)
+		return
+	}
+	jsonResponse(w, 200, map[string]any{"items": items, "total": len(items)})
+}
+
 // reviewHistory assembles what happened to one review from the audit log.
 // Everything was already recorded, but only a system administrator or auditor
 // could look at it, so the requester could not answer "when did the change

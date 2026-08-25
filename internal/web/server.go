@@ -126,6 +126,7 @@ func (s *Server) routes() {
 	s.handle("GET", "/api/v1/review-requests/{id}/items", "심의", "응답, 검토결과, 증적, 보완요청, 코멘트를 포함한 스냅샷 항목", nil, false, s.listSubmissionItems)
 	s.handle("GET", "/api/v1/review-requests/{id}/completion-check", "심의", "검토 완료를 막는 항목 목록. 검토 완료 전에 미리 확인", nil, false, s.completionCheck)
 	s.handle("GET", "/api/v1/review-requests/{id}/submission-check", "심의", "제출을 막는 미완료 항목 목록. 제출 전에 미리 확인", nil, false, s.submissionCheck)
+	s.handle("GET", "/api/v1/review-requests/{id}/items/{itemID}/verdict-history", "심의", "같은 서비스의 이전 심의에서 이 항목이 어떻게 판정되었는지", nil, false, s.itemVerdictHistory)
 	s.handle("GET", "/api/v1/review-requests/{id}/history", "심의", "이 심의에서 일어난 일의 이력. 감사로그에서 해당 심의 범위만 추출", nil, false, s.reviewHistory)
 	s.handle("PUT", "/api/v1/review-requests/{id}/responses/{itemID}", "심의", "체크리스트 항목 작성. expected_updated_at으로 동시 편집 충돌 감지", nil, false, s.saveResponse)
 	s.handle("POST", "/api/v1/review-requests/{id}/responses/bulk", "심의", "체크리스트 항목 일괄 작성 또는 담당자 일괄 배정", nil, false, s.bulkSaveResponses)

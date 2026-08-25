@@ -6325,3 +6325,77 @@ func TestWorkListsPointAtTheItem(t *testing.T) {
 		t.Fatalf("the register points at item %v, want %s", entry["item_id"], itemID)
 	}
 }
+
+// A service comes back for review every year with the same checklist, and what
+// was decided about an item last time was reachable only by finding the old
+// review and scrolling to the same code.
+func TestAnItemShowsWhatWasDecidedLastTime(t *testing.T) {
+	h := newHarness(t)
+	ctx := context.Background()
+	h.user("verdict-author", "REQUESTER")
+	h.user("verdict-reviewer", "SECURITY_REVIEWER")
+	h.user("verdict-outsider", "REQUESTER")
+	author := h.login("verdict-author")
+	reviewer := h.login("verdict-reviewer")
+	outsider := h.login("verdict-outsider")
+	var reviewerID string
+	if err := h.db.Pool.QueryRow(ctx, `SELECT id FROM users WHERE username='verdict-reviewer'`).Scan(&reviewerID); err != nil {
+		t.Fatal(err)
+	}
+
+	// Last year's review of the same service, judged and approved.
+	last := author.createReview("연례 심의 서비스")
+	lastItem := firstItemID(t, h, last)
+	if _, err := h.db.Pool.Exec(ctx, `UPDATE review_requests SET reviewer_id=$2,status='REVIEWING' WHERE id=$1`, last, reviewerID); err != nil {
+		t.Fatal(err)
+	}
+	if res := reviewer.do(http.MethodPut, "/api/v1/review-requests/"+last+"/review-results/"+lastItem,
+		map[string]any{"result": "CONDITIONAL", "opinion": "작년에는 조건부로 통과시켰습니다", "follow_up": "WAF 규칙 정리", "follow_up_due_date": "2030-02-28", "expected_updated_at": ""}); res.status != http.StatusOK {
+		t.Fatalf("last year's verdict: %d %s", res.status, res.body)
+	}
+	if _, err := h.db.Pool.Exec(ctx, `UPDATE review_requests SET status='APPROVED',approved_at=now()-interval '300 days' WHERE id=$1`, last); err != nil {
+		t.Fatal(err)
+	}
+
+	// This year's review of the same service, same item code.
+	now := author.createReview("연례 심의 서비스")
+	var nowItem, code string
+	if err := h.db.Pool.QueryRow(ctx, `SELECT si.id,si.item_code FROM submissions sub JOIN submission_items si ON si.submission_id=sub.id WHERE sub.review_request_id=$1 AND si.item_code=(SELECT item_code FROM submission_items WHERE id=$2) LIMIT 1`, now, lastItem).Scan(&nowItem, &code); err != nil {
+		t.Fatal(err)
+	}
+
+	history := func(c *client, reviewID, itemID string) []any {
+		t.Helper()
+		res := c.do(http.MethodGet, "/api/v1/review-requests/"+reviewID+"/items/"+itemID+"/verdict-history", nil)
+		if res.status != http.StatusOK {
+			t.Fatalf("verdict history: %d %s", res.status, res.body)
+		}
+		return res.json()["items"].([]any)
+	}
+
+	rows := history(reviewer, now, nowItem)
+	if len(rows) != 1 {
+		t.Fatalf("the reviewer sees %d earlier verdicts for %s, want 1", len(rows), code)
+	}
+	entry := rows[0].(map[string]any)
+	if entry["result"] != "CONDITIONAL" || entry["opinion"] != "작년에는 조건부로 통과시켰습니다" || entry["follow_up"] != "WAF 규칙 정리" {
+		t.Fatalf("the earlier verdict reads %v", entry)
+	}
+	if entry["review_id"] != last {
+		t.Fatalf("the earlier verdict points at review %v, want the previous one", entry["review_id"])
+	}
+	// The review being judged is not its own history.
+	for _, raw := range rows {
+		if raw.(map[string]any)["review_id"] == now {
+			t.Fatal("the current review appears in its own history")
+		}
+	}
+	// Somebody with no part in either review cannot read it at all.
+	if res := outsider.do(http.MethodGet, "/api/v1/review-requests/"+now+"/items/"+nowItem+"/verdict-history", nil); res.status != http.StatusNotFound {
+		t.Fatalf("an outsider reads the history: %d %s", res.status, res.body)
+	}
+	// The author of both reviews sees their own service's earlier verdict.
+	if got := history(author, now, nowItem); len(got) != 1 {
+		t.Fatalf("the author sees %d earlier verdicts", len(got))
+	}
+}
