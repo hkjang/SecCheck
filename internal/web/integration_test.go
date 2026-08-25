@@ -5963,3 +5963,72 @@ func TestAVerdictKeepsTheAnswerItJudged(t *testing.T) {
 		t.Fatalf("after re-judging the verdict reports %v", got)
 	}
 }
+
+// An issued password is a credential two people know until the owner replaces
+// it. Which accounts are still in that state was something an administrator
+// had to remember; it is now a list they can work down.
+func TestTheUserListNamesAccountsHoldingAnIssuedPassword(t *testing.T) {
+	h := newHarness(t)
+	admin := h.login(adminOf(h))
+
+	page := func(only string) (map[string]bool, float64) {
+		t.Helper()
+		res := admin.do(http.MethodGet, "/api/v1/admin/users?limit=200&only="+only, nil)
+		if res.status != http.StatusOK {
+			t.Fatalf("user list: %d %s", res.status, res.body)
+		}
+		payload := res.json()
+		names := map[string]bool{}
+		for _, raw := range payload["items"].([]any) {
+			row := raw.(map[string]any)
+			names[row["username"].(string)] = row["must_change_password"] == true
+		}
+		count, _ := payload["temporary_passwords"].(float64)
+		return names, count
+	}
+
+	if _, count := page(""); count != 0 {
+		t.Fatalf("a fresh installation reports %v accounts holding an issued password", count)
+	}
+	created := admin.do(http.MethodPost, "/api/v1/admin/users", map[string]any{
+		"username": "issued-holder", "display_name": "임시 비밀번호", "email": "issued@example.test",
+		"department": "보안팀", "password": "IssuedByAdmin!7", "roles": []string{"REQUESTER"},
+	})
+	if created.status != http.StatusCreated && created.status != http.StatusOK {
+		t.Fatalf("create user: %d %s", created.status, created.body)
+	}
+
+	names, count := page("")
+	if !names["issued-holder"] {
+		t.Fatal("the list does not mark the account as holding an issued password")
+	}
+	if count != 1 {
+		t.Fatalf("the count reports %v, want 1", count)
+	}
+	if filtered, _ := page("TEMPORARY"); !filtered["issued-holder"] || len(filtered) != 1 {
+		t.Fatalf("the filter returns %v", filtered)
+	}
+
+	// Once the owner replaces it the account leaves the list.
+	holder := &client{h: h}
+	login := holder.do(http.MethodPost, "/api/v1/auth/login", map[string]string{"username": "issued-holder", "password": "IssuedByAdmin!7"})
+	if login.status != http.StatusOK {
+		t.Fatalf("login: %d %s", login.status, login.body)
+	}
+	for _, cookie := range login.raw.Cookies() {
+		if cookie.Name == auth.CookieName {
+			holder.cookie = cookie.Value
+		}
+	}
+	holder.csrf = login.json()["csrf_token"].(string)
+	if res := holder.do(http.MethodPut, "/api/v1/me/password", map[string]string{"current_password": "IssuedByAdmin!7", "new_password": "MineAlone!42"}); res.status != http.StatusNoContent {
+		t.Fatalf("change the password: %d %s", res.status, res.body)
+	}
+	names, count = page("")
+	if names["issued-holder"] {
+		t.Fatal("the account is still marked after its owner replaced the password")
+	}
+	if count != 0 {
+		t.Fatalf("the count still reports %v", count)
+	}
+}

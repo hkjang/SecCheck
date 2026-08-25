@@ -38,6 +38,12 @@ func (s *Server) listUsers(w http.ResponseWriter, r *http.Request) {
 		where += " AND u.auth_source='oidc'"
 	case "LOCAL":
 		where += " AND u.auth_source='local'"
+	case "TEMPORARY":
+		// The accounts whose password somebody else chose and nobody has
+		// replaced yet. Until they do, the person who issued it holds working
+		// credentials for that account, so this is a list an administrator
+		// should be able to work down rather than remember.
+		where += " AND u.must_change_password AND u.active"
 	case "STALE":
 		// The same question the account review asks: a working account with a
 		// role that matters that nobody has signed into for the lock window.
@@ -59,12 +65,12 @@ func (s *Server) listUsers(w http.ResponseWriter, r *http.Request) {
 	}
 	limit, offset := parsePage(r)
 	args = append(args, limit, offset)
-	rows, err := s.Store.Pool.Query(r.Context(), `SELECT u.id,u.username,u.display_name,u.email,u.department,u.auth_source,u.active,u.last_login_at,u.created_at,u.failed_login_count,CASE WHEN u.locked_until>now() THEN u.locked_until END,u.totp_enabled,COALESCE(array_agg(ur.role_code ORDER BY ur.role_code) FILTER(WHERE ur.role_code IS NOT NULL),'{}') FROM users u LEFT JOIN user_roles ur ON ur.user_id=u.id WHERE `+where+` GROUP BY u.id ORDER BY u.display_name LIMIT $`+intString(len(args)-1)+` OFFSET $`+intString(len(args)), args...)
+	rows, err := s.Store.Pool.Query(r.Context(), `SELECT u.id,u.username,u.display_name,u.email,u.department,u.auth_source,u.active,u.last_login_at,u.created_at,u.failed_login_count,CASE WHEN u.locked_until>now() THEN u.locked_until END,u.totp_enabled,u.must_change_password,COALESCE(array_agg(ur.role_code ORDER BY ur.role_code) FILTER(WHERE ur.role_code IS NOT NULL),'{}') FROM users u LEFT JOIN user_roles ur ON ur.user_id=u.id WHERE `+where+` GROUP BY u.id ORDER BY u.display_name LIMIT $`+intString(len(args)-1)+` OFFSET $`+intString(len(args)), args...)
 	if err != nil {
 		s.fault(w, r, "QUERY_FAILED", "사용자를 불러오지 못했습니다.", err)
 		return
 	}
-	items, err := scanDynamic(rows, []string{"id", "username", "display_name", "email", "department", "auth_source", "active", "last_login_at", "created_at", "failed_login_count", "locked_until", "totp_enabled", "roles"})
+	items, err := scanDynamic(rows, []string{"id", "username", "display_name", "email", "department", "auth_source", "active", "last_login_at", "created_at", "failed_login_count", "locked_until", "totp_enabled", "must_change_password", "roles"})
 	if err != nil {
 		s.fault(w, r, "QUERY_FAILED", "목록을 불러오지 못했습니다.", err)
 		return
@@ -74,10 +80,17 @@ func (s *Server) listUsers(w http.ResponseWriter, r *http.Request) {
 		s.fault(w, r, "QUERY_FAILED", "잠긴 계정 수를 확인하지 못했습니다.", err)
 		return
 	}
+	// Counted over every account for the same reason as the locked ones: a
+	// warning that only counts what is on the current page is not a warning.
+	var temporary int64
+	if err := s.Store.Pool.QueryRow(r.Context(), `SELECT count(*) FROM users WHERE must_change_password AND active`).Scan(&temporary); err != nil {
+		s.fault(w, r, "QUERY_FAILED", "임시 비밀번호 계정 수를 확인하지 못했습니다.", err)
+		return
+	}
 	// locked is counted over every account, not the page: the screen warns
 	// about locked accounts and a warning that only counts what is on screen is
 	// not a warning.
-	jsonResponse(w, 200, map[string]any{"items": items, "total": total, "locked": locked, "limit": limit, "offset": offset, "has_more": int64(offset+len(items)) < total})
+	jsonResponse(w, 200, map[string]any{"items": items, "total": total, "locked": locked, "temporary_passwords": temporary, "limit": limit, "offset": offset, "has_more": int64(offset+len(items)) < total})
 }
 func (s *Server) createUser(w http.ResponseWriter, r *http.Request) {
 	var in struct {
