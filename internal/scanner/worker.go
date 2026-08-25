@@ -173,7 +173,44 @@ func (w *Worker) quarantine(ctx context.Context, evidenceID, filename, detail st
 		w.Store.Log(ctx, "ERROR", "", "scanner", "증적 격리는 완료했으나 업로더에게 알리지 못했습니다.", map[string]any{"evidence_id": evidenceID, "uploader": uploader, "error": truncate(err.Error(), 300)})
 	}
 	w.Store.Log(ctx, "ERROR", "", "scanner", "evidence quarantined", map[string]any{"evidence_id": evidenceID, "filename": filename, "detail": detail})
+	w.tellTheReviewItsEvidenceIsGone(ctx, evidenceID, filename, uploader)
 	return nil
+}
+
+// tellTheReviewItsEvidenceIsGone warns the people who answer for the review.
+// Only the uploader used to hear about a quarantine, and that is the one
+// person who can least afford to be the only one who knows: if the item was
+// already judged, the verdict now rests on a file that is no longer there, and
+// if the review is approved nothing else will ever raise it again. The
+// requester owns re-attaching it and the reviewer owns the verdict, so both
+// are told, and the notice points at the item rather than the review.
+func (w *Worker) tellTheReviewItsEvidenceIsGone(ctx context.Context, evidenceID, filename, uploader string) {
+	var reviewID, number, service, itemCode, itemID, requester, reviewer, verdict string
+	err := w.Store.Pool.QueryRow(ctx, `SELECT r.id,r.review_number,r.service_name,si.item_code,si.id,r.requester_id,COALESCE(r.reviewer_id,''),COALESCE(rr.result,'')
+                FROM evidences e
+                JOIN submission_items si ON si.id=e.submission_item_id
+                JOIN submissions sub ON sub.id=si.submission_id
+                JOIN review_requests r ON r.id=sub.review_request_id
+                LEFT JOIN review_results rr ON rr.submission_item_id=si.id
+                WHERE e.id=$1`, evidenceID).Scan(&reviewID, &number, &service, &itemCode, &itemID, &requester, &reviewer, &verdict)
+	if err != nil {
+		w.Store.Log(ctx, "ERROR", "", "scanner", "격리된 증적의 심의를 확인하지 못했습니다.", map[string]any{"evidence_id": evidenceID, "error": truncate(err.Error(), 300)})
+		return
+	}
+	body := fmt.Sprintf("%s(%s)의 %s 항목에 첨부돼 있던 증적 %s이(가) 악성코드 탐지로 삭제되었습니다. 대체 증적을 다시 첨부해야 합니다.", number, service, itemCode, filename)
+	if verdict != "" {
+		body += " 이 항목은 이미 판정된 항목이므로 판정 근거가 사라진 상태입니다."
+	}
+	told := map[string]bool{uploader: true}
+	for _, recipient := range []string{requester, reviewer} {
+		if recipient == "" || told[recipient] {
+			continue
+		}
+		told[recipient] = true
+		if err := w.Store.NotifyItem(ctx, recipient, "EVIDENCE_INFECTED", "증적 악성코드 탐지", body, reviewID, itemID); err != nil {
+			w.Store.Log(ctx, "ERROR", "", "scanner", "증적 격리를 심의 담당자에게 알리지 못했습니다.", map[string]any{"evidence_id": evidenceID, "recipient": recipient, "error": truncate(err.Error(), 300)})
+		}
+	}
 }
 
 func (w *Worker) fail(ctx context.Context, id string, attempt int, cause error) {
