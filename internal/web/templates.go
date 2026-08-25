@@ -49,13 +49,16 @@ func (s *Server) listTemplates(w http.ResponseWriter, r *http.Request) {
 	}
 	limit, offset := parsePage(r)
 	paged := append(append([]any{}, args...), limit, offset)
-	rows, err := s.Store.Pool.Query(r.Context(), `SELECT t.id,t.name,t.category,t.description,t.active,t.created_at,t.updated_at,COALESCE((SELECT jsonb_agg(jsonb_build_object('id',v.id,'version',v.version,'status',v.status,'change_note',v.change_note,'source_filename',v.source_filename,'published_at',v.published_at,'created_at',v.created_at) ORDER BY v.created_at DESC) FROM checklist_versions v WHERE v.template_id=t.id),'[]') FROM checklist_templates t WHERE `+where+
+	rows, err := s.Store.Pool.Query(r.Context(), `SELECT t.id,t.name,t.category,t.description,t.active,t.created_at,t.updated_at,COALESCE((SELECT jsonb_agg(jsonb_build_object('id',v.id,'version',v.version,'status',v.status,'change_note',v.change_note,'source_filename',v.source_filename,'published_at',v.published_at,'created_at',v.created_at) ORDER BY v.created_at DESC) FROM checklist_versions v WHERE v.template_id=t.id),'[]'),
+                COALESCE((SELECT v.version FROM checklist_versions v WHERE v.template_id=t.id AND v.status='PUBLISHED' ORDER BY v.published_at DESC NULLS LAST,v.created_at DESC LIMIT 1),'') AS published_version,
+                COALESCE((SELECT count(*) FROM checklist_items i WHERE i.version_id=(SELECT v.id FROM checklist_versions v WHERE v.template_id=t.id AND v.status='PUBLISHED' ORDER BY v.published_at DESC NULLS LAST,v.created_at DESC LIMIT 1)),0) AS published_items
+                FROM checklist_templates t WHERE `+where+
 		` ORDER BY t.category,t.name,t.id LIMIT $`+intString(len(paged)-1)+` OFFSET $`+intString(len(paged)), paged...)
 	if err != nil {
 		s.fault(w, r, "QUERY_FAILED", "템플릿을 불러오지 못했습니다.", err)
 		return
 	}
-	items, err := scanDynamic(rows, []string{"id", "name", "category", "description", "active", "created_at", "updated_at", "versions"})
+	items, err := scanDynamic(rows, []string{"id", "name", "category", "description", "active", "created_at", "updated_at", "versions", "published_version", "published_items"})
 	if err != nil {
 		s.fault(w, r, "QUERY_FAILED", "템플릿을 불러오지 못했습니다.", err)
 		return
@@ -130,6 +133,16 @@ func (s *Server) updateTemplate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	_ = s.Store.Audit(r.Context(), auditFrom(r, "UPDATE_TEMPLATE", "TEMPLATE", r.PathValue("id"), nil, in))
+	// Switching a template off removes its items from every review created
+	// afterwards. That is the point of the switch, but it happened without a
+	// number attached, so the size of the change was only visible later in a
+	// checklist that had grown shorter.
+	if in.Active != nil && !*in.Active {
+		var stopped int
+		_ = s.Store.Pool.QueryRow(r.Context(), `SELECT count(*) FROM checklist_items i WHERE i.version_id=(SELECT v.id FROM checklist_versions v WHERE v.template_id=$1 AND v.status='PUBLISHED' ORDER BY v.published_at DESC NULLS LAST,v.created_at DESC LIMIT 1)`, r.PathValue("id")).Scan(&stopped)
+		jsonResponse(w, 200, map[string]any{"active": false, "stopped_items": stopped})
+		return
+	}
 	w.WriteHeader(204)
 }
 
@@ -576,6 +589,7 @@ func (s *Server) publishVersion(w http.ResponseWriter, r *http.Request) {
 	_ = s.Store.Audit(r.Context(), auditFrom(r, "PUBLISH_TEMPLATE", "CHECKLIST_VERSION", vid, nil, map[string]any{"items": count}))
 	jsonResponse(w, 200, map[string]string{"status": "PUBLISHED"})
 }
+
 // retireVersion withdraws a published checklist. Retiring the only published
 // version of a template that is still in use used to be allowed and silent:
 // every review created afterwards simply came without those items, the

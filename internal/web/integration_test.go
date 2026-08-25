@@ -6195,3 +6195,70 @@ func TestATemplateInUseKeepsAPublishedVersion(t *testing.T) {
 		t.Fatalf("after retiring the version is %s", got)
 	}
 }
+
+// "How many items does a new review get today, and from which checklists" was
+// a question an administrator could only answer by creating one. Switching a
+// template off answered it the hard way: silently, and only visible later in a
+// checklist that had grown shorter.
+func TestTheTemplateListShowsWhatIsBeingAssigned(t *testing.T) {
+	h := newHarness(t)
+	admin := h.login(adminOf(h))
+	ctx := context.Background()
+
+	created := admin.do(http.MethodPost, "/api/v1/templates", map[string]any{"name": "적용 범위 템플릿", "category": "DEVELOPMENT", "description": "", "version": "V1"})
+	if created.status != http.StatusCreated {
+		t.Fatalf("create template: %d %s", created.status, created.body)
+	}
+	templateID := created.json()["id"].(string)
+	var versionID string
+	if err := h.db.Pool.QueryRow(ctx, `SELECT id FROM checklist_versions WHERE template_id=$1`, templateID).Scan(&versionID); err != nil {
+		t.Fatal(err)
+	}
+	for _, code := range []string{"COV-1", "COV-2", "COV-3"} {
+		if res := admin.do(http.MethodPost, fmt.Sprintf("/api/v1/templates/%s/versions/%s/items", templateID, versionID),
+			map[string]any{"item_code": code, "title": code, "question": "질문", "category": "DEVELOPMENT", "severity": "MEDIUM", "answer_type": "YNNA", "sort_order": 1}); res.status != http.StatusCreated {
+			t.Fatalf("add %s: %d %s", code, res.status, res.body)
+		}
+	}
+	row := func() map[string]any {
+		t.Helper()
+		res := admin.do(http.MethodGet, "/api/v1/templates?limit=200", nil)
+		if res.status != http.StatusOK {
+			t.Fatalf("template list: %d %s", res.status, res.body)
+		}
+		for _, raw := range res.json()["items"].([]any) {
+			item := raw.(map[string]any)
+			if item["id"] == templateID {
+				return item
+			}
+		}
+		t.Fatal("the template is missing from the list")
+		return nil
+	}
+
+	// A draft contributes nothing yet, and the list says so rather than
+	// counting items nobody receives.
+	if got := row(); got["published_version"] != "" || got["published_items"] != float64(0) {
+		t.Fatalf("an unpublished template reports version %v with %v items", got["published_version"], got["published_items"])
+	}
+	if res := admin.do(http.MethodPost, fmt.Sprintf("/api/v1/templates/%s/versions/%s/publish", templateID, versionID), nil); res.status >= 300 {
+		t.Fatalf("publish: %d %s", res.status, res.body)
+	}
+	got := row()
+	if got["published_version"] != "V1" || got["published_items"] != float64(3) {
+		t.Fatalf("after publishing the list reports version %v with %v items", got["published_version"], got["published_items"])
+	}
+
+	// Switching it off says how much of the checklist stops being assigned.
+	res := admin.do(http.MethodPatch, "/api/v1/templates/"+templateID, map[string]any{"active": false})
+	if res.status != http.StatusOK {
+		t.Fatalf("deactivate: %d %s", res.status, res.body)
+	}
+	if res.json()["stopped_items"] != float64(3) {
+		t.Fatalf("switching the template off reports %v items stopped", res.json()["stopped_items"])
+	}
+	// And the coverage it used to contribute is no longer counted as active.
+	if got := row(); got["active"] != false {
+		t.Fatalf("the template still reads active=%v", got["active"])
+	}
+}

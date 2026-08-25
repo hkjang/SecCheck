@@ -112,6 +112,8 @@ export type Template = {
   description: string
   active: boolean
   versions: TemplateVersion[]
+  published_version?: string
+  published_items?: number
 }
 
 export type TemplateVersion = {
