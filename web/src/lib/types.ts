@@ -33,6 +33,8 @@ export type Review = {
   reviewer_name?: string
   reviewer_can_act?: boolean
   completion_blockers?: { unreviewed_items: number; unverified_changes: number; stale_verdicts: number }
+  can_edit?: boolean
+  can_review?: boolean
   approver_can_act?: boolean
   approver_name?: string
   final_result?: string

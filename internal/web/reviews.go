@@ -556,6 +556,14 @@ func (s *Server) getReviewRequest(w http.ResponseWriter, r *http.Request) {
 	out["completion_blockers"] = map[string]int{"unreviewed_items": missing, "unverified_changes": open, "stale_verdicts": stale}
 	out["reviewer_can_act"] = reviewerCanAct
 	out["approver_can_act"] = approverCanAct
+	// What this reader may actually do, decided by the same helpers the write
+	// handlers refuse on. The screen used to work it out from the status and
+	// the caller's roles alone, so a read-only participant was shown answer
+	// fields and an upload form, and any security reviewer was shown the
+	// judgement form for a review that was somebody else's -- both of them
+	// finding out only when the save came back 403.
+	out["can_edit"] = s.canEditReview(r.Context(), session(r), r.PathValue("id"))
+	out["can_review"] = s.canReview(r.Context(), session(r), r.PathValue("id"))
 	versions, err := s.snapshotTemplateVersions(r, r.PathValue("id"))
 	if err != nil {
 		s.fault(w, r, "QUERY_FAILED", "템플릿 버전을 확인하지 못했습니다.", err)

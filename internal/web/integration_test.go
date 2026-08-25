@@ -5671,3 +5671,91 @@ func TestTheItemFlagsAgreeWithTheSubmissionGuard(t *testing.T) {
 		t.Fatalf("after a comment, a verdict and a correction the item reads %v", got)
 	}
 }
+
+// The review screen used to decide what a reader may do from the status and
+// their roles alone. A read-only participant was shown answer fields and an
+// upload form; any security reviewer was shown the judgement form for a review
+// that was somebody else's. Both found out when the save came back 403.
+func TestTheReviewSaysWhatThisReaderMayDo(t *testing.T) {
+	h := newHarness(t)
+	ctx := context.Background()
+	h.user("acts-owner", "REQUESTER")
+	writerID := h.user("acts-writer", "REQUESTER")
+	viewerID := h.user("acts-viewer", "REQUESTER")
+	h.user("acts-reviewer", "SECURITY_REVIEWER")
+	h.user("acts-other-reviewer", "SECURITY_REVIEWER")
+	owner := h.login("acts-owner")
+	writer := h.login("acts-writer")
+	viewer := h.login("acts-viewer")
+	reviewer := h.login("acts-reviewer")
+	other := h.login("acts-other-reviewer")
+	var reviewerID string
+	if err := h.db.Pool.QueryRow(ctx, `SELECT id FROM users WHERE username='acts-reviewer'`).Scan(&reviewerID); err != nil {
+		t.Fatal(err)
+	}
+
+	reviewID := owner.createReview("권한 표시 서비스")
+	for _, p := range []struct{ id, role string }{{writerID, "CONTRIBUTOR"}, {viewerID, "VIEWER"}} {
+		if res := owner.do(http.MethodPost, "/api/v1/review-requests/"+reviewID+"/participants", map[string]string{"user_id": p.id, "role": p.role}); res.status != http.StatusOK {
+			t.Fatalf("add %s: %d %s", p.role, res.status, res.body)
+		}
+	}
+	may := func(c *client) (bool, bool) {
+		t.Helper()
+		res := c.do(http.MethodGet, "/api/v1/review-requests/"+reviewID, nil)
+		if res.status != http.StatusOK {
+			t.Fatalf("review detail: %d %s", res.status, res.body)
+		}
+		payload := res.json()
+		edit, ok := payload["can_edit"].(bool)
+		if !ok {
+			t.Fatalf("the review does not say whether this reader may edit: %s", res.body)
+		}
+		judge, ok := payload["can_review"].(bool)
+		if !ok {
+			t.Fatalf("the review does not say whether this reader may judge: %s", res.body)
+		}
+		return edit, judge
+	}
+
+	// While it is being written: the owner and a contributor may write, a
+	// read-only participant may not, and nobody may judge yet.
+	if edit, judge := may(owner); !edit || judge {
+		t.Fatalf("the owner of a draft reads edit=%v judge=%v", edit, judge)
+	}
+	if edit, _ := may(writer); !edit {
+		t.Fatal("a contributor cannot write to the draft")
+	}
+	if edit, judge := may(viewer); edit || judge {
+		t.Fatalf("a read-only participant reads edit=%v judge=%v", edit, judge)
+	}
+
+	// Under review: only the assigned reviewer judges, and writing is closed.
+	if _, err := h.db.Pool.Exec(ctx, `UPDATE review_requests SET reviewer_id=$2,status='REVIEWING' WHERE id=$1`, reviewID, reviewerID); err != nil {
+		t.Fatal(err)
+	}
+	if edit, judge := may(reviewer); edit || !judge {
+		t.Fatalf("the assigned reviewer reads edit=%v judge=%v", edit, judge)
+	}
+	if _, judge := may(other); judge {
+		t.Fatal("a security reviewer with no part in this review is shown the judgement form")
+	}
+	if edit, _ := may(owner); edit {
+		t.Fatal("the owner can still write to a review that is being judged")
+	}
+
+	// And what the screen shows matches what the service accepts.
+	if res := other.do(http.MethodPut, "/api/v1/review-requests/"+reviewID+"/review-results/"+firstItemID(t, h, reviewID),
+		map[string]any{"result": "COMPLIANT", "opinion": "남의 심의", "expected_updated_at": ""}); res.status != http.StatusForbidden {
+		t.Fatalf("an unrelated reviewer judging: %d %s", res.status, res.body)
+	}
+}
+
+func firstItemID(t *testing.T, h *harness, reviewID string) string {
+	t.Helper()
+	var id string
+	if err := h.db.Pool.QueryRow(context.Background(), `SELECT si.id FROM submissions sub JOIN submission_items si ON si.submission_id=sub.id WHERE sub.review_request_id=$1 ORDER BY si.sort_order LIMIT 1`, reviewID).Scan(&id); err != nil {
+		t.Fatal(err)
+	}
+	return id
+}
