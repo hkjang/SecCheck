@@ -6471,3 +6471,85 @@ func TestTheReportNamesServicesThatKeepFailingTheSameItem(t *testing.T) {
 		t.Fatal("a service with a single failure is listed as repeating")
 	}
 }
+
+// A machine credential that never expires outlives the integration it was
+// issued for, the person who issued it and the memory of what it was for.
+func TestAnApiKeyCannotLiveForever(t *testing.T) {
+	h := newHarness(t)
+	admin := h.login(adminOf(h))
+	h.user("lifetime-owner", "REQUESTER")
+	owner := h.login("lifetime-owner")
+
+	issue := func(expires string) response {
+		t.Helper()
+		body := map[string]any{"name": "연동", "scopes": []string{"read"}}
+		if expires != "" {
+			body["expires_at"] = expires
+		}
+		return owner.do(http.MethodPost, "/api/v1/me/api-keys", body)
+	}
+	expiryOf := func(res response) string {
+		t.Helper()
+		value, _ := res.json()["expires_at"].(string)
+		return value
+	}
+
+	// Asking for no expiry gives the installation's limit rather than none.
+	res := issue("")
+	if res.status != http.StatusCreated && res.status != http.StatusOK {
+		t.Fatalf("issue a key: %d %s", res.status, res.body)
+	}
+	stamped := expiryOf(res)
+	if stamped == "" {
+		t.Fatal("a key issued with no expiry has none at all")
+	}
+	when, err := time.Parse(time.RFC3339, stamped)
+	if err != nil {
+		t.Fatalf("the expiry is not a time: %q", stamped)
+	}
+	if days := time.Until(when).Hours() / 24; days < 364 || days > 366 {
+		t.Fatalf("the default expiry is %.0f days away", days)
+	}
+
+	// Asking for longer than the limit is refused, with the limit named.
+	res = issue(time.Now().AddDate(2, 0, 0).Format(time.RFC3339))
+	if res.status != http.StatusUnprocessableEntity {
+		t.Fatalf("asking for a two-year key: %d %s", res.status, res.body)
+	}
+	if code := res.json()["error"].(map[string]any)["code"]; code != "API_KEY_LIFETIME" {
+		t.Fatalf("the refusal is reported as %v", code)
+	}
+
+	// A shorter one is untouched.
+	shorter := time.Now().AddDate(0, 0, 30)
+	res = issue(shorter.Format(time.RFC3339))
+	if res.status != http.StatusCreated && res.status != http.StatusOK {
+		t.Fatalf("issue a 30-day key: %d %s", res.status, res.body)
+	}
+	if got, _ := time.Parse(time.RFC3339, expiryOf(res)); got.Sub(shorter).Abs() > time.Minute {
+		t.Fatalf("the 30-day expiry was changed to %v", got)
+	}
+
+	// An installation that wants endless keys can still say so.
+	if res := admin.do(http.MethodPut, "/api/v1/admin/settings/security", map[string]any{
+		"rate_limit_per_minute": 120, "login_rate_limit_per_minute": 30, "max_login_failures": 5,
+		"lockout_minutes": 15, "idle_timeout_minutes": 0, "api_key_max_days": 0,
+		"trusted_proxies": []string{}, "require_totp_for_admins": false, "cors_origins": []string{},
+	}); res.status != http.StatusOK {
+		t.Fatalf("saving the policy: %d %s", res.status, res.body)
+	}
+	deadline := time.Now().Add(30 * time.Second)
+	for {
+		res = issue("")
+		if res.status != http.StatusCreated && res.status != http.StatusOK {
+			t.Fatalf("issue after lifting the limit: %d %s", res.status, res.body)
+		}
+		if expiryOf(res) == "" {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("with the limit lifted a key still expires at %s", expiryOf(res))
+		}
+		time.Sleep(time.Second)
+	}
+}

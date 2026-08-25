@@ -93,6 +93,7 @@ Authorization: Bearer sck_a1b2c3d4_xxxxxxxxxxxxxxxxxxxxxxxxxxxx
 | `TOTP_ENROLLMENT_REQUIRED` | 정책상 2단계 인증 등록이 먼저 필요합니다 |
 | `PASSWORD_CHANGE_REQUIRED` | 관리자가 발급한 임시 비밀번호입니다. 본인이 변경해야 다른 요청이 허용됩니다(API 키에는 적용되지 않음) |
 | `LAST_PUBLISHED_VERSION` | 사용 중인 템플릿의 마지막 게시 버전은 중지할 수 없습니다. 새 버전을 게시하거나 템플릿을 사용 안 함으로 바꾼 뒤 중지하세요 |
+| `API_KEY_LIFETIME` | 요청한 만료일이 설치에 설정된 API 키 최대 유효기간을 넘습니다 |
 | `CSRF_INVALID` | CSRF 토큰이 없거나 일치하지 않습니다 |
 | `RATE_LIMITED` | 요청 빈도 제한을 넘었습니다 |
 | `API_SCOPE_FORBIDDEN` | API 키의 scope로는 허용되지 않는 작업입니다 |

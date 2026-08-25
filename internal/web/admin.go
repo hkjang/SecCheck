@@ -470,6 +470,11 @@ func validateSetting(key string, m map[string]any) string {
 		if n := numericSetting(m["lockout_minutes"]); n < 1 || n > 1440 {
 			return "계정 잠금 시간은 1~1440분이어야 합니다."
 		}
+		if _, present := m["api_key_max_days"]; present {
+			if n := numericSetting(m["api_key_max_days"]); n < 0 || n > 3650 {
+				return "API 키 최대 유효기간은 0~3650일이어야 합니다. 0은 제한을 두지 않습니다."
+			}
+		}
 		if n := numericSetting(m["idle_timeout_minutes"]); n < 0 || n > 10080 {
 			return "유휴 세션 만료는 0~10080분이어야 합니다. 0은 사용하지 않습니다."
 		}

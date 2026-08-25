@@ -629,6 +629,27 @@ func (s *Server) maintenanceAge(ctx context.Context) float64 {
 // alert on the same threshold either way.
 const neverRanSeconds = 99999999
 
+// apiKeyMaxDays is how long a machine credential may live. It is a security
+// setting rather than a constant because an installation that automates
+// against SecCheck from a locked-down runner may reasonably want longer keys
+// than one where they are pasted into a laptop.
+func (s *Server) apiKeyMaxDays(ctx context.Context) int {
+	var cfg struct {
+		APIKeyMaxDays *int `json:"api_key_max_days"`
+	}
+	if _, err := s.Store.Setting(ctx, "security", &cfg); err != nil || cfg.APIKeyMaxDays == nil {
+		return defaultAPIKeyMaxDays
+	}
+	if *cfg.APIKeyMaxDays < 0 {
+		return defaultAPIKeyMaxDays
+	}
+	return *cfg.APIKeyMaxDays
+}
+
+// defaultAPIKeyMaxDays applies to an installation that has never set the
+// value, including one upgrading from a version that had no such limit.
+const defaultAPIKeyMaxDays = 365
+
 // maintenanceStaleAfter is when a missing housekeeping run stops being a late
 // one and starts being a stopped one. The sweep runs hourly, so three missed
 // turns is not a slow night.
@@ -782,6 +803,20 @@ func (s *Server) issueAPIKey(w http.ResponseWriter, r *http.Request, name string
 	if expires != nil && !expires.After(time.Now()) {
 		problem(w, 422, "VALIDATION_FAILED", "API 키 만료일은 현재 이후여야 합니다.", nil)
 		return
+	}
+	// A machine credential that never expires is a finding in its own right:
+	// it outlives the integration it was issued for, the person who issued it
+	// and usually the memory of what it was for. The installation says how
+	// long one may live; 0 keeps the old behaviour of allowing an endless key.
+	if limit := s.apiKeyMaxDays(r.Context()); limit > 0 {
+		latest := time.Now().AddDate(0, 0, limit)
+		if expires == nil {
+			expires = &latest
+		} else if expires.After(latest) {
+			problem(w, 422, "API_KEY_LIFETIME", fmt.Sprintf("API 키는 최대 %d일까지만 유효하도록 설정되어 있습니다. 더 짧은 만료일을 지정하세요.", limit),
+				map[string]any{"max_days": limit, "latest": latest.Format(time.RFC3339)})
+			return
+		}
 	}
 	raw, _ := cryptox.Token(32)
 	token := "sck_" + raw
