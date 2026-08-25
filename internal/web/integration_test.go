@@ -3657,6 +3657,29 @@ func TestARetiredVersionLeavesNewReviewsButNotOldOnes(t *testing.T) {
 		t.Fatal("the published item was not assigned to a new review")
 	}
 
+	// A template that is still in use has to keep a published version, so the
+	// replacement is published before the old one is withdrawn -- which is the
+	// ordinary way a checklist moves forward.
+	replacement := admin.do(http.MethodPost, fmt.Sprintf("/api/v1/templates/%s/versions", templateID), map[string]any{"version": "V2"})
+	if replacement.status != http.StatusCreated && replacement.status != http.StatusOK {
+		t.Fatalf("creating the next version: %d %s", replacement.status, replacement.body)
+	}
+	nextID, _ := replacement.json()["id"].(string)
+	if nextID == "" {
+		if err := h.db.Pool.QueryRow(ctx, `SELECT id FROM checklist_versions WHERE template_id=$1 AND status='DRAFT' ORDER BY created_at DESC LIMIT 1`, templateID).Scan(&nextID); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := h.db.Pool.Exec(ctx, `DELETE FROM checklist_items WHERE version_id=$1`, nextID); err != nil {
+		t.Fatal(err)
+	}
+	if res := admin.do(http.MethodPost, fmt.Sprintf("/api/v1/templates/%s/versions/%s/items", templateID, nextID),
+		map[string]any{"item_code": "RETIRE-2", "title": "후속 항목", "question": "질문", "category": "DEVELOPMENT", "severity": "MEDIUM", "answer_type": "YNNA", "sort_order": 1}); res.status != http.StatusCreated {
+		t.Fatalf("adding an item to the next version: %d %s", res.status, res.body)
+	}
+	if res := admin.do(http.MethodPost, fmt.Sprintf("/api/v1/templates/%s/versions/%s/publish", templateID, nextID), nil); res.status >= 300 {
+		t.Fatalf("publishing the next version: %d %s", res.status, res.body)
+	}
 	if res := admin.do(http.MethodPost, fmt.Sprintf("/api/v1/templates/%s/versions/%s/retire", templateID, versionID), nil); res.status != http.StatusNoContent {
 		t.Fatalf("retiring the version: %d %s", res.status, res.body)
 	}
@@ -6110,5 +6133,65 @@ func TestAnAdministratorCanSeeAndWithdrawMachineCredentials(t *testing.T) {
 	}
 	if recorded != 1 {
 		t.Fatalf("the withdrawal is in the audit log %d times", recorded)
+	}
+}
+
+// Withdrawing the only published version of a checklist that is still in use
+// used to be allowed and silent: every review created afterwards came without
+// those items, the template went on looking active, and the first sign was a
+// checklist somebody noticed was short.
+func TestATemplateInUseKeepsAPublishedVersion(t *testing.T) {
+	h := newHarness(t)
+	admin := h.login(adminOf(h))
+	ctx := context.Background()
+
+	created := admin.do(http.MethodPost, "/api/v1/templates", map[string]any{"name": "마지막 버전 템플릿", "category": "DEVELOPMENT", "description": "", "version": "V1"})
+	if created.status != http.StatusCreated {
+		t.Fatalf("create template: %d %s", created.status, created.body)
+	}
+	templateID := created.json()["id"].(string)
+	var versionID string
+	if err := h.db.Pool.QueryRow(ctx, `SELECT id FROM checklist_versions WHERE template_id=$1`, templateID).Scan(&versionID); err != nil {
+		t.Fatal(err)
+	}
+	if res := admin.do(http.MethodPost, fmt.Sprintf("/api/v1/templates/%s/versions/%s/items", templateID, versionID),
+		map[string]any{"item_code": "LAST-1", "title": "항목", "question": "질문", "category": "DEVELOPMENT", "severity": "MEDIUM", "answer_type": "YNNA", "sort_order": 1}); res.status != http.StatusCreated {
+		t.Fatalf("add item: %d %s", res.status, res.body)
+	}
+	if res := admin.do(http.MethodPost, fmt.Sprintf("/api/v1/templates/%s/versions/%s/publish", templateID, versionID), nil); res.status >= 300 {
+		t.Fatalf("publish: %d %s", res.status, res.body)
+	}
+	status := func() string {
+		t.Helper()
+		var out string
+		if err := h.db.Pool.QueryRow(ctx, `SELECT status FROM checklist_versions WHERE id=$1`, versionID).Scan(&out); err != nil {
+			t.Fatal(err)
+		}
+		return out
+	}
+
+	// The only published version of a template in use cannot be withdrawn, and
+	// the refusal says what to do instead.
+	res := admin.do(http.MethodPost, fmt.Sprintf("/api/v1/templates/%s/versions/%s/retire", templateID, versionID), nil)
+	if res.status != http.StatusConflict {
+		t.Fatalf("retiring the last published version: %d %s", res.status, res.body)
+	}
+	if code := res.json()["error"].(map[string]any)["code"]; code != "LAST_PUBLISHED_VERSION" {
+		t.Fatalf("the refusal is reported as %v", code)
+	}
+	if got := status(); got != "PUBLISHED" {
+		t.Fatalf("after the refusal the version is %s", got)
+	}
+
+	// Saying the checklist no longer applies is what deactivating is for, and
+	// then withdrawing it is allowed.
+	if res := admin.do(http.MethodPatch, "/api/v1/templates/"+templateID, map[string]any{"active": false}); res.status >= 300 {
+		t.Fatalf("deactivate the template: %d %s", res.status, res.body)
+	}
+	if res := admin.do(http.MethodPost, fmt.Sprintf("/api/v1/templates/%s/versions/%s/retire", templateID, versionID), nil); res.status != http.StatusNoContent {
+		t.Fatalf("retiring after deactivating: %d %s", res.status, res.body)
+	}
+	if got := status(); got != "RETIRED" {
+		t.Fatalf("after retiring the version is %s", got)
 	}
 }

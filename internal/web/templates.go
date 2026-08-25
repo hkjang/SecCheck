@@ -576,7 +576,23 @@ func (s *Server) publishVersion(w http.ResponseWriter, r *http.Request) {
 	_ = s.Store.Audit(r.Context(), auditFrom(r, "PUBLISH_TEMPLATE", "CHECKLIST_VERSION", vid, nil, map[string]any{"items": count}))
 	jsonResponse(w, 200, map[string]string{"status": "PUBLISHED"})
 }
+// retireVersion withdraws a published checklist. Retiring the only published
+// version of a template that is still in use used to be allowed and silent:
+// every review created afterwards simply came without those items, the
+// template went on looking active in the list, and the first sign was a
+// checklist somebody noticed was short. A template that is in use has to keep
+// a published version; saying it no longer applies is what deactivating it is
+// for.
 func (s *Server) retireVersion(w http.ResponseWriter, r *http.Request) {
+	var active, others bool
+	if err := s.Store.Pool.QueryRow(r.Context(), `SELECT t.active,EXISTS(SELECT 1 FROM checklist_versions v WHERE v.template_id=t.id AND v.status='PUBLISHED' AND v.id<>$2) FROM checklist_templates t WHERE t.id=$1`, r.PathValue("id"), r.PathValue("versionID")).Scan(&active, &others); err != nil {
+		problem(w, 404, "NOT_FOUND", "템플릿을 찾을 수 없습니다.", nil)
+		return
+	}
+	if active && !others {
+		problem(w, 409, "LAST_PUBLISHED_VERSION", "사용 중인 템플릿의 마지막 게시 버전은 중지할 수 없습니다. 새 버전을 먼저 게시하거나, 이 체크리스트를 더 이상 적용하지 않는다면 템플릿을 사용 안 함으로 바꾼 뒤 중지하세요.", map[string]any{"template_active": active})
+		return
+	}
 	tag, err := s.Store.Pool.Exec(r.Context(), `UPDATE checklist_versions SET status='RETIRED' WHERE id=$1 AND template_id=$2 AND status='PUBLISHED'`, r.PathValue("versionID"), r.PathValue("id"))
 	if err != nil || tag.RowsAffected() == 0 {
 		problem(w, 409, "STATE_CONFLICT", "게시된 버전만 사용 중지할 수 있습니다.", nil)
