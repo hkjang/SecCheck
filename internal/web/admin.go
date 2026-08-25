@@ -105,7 +105,7 @@ func (s *Server) createUser(w http.ResponseWriter, r *http.Request) {
 	id := store.NewID()
 	tx, err := s.Store.Pool.Begin(r.Context())
 	if err == nil {
-		_, err = tx.Exec(r.Context(), `INSERT INTO users(id,username,display_name,email,department,password_hash) VALUES($1,$2,$3,$4,$5,$6)`, id, in.Username, in.DisplayName, in.Email, in.Department, hash)
+		_, err = tx.Exec(r.Context(), `INSERT INTO users(id,username,display_name,email,department,password_hash,must_change_password) VALUES($1,$2,$3,$4,$5,$6,true)`, id, in.Username, in.DisplayName, in.Email, in.Department, hash)
 		for _, role := range in.Roles {
 			if err != nil {
 				break
@@ -228,7 +228,7 @@ func (s *Server) resetUserPassword(w http.ResponseWriter, r *http.Request) {
 		problem(w, 422, "EXTERNAL_ACCOUNT", "SSO 계정의 비밀번호는 사내 인증 서버에서 관리합니다.", nil)
 		return
 	}
-	if _, err = s.Store.Pool.Exec(r.Context(), `UPDATE users SET password_hash=$2,failed_login_count=0,locked_until=NULL,updated_at=now() WHERE id=$1`, id, hash); err != nil {
+	if _, err = s.Store.Pool.Exec(r.Context(), `UPDATE users SET password_hash=$2,must_change_password=true,failed_login_count=0,locked_until=NULL,updated_at=now() WHERE id=$1`, id, hash); err != nil {
 		s.fault(w, r, "UPDATE_FAILED", "비밀번호를 재설정하지 못했습니다.", err)
 		return
 	}

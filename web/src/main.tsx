@@ -34,8 +34,8 @@ export function useAuth() { const value = useContext(AuthContext); if (!value) t
 
 function App() {
   const [publicConfig, setPublicConfig] = useState({ service_name: 'SecCheck', version: 'dev', oidc_enabled: false, timezone: '' })
-  const [me, setMe] = useState<{ user: User; version: string; totp_enrollment_required?: boolean; upload?: UploadRules; limits?: TextLimits; session?: { idle_timeout_minutes?: number } } | null | undefined>(undefined)
-  const refresh = async () => { try { const value = await get<{ user: User; csrf_token: string; version: string; totp_enrollment_required?: boolean; timezone?: string; upload?: UploadRules; limits?: TextLimits; session?: { idle_timeout_minutes?: number } }>('/api/v1/me'); setCSRF(value.csrf_token); setDisplayTimezone(value.timezone || ''); setMe(value) } catch { setCSRF(''); setMe(null) } }
+  const [me, setMe] = useState<{ user: User; version: string; totp_enrollment_required?: boolean; password_change_required?: boolean; upload?: UploadRules; limits?: TextLimits; session?: { idle_timeout_minutes?: number } } | null | undefined>(undefined)
+  const refresh = async () => { try { const value = await get<{ user: User; csrf_token: string; version: string; totp_enrollment_required?: boolean; password_change_required?: boolean; timezone?: string; upload?: UploadRules; limits?: TextLimits; session?: { idle_timeout_minutes?: number } }>('/api/v1/me'); setCSRF(value.csrf_token); setDisplayTimezone(value.timezone || ''); setMe(value) } catch { setCSRF(''); setMe(null) } }
   const [expired, setExpired] = useState(false)
   useEffect(() => { get<typeof publicConfig>('/api/v1/public/config').then(value => { setDisplayTimezone(value.timezone || ''); setPublicConfig(value) }).catch(() => undefined); refresh() }, [])
   // Returning to the sign-in screen is the shell's job, so a screen that hits
@@ -49,8 +49,12 @@ function App() {
   const logout = async () => { try { await post('/api/v1/auth/logout') } finally { setCSRF(''); setMe(null) } }
   // Policy can require a second factor before anything else is reachable, so
   // the router collapses to the enrolment screen until it exists.
-  if (me.totp_enrollment_required) {
-    return <LimitsContext.Provider value={me.limits || { long_text: 0, short_text: 0 }}><AuthContext.Provider value={{ user: me.user, version: me.version, upload: me.upload, limits: me.limits, idleTimeoutMinutes: me.session?.idle_timeout_minutes, refresh, logout, enrolling: true }}><Routes><Route element={<Layout />}><Route path="*" element={<SecurityPage />} /></Route></Routes></AuthContext.Provider></LimitsContext.Provider>
+  // A password an administrator typed is a shared secret until it is replaced,
+  // so the service refuses everything else and the shell shows only the screen
+  // that replaces it.
+  if (me.password_change_required || me.totp_enrollment_required) {
+    const only = me.password_change_required ? <ProfilePage /> : <SecurityPage />
+    return <LimitsContext.Provider value={me.limits || { long_text: 0, short_text: 0 }}><AuthContext.Provider value={{ user: me.user, version: me.version, upload: me.upload, limits: me.limits, idleTimeoutMinutes: me.session?.idle_timeout_minutes, passwordChangeRequired: me.password_change_required, refresh, logout, enrolling: true }}><Routes><Route element={<Layout />}><Route path="*" element={only} /></Route></Routes></AuthContext.Provider></LimitsContext.Provider>
   }
   return <LimitsContext.Provider value={me.limits || { long_text: 0, short_text: 0 }}><AuthContext.Provider value={{ user: me.user, version: me.version, upload: me.upload, limits: me.limits, idleTimeoutMinutes: me.session?.idle_timeout_minutes, refresh, logout }}><Routes><Route element={<Layout />}><Route index element={<Dashboard />} /><Route path="reviews" element={<Reviews />} /><Route path="reviews/new" element={<NewReview />} /><Route path="reviews/:id" element={<ReviewDetail />} /><Route path="security" element={<Reviews security />} /><Route path="controls" element={<ControlsPage />} /><Route path="reports" element={<Reports />} /><Route path="templates" element={<Templates />} /><Route path="templates/import" element={<ImportWizard />} /><Route path="templates/rules" element={<RuleSimulator />} /><Route path="templates/:id" element={<TemplateDetail />} /><Route path="admin/users" element={<UsersPage />} /><Route path="admin/settings" element={<SettingsPage />} /><Route path="admin/audit" element={<AuditPage />} /><Route path="admin/logs" element={<LogsPage />} /><Route path="admin/jobs" element={<JobsPage />} /><Route path="admin/system" element={<SystemPage />} /><Route path="profile" element={<ProfilePage />} /><Route path="profile/keys" element={<KeysPage />} /><Route path="profile/security" element={<SecurityPage />} /><Route path="integrations" element={<Integrations />} /><Route path="notifications" element={<Notifications />} /><Route path="*" element={<Navigate to="/" replace />} /></Route></Routes></AuthContext.Provider></LimitsContext.Provider>
 }

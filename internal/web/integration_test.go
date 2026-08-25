@@ -5269,3 +5269,86 @@ func TestTheReviewScreenRefusesToInventZeros(t *testing.T) {
 		t.Fatalf("after the tables came back: %d %s", res.status, res.body)
 	}
 }
+
+// A password an administrator typed for somebody else is a shared secret: the
+// person who set it can sign in as that account for as long as it stands. It
+// now has to be replaced before the account can do anything else.
+func TestAPasswordSomebodyElseChoseMustBeReplaced(t *testing.T) {
+	h := newHarness(t)
+	admin := h.login(adminOf(h))
+	ctx := context.Background()
+
+	created := admin.do(http.MethodPost, "/api/v1/admin/users", map[string]any{
+		"username": "temp-holder", "display_name": "임시 비밀번호 사용자", "email": "temp@example.test",
+		"department": "보안팀", "password": "temporary-pass-1234", "roles": []string{"REQUESTER"},
+	})
+	if created.status != http.StatusCreated && created.status != http.StatusOK {
+		t.Fatalf("create user: %d %s", created.status, created.body)
+	}
+
+	// The account can sign in -- and then only replace the password.
+	holder := &client{h: h}
+	login := holder.do(http.MethodPost, "/api/v1/auth/login", map[string]string{"username": "temp-holder", "password": "temporary-pass-1234"})
+	if login.status != http.StatusOK {
+		t.Fatalf("login with the temporary password: %d %s", login.status, login.body)
+	}
+	for _, cookie := range login.raw.Cookies() {
+		if cookie.Name == auth.CookieName {
+			holder.cookie = cookie.Value
+		}
+	}
+	holder.csrf = login.json()["csrf_token"].(string)
+
+	me := holder.do(http.MethodGet, "/api/v1/me", nil)
+	if me.status != http.StatusOK {
+		t.Fatalf("me: %d %s", me.status, me.body)
+	}
+	if me.json()["password_change_required"] != true {
+		t.Fatalf("/me does not say the password must be replaced: %s", me.body)
+	}
+	blocked := holder.do(http.MethodGet, "/api/v1/review-requests", nil)
+	if blocked.status != http.StatusForbidden {
+		t.Fatalf("working with a temporary password: %d %s", blocked.status, blocked.body)
+	}
+	if code := blocked.json()["error"].(map[string]any)["code"]; code != "PASSWORD_CHANGE_REQUIRED" {
+		t.Fatalf("the refusal is reported as %v", code)
+	}
+
+	// Replacing it opens the service, and the flag is cleared for good.
+	if res := holder.do(http.MethodPut, "/api/v1/me/password", map[string]string{"current_password": "temporary-pass-1234", "new_password": "chosen-by-me-9876"}); res.status != http.StatusNoContent {
+		t.Fatalf("change the password: %d %s", res.status, res.body)
+	}
+	var flagged bool
+	if err := h.db.Pool.QueryRow(ctx, `SELECT must_change_password FROM users WHERE username='temp-holder'`).Scan(&flagged); err != nil {
+		t.Fatal(err)
+	}
+	if flagged {
+		t.Fatal("the account still holds a temporary password after changing it")
+	}
+	if res := holder.do(http.MethodGet, "/api/v1/review-requests", nil); res.status != http.StatusOK {
+		t.Fatalf("after replacing the password: %d %s", res.status, res.body)
+	}
+
+	// An administrator reset puts the account back behind the same gate.
+	var holderID string
+	if err := h.db.Pool.QueryRow(ctx, `SELECT id FROM users WHERE username='temp-holder'`).Scan(&holderID); err != nil {
+		t.Fatal(err)
+	}
+	if res := admin.do(http.MethodPost, "/api/v1/admin/users/"+holderID+"/password", map[string]string{"password": "reset-by-admin-4321"}); res.status != http.StatusNoContent {
+		t.Fatalf("reset the password: %d %s", res.status, res.body)
+	}
+	again := &client{h: h}
+	relogin := again.do(http.MethodPost, "/api/v1/auth/login", map[string]string{"username": "temp-holder", "password": "reset-by-admin-4321"})
+	if relogin.status != http.StatusOK {
+		t.Fatalf("login after the reset: %d %s", relogin.status, relogin.body)
+	}
+	for _, cookie := range relogin.raw.Cookies() {
+		if cookie.Name == auth.CookieName {
+			again.cookie = cookie.Value
+		}
+	}
+	again.csrf = relogin.json()["csrf_token"].(string)
+	if res := again.do(http.MethodGet, "/api/v1/review-requests", nil); res.status != http.StatusForbidden {
+		t.Fatalf("working with an administrator's reset password: %d %s", res.status, res.body)
+	}
+}

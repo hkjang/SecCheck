@@ -242,6 +242,13 @@ func (s *Server) require(roles []string, next http.Handler) http.Handler {
 			problem(w, http.StatusForbidden, "FORBIDDEN", "이 작업을 수행할 권한이 없습니다.", nil)
 			return
 		}
+		// A password somebody else chose is a shared secret. Until the owner
+		// replaces it the account can reach only the screens that let them do
+		// that -- the same shape as the one-time-code gate below.
+		if sess.User.MustChangePassword && !sess.APIKey && !passwordChangePath(r.URL.Path) {
+			problem(w, http.StatusForbidden, "PASSWORD_CHANGE_REQUIRED", "관리자가 발급한 임시 비밀번호입니다. 먼저 비밀번호를 변경하세요.", nil)
+			return
+		}
 		// A privileged account that policy requires to hold a one-time code can
 		// reach only the enrolment endpoints until it has one.
 		if sess.EnrollTOTP && !totpEnrollmentPath(r.URL.Path) {
@@ -269,6 +276,16 @@ func session(r *http.Request) auth.Session { return r.Context().Value(sessionKey
 
 // totpEnrollmentPath lists what a half-enrolled account may still call: read
 // its own profile, complete enrolment, and sign out.
+// passwordChangePath is what an account holding a temporary password may
+// still reach: its own profile, the change itself, and the way out.
+func passwordChangePath(path string) bool {
+	switch path {
+	case "/api/v1/me", "/api/v1/me/security", "/api/v1/me/password", "/api/v1/auth/logout":
+		return true
+	}
+	return false
+}
+
 func totpEnrollmentPath(path string) bool {
 	switch path {
 	case "/api/v1/me", "/api/v1/me/security", "/api/v1/auth/logout",

@@ -196,7 +196,7 @@ func (s *Server) me(w http.ResponseWriter, r *http.Request) {
 	// lost whatever was typed but not yet auto-saved. The screen can only warn
 	// if it knows the rule.
 	session := map[string]any{"idle_timeout_minutes": s.Auth.Policy(r.Context()).IdleTimeoutMinutes}
-	jsonResponse(w, 200, map[string]any{"user": publicUser(sess.User), "csrf_token": sess.CSRF, "version": s.Version, "totp_enrollment_required": sess.EnrollTOTP, "upload": map[string]any{"max_size_mb": upload.MaxSizeMB, "allowed_extensions": upload.AllowedExtensions}, "limits": limits, "session": session, "timezone": s.Store.Location(r.Context()).String()})
+	jsonResponse(w, 200, map[string]any{"user": publicUser(sess.User), "csrf_token": sess.CSRF, "version": s.Version, "totp_enrollment_required": sess.EnrollTOTP, "password_change_required": sess.User.MustChangePassword, "upload": map[string]any{"max_size_mb": upload.MaxSizeMB, "allowed_extensions": upload.AllowedExtensions}, "limits": limits, "session": session, "timezone": s.Store.Location(r.Context()).String()})
 }
 func (s *Server) updateMe(w http.ResponseWriter, r *http.Request) {
 	var in struct {
@@ -273,7 +273,7 @@ func (s *Server) changePassword(w http.ResponseWriter, r *http.Request) {
 		problem(w, 422, "VALIDATION_FAILED", "새 비밀번호는 12자 이상이어야 합니다.", nil)
 		return
 	}
-	if _, err = s.Store.Pool.Exec(r.Context(), `UPDATE users SET password_hash=$2,failed_login_count=0,locked_until=NULL,updated_at=now() WHERE id=$1`, sess.User.ID, hash); err != nil {
+	if _, err = s.Store.Pool.Exec(r.Context(), `UPDATE users SET password_hash=$2,must_change_password=false,failed_login_count=0,locked_until=NULL,updated_at=now() WHERE id=$1`, sess.User.ID, hash); err != nil {
 		s.fault(w, r, "UPDATE_FAILED", "비밀번호를 변경하지 못했습니다.", err)
 		return
 	}

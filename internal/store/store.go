@@ -39,7 +39,11 @@ type Store struct {
 type User struct {
 	ID, Username, DisplayName, Email, Department, PasswordHash, AuthSource string
 	Active                                                                 bool
-	Roles                                                                  []string
+	// MustChangePassword marks a password somebody else chose -- an initial
+	// account or an administrator's reset. It is a shared secret until the
+	// owner replaces it, so the service lets them do nothing else first.
+	MustChangePassword bool
+	Roles              []string
 }
 
 type AuditEvent struct {
@@ -257,8 +261,8 @@ func AsTime(v any) (time.Time, bool) {
 
 func (s *Store) GetUserByUsername(ctx context.Context, username string) (User, error) {
 	var u User
-	err := s.Pool.QueryRow(ctx, `SELECT id,username,display_name,email,department,password_hash,auth_source,active FROM users WHERE lower(username)=lower($1)`, username).
-		Scan(&u.ID, &u.Username, &u.DisplayName, &u.Email, &u.Department, &u.PasswordHash, &u.AuthSource, &u.Active)
+	err := s.Pool.QueryRow(ctx, `SELECT id,username,display_name,email,department,password_hash,auth_source,active,must_change_password FROM users WHERE lower(username)=lower($1)`, username).
+		Scan(&u.ID, &u.Username, &u.DisplayName, &u.Email, &u.Department, &u.PasswordHash, &u.AuthSource, &u.Active, &u.MustChangePassword)
 	if err != nil {
 		return u, err
 	}
@@ -268,8 +272,8 @@ func (s *Store) GetUserByUsername(ctx context.Context, username string) (User, e
 
 func (s *Store) GetUser(ctx context.Context, id string) (User, error) {
 	var u User
-	err := s.Pool.QueryRow(ctx, `SELECT id,username,display_name,email,department,password_hash,auth_source,active FROM users WHERE id=$1`, id).
-		Scan(&u.ID, &u.Username, &u.DisplayName, &u.Email, &u.Department, &u.PasswordHash, &u.AuthSource, &u.Active)
+	err := s.Pool.QueryRow(ctx, `SELECT id,username,display_name,email,department,password_hash,auth_source,active,must_change_password FROM users WHERE id=$1`, id).
+		Scan(&u.ID, &u.Username, &u.DisplayName, &u.Email, &u.Department, &u.PasswordHash, &u.AuthSource, &u.Active, &u.MustChangePassword)
 	if err != nil {
 		return u, err
 	}

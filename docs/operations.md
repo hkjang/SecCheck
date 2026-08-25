@@ -324,6 +324,7 @@ docker compose exec seccheck /app/seccheck selftest --username admin --password 
 | v1.0.42~43 | 유지보수 스윕이 매시 증적 20건을 되읽어 검증합니다. I/O가 조금 늘고, 실패 시 `증적 무결성 확인 실패` 알림이 발생합니다 |
 | v1.0.44 | **`seccheck_scan_failures`의 의미가 바뀝니다.** 격리·검사 중 파일을 제외하고 `ERROR`만 셉니다. 기존 알람 임계값을 다시 보십시오 |
 | v1.0.45 | `seccheck_evidence_version_bytes`가 파기된 버전을 제외합니다. 용량 추이 그래프가 한 번 내려갑니다 |
+| v1.0.79 | 마이그레이션 **028** 추가. 관리자가 발급·재설정한 비밀번호는 **본인이 바꾸기 전까지 다른 API를 쓸 수 없습니다**(403 `PASSWORD_CHANGE_REQUIRED`). 계정을 만들고 그 자격으로 자동화를 돌리던 절차가 있다면 개인 API 키로 바꾸십시오 |
 | v1.0.76 | 마이그레이션 **027** 추가(`notifications.item_id`). `GET /api/v1/notifications` 응답에 `item_id`가 추가되고, 항목 단위 알림은 이 값을 채웁니다 |
 | v1.0.74 | 보완 요청의 `assignee_id`가 **심의 참여자인지 검증**됩니다. 외부 사용자를 조치 담당자로 넣던 호출은 422(`NOT_A_PARTICIPANT`)를 받습니다 |
 | v1.0.73 | 항목 저장 시 `assigned_to`가 **심의 참여자인지 검증**됩니다. 참여하지 않는 사용자를 배정하던 호출은 422(`NOT_A_PARTICIPANT`)를 받습니다 |
@@ -367,6 +368,7 @@ docker compose exec seccheck /app/seccheck selftest --username admin --password 
 | 025 | 구축·개발·운영 담당자 열 인덱스(본인 심의 목록 조회 성능) |
 | 026 | 재심의로 이월된 답변 표시(`responses.carried_at`) |
 | 027 | 항목 단위 알림의 대상 항목(`notifications.item_id`) |
+| 028 | 임시 비밀번호 표시(`users.must_change_password`) |
 
 ## 업그레이드와 롤백
 
