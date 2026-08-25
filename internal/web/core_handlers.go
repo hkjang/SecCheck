@@ -506,11 +506,18 @@ func (s *Server) search(w http.ResponseWriter, r *http.Request) {
 		"has_more": map[string]bool{"reviews": moreReviews, "items": moreItems, "evidences": moreEvidences}})
 }
 
+// accessFilter is the list-shaped half of canAccessReview: what a person may
+// see in a list has to be what they may open, or a queue offers work that
+// answers "심의를 찾을 수 없습니다" and a list hides work they are expected to
+// do. The two are kept in step by TestListsAndDetailAgreeOnWhatIsVisible.
 func accessFilter(sess auth.Session, start int) (string, []any) {
 	// The operator belongs here with the builder and the developer: the form
 	// asks for all three, an item may be assigned to any of them, and only
 	// these two could open what they were assigned.
-	return fmt.Sprintf(`(review_requests.requester_id=$%[1]d OR review_requests.builder_id=$%[1]d OR review_requests.developer_id=$%[1]d OR review_requests.operator_id=$%[1]d OR review_requests.reviewer_id=$%[1]d OR review_requests.approver_id=$%[1]d OR EXISTS(SELECT 1 FROM review_participants rp WHERE rp.review_request_id=review_requests.id AND rp.user_id=$%[1]d))`, start), []any{sess.User.ID}
+	return fmt.Sprintf(`(review_requests.requester_id=$%[1]d OR review_requests.builder_id=$%[1]d OR review_requests.developer_id=$%[1]d OR review_requests.operator_id=$%[1]d OR review_requests.reviewer_id=$%[1]d OR review_requests.approver_id=$%[1]d
+                OR EXISTS(SELECT 1 FROM review_participants rp WHERE rp.review_request_id=review_requests.id AND rp.user_id=$%[1]d)
+                OR ($%[2]d::bool AND review_requests.status='APPROVAL_PENDING' AND (review_requests.approver_id IS NULL OR NOT `+stillHolds("review_requests.approver_id", "APPROVER")+`)))`, start, start+1),
+		[]any{sess.User.ID, hasAnyRole(sess.User, "APPROVER")}
 }
 
 // scanDynamic is used for small administrative lists where a stable JSON object is more useful than repetitive structs.

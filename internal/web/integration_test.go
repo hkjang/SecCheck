@@ -5798,3 +5798,87 @@ func firstItemID(t *testing.T, h *harness, reviewID string) string {
 	}
 	return id
 }
+
+// A list and the screen behind it have to agree. When the list shows more, a
+// queue offers work that answers "심의를 찾을 수 없습니다"; when it shows less,
+// work somebody is expected to do is hidden from the only place they look.
+func TestListsAndDetailAgreeOnWhatIsVisible(t *testing.T) {
+	h := newHarness(t)
+	ctx := context.Background()
+	ownerID := h.user("agree-owner", "REQUESTER")
+	h.user("agree-reviewer", "SECURITY_REVIEWER")
+	standInID := h.user("agree-approver", "APPROVER")
+	goneID := h.user("agree-gone-approver", "APPROVER")
+	h.user("agree-outsider", "REQUESTER")
+	owner := h.login("agree-owner")
+	standIn := h.login("agree-approver")
+	outsider := h.login("agree-outsider")
+
+	// Four reviews in different shapes, including the one whose approver can
+	// no longer act -- the case the queue offers to anybody holding the role.
+	mine := owner.createReview("내 심의")
+	waiting := owner.createReview("승인 대기 심의")
+	orphaned := owner.createReview("승인자가 사라진 심의")
+	if _, err := h.db.Pool.Exec(ctx, `UPDATE review_requests SET status='APPROVAL_PENDING',approver_id=$2 WHERE id=$1`, waiting, standInID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := h.db.Pool.Exec(ctx, `UPDATE review_requests SET status='APPROVAL_PENDING',approver_id=$2 WHERE id=$1`, orphaned, goneID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := h.db.Pool.Exec(ctx, `UPDATE users SET active=false WHERE id=$1`, goneID); err != nil {
+		t.Fatal(err)
+	}
+
+	listed := func(c *client) map[string]bool {
+		t.Helper()
+		res := c.do(http.MethodGet, "/api/v1/review-requests?limit=200", nil)
+		if res.status != http.StatusOK {
+			t.Fatalf("review list: %d %s", res.status, res.body)
+		}
+		out := map[string]bool{}
+		for _, raw := range res.json()["items"].([]any) {
+			out[raw.(map[string]any)["id"].(string)] = true
+		}
+		return out
+	}
+	opens := func(c *client, reviewID string) bool {
+		t.Helper()
+		res := c.do(http.MethodGet, "/api/v1/review-requests/"+reviewID, nil)
+		switch res.status {
+		case http.StatusOK:
+			return true
+		case http.StatusNotFound:
+			return false
+		}
+		t.Fatalf("review detail: %d %s", res.status, res.body)
+		return false
+	}
+	agree := func(name string, c *client) {
+		t.Helper()
+		shown := listed(c)
+		for _, reviewID := range []string{mine, waiting, orphaned} {
+			if shown[reviewID] != opens(c, reviewID) {
+				t.Errorf("%s: the list says %v about %s but opening it says %v", name, shown[reviewID], reviewID, opens(c, reviewID))
+			}
+		}
+	}
+
+	agree("the owner", owner)
+	agree("a stand-in approver", standIn)
+	agree("somebody outside", outsider)
+
+	// And the specific case that motivated this: the review whose approver
+	// cannot act is both listed and openable for another approver, while the
+	// one with a working approver is neither.
+	shown := listed(standIn)
+	if !shown[orphaned] || !opens(standIn, orphaned) {
+		t.Fatalf("the review nobody can approve is listed=%v openable=%v for a stand-in", shown[orphaned], opens(standIn, orphaned))
+	}
+	if !shown[waiting] {
+		t.Fatal("the approver named on a review cannot see it in the list")
+	}
+	if shown[mine] || opens(standIn, mine) {
+		t.Fatal("an approver sees a draft they have nothing to do with")
+	}
+	_ = ownerID
+}
