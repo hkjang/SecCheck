@@ -5882,3 +5882,84 @@ func TestListsAndDetailAgreeOnWhatIsVisible(t *testing.T) {
 	}
 	_ = ownerID
 }
+
+// A verdict judges a particular answer. The service already flags an item
+// whose answer moved afterwards, but nobody could say what it used to be: the
+// response is overwritten in place and the audit log keeps that it changed,
+// not its text. The reviewer re-checking a resubmission had to remember.
+func TestAVerdictKeepsTheAnswerItJudged(t *testing.T) {
+	h := newHarness(t)
+	ctx := context.Background()
+	h.user("judged-author", "REQUESTER")
+	h.user("judged-reviewer", "SECURITY_REVIEWER")
+	author := h.login("judged-author")
+	reviewer := h.login("judged-reviewer")
+	var reviewerID string
+	if err := h.db.Pool.QueryRow(ctx, `SELECT id FROM users WHERE username='judged-reviewer'`).Scan(&reviewerID); err != nil {
+		t.Fatal(err)
+	}
+
+	reviewID := author.createReview("판정 기준 서비스")
+	itemID := firstItemID(t, h, reviewID)
+	if res := author.do(http.MethodPut, "/api/v1/review-requests/"+reviewID+"/responses/"+itemID,
+		map[string]any{"applicability": "Y", "self_assessment": "COMPLIANT", "current_state": "WAF로 차단하고 있습니다", "expected_updated_at": ""}); res.status != http.StatusOK {
+		t.Fatalf("first answer: %d %s", res.status, res.body)
+	}
+	if _, err := h.db.Pool.Exec(ctx, `UPDATE review_requests SET reviewer_id=$2,status='REVIEWING' WHERE id=$1`, reviewID, reviewerID); err != nil {
+		t.Fatal(err)
+	}
+	if res := reviewer.do(http.MethodPut, "/api/v1/review-requests/"+reviewID+"/review-results/"+itemID,
+		map[string]any{"result": "COMPLIANT", "opinion": "확인함", "expected_updated_at": ""}); res.status != http.StatusOK {
+		t.Fatalf("verdict: %d %s", res.status, res.body)
+	}
+
+	judged := func() map[string]any {
+		t.Helper()
+		items := []map[string]any{}
+		if err := json.Unmarshal([]byte(reviewer.do(http.MethodGet, "/api/v1/review-requests/"+reviewID+"/items", nil).body), &items); err != nil {
+			t.Fatal(err)
+		}
+		for _, item := range items {
+			if item["id"] == itemID {
+				result := item["review_result"].(map[string]any)
+				snapshot, ok := result["judged_answer"].(map[string]any)
+				if !ok {
+					t.Fatalf("the verdict does not carry the answer it judged: %v", result)
+				}
+				return snapshot
+			}
+		}
+		t.Fatal("the item is missing")
+		return nil
+	}
+
+	if got := judged(); got["current_state"] != "WAF로 차단하고 있습니다" || got["applicability"] != "Y" {
+		t.Fatalf("the verdict recorded %v", got)
+	}
+
+	// The author rewrites the answer. The item is flagged as moved on, and the
+	// verdict still says what it was passed on.
+	if _, err := h.db.Pool.Exec(ctx, `UPDATE review_requests SET status='CHANGE_REQUESTED' WHERE id=$1`, reviewID); err != nil {
+		t.Fatal(err)
+	}
+	if res := author.do(http.MethodPut, "/api/v1/review-requests/"+reviewID+"/responses/"+itemID,
+		map[string]any{"applicability": "N", "self_assessment": "INSUFFICIENT", "current_state": "아직 적용하지 못했습니다", "expected_updated_at": ""}); res.status != http.StatusOK {
+		t.Fatalf("rewrite: %d %s", res.status, res.body)
+	}
+	got := judged()
+	if got["current_state"] != "WAF로 차단하고 있습니다" || got["applicability"] != "Y" {
+		t.Fatalf("after the answer changed the verdict reports %v", got)
+	}
+
+	// Re-judging replaces the snapshot with what is on the screen now.
+	if _, err := h.db.Pool.Exec(ctx, `UPDATE review_requests SET status='REVIEWING' WHERE id=$1`, reviewID); err != nil {
+		t.Fatal(err)
+	}
+	if res := reviewer.do(http.MethodPut, "/api/v1/review-requests/"+reviewID+"/review-results/"+itemID,
+		map[string]any{"result": "INSUFFICIENT", "opinion": "다시 봄", "expected_updated_at": ""}); res.status != http.StatusOK {
+		t.Fatalf("second verdict: %d %s", res.status, res.body)
+	}
+	if got := judged(); got["current_state"] != "아직 적용하지 못했습니다" || got["applicability"] != "N" {
+		t.Fatalf("after re-judging the verdict reports %v", got)
+	}
+}

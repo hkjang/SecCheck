@@ -371,6 +371,7 @@ docker compose exec seccheck /app/seccheck selftest --username admin --password 
 | 027 | 항목 단위 알림의 대상 항목(`notifications.item_id`) |
 | 028 | 임시 비밀번호 표시(`users.must_change_password`) |
 | 029 | 정기 점검 실행 기록(`maintenance_state`) |
+| 030 | 판정 당시의 답변 스냅숏(`review_results.judged_answer`) |
 
 ## 업그레이드와 롤백
 
