@@ -5280,7 +5280,7 @@ func TestAPasswordSomebodyElseChoseMustBeReplaced(t *testing.T) {
 
 	created := admin.do(http.MethodPost, "/api/v1/admin/users", map[string]any{
 		"username": "temp-holder", "display_name": "임시 비밀번호 사용자", "email": "temp@example.test",
-		"department": "보안팀", "password": "temporary-pass-1234", "roles": []string{"REQUESTER"},
+		"department": "보안팀", "password": "TempIssued!11", "roles": []string{"REQUESTER"},
 	})
 	if created.status != http.StatusCreated && created.status != http.StatusOK {
 		t.Fatalf("create user: %d %s", created.status, created.body)
@@ -5288,7 +5288,7 @@ func TestAPasswordSomebodyElseChoseMustBeReplaced(t *testing.T) {
 
 	// The account can sign in -- and then only replace the password.
 	holder := &client{h: h}
-	login := holder.do(http.MethodPost, "/api/v1/auth/login", map[string]string{"username": "temp-holder", "password": "temporary-pass-1234"})
+	login := holder.do(http.MethodPost, "/api/v1/auth/login", map[string]string{"username": "temp-holder", "password": "TempIssued!11"})
 	if login.status != http.StatusOK {
 		t.Fatalf("login with the temporary password: %d %s", login.status, login.body)
 	}
@@ -5315,7 +5315,7 @@ func TestAPasswordSomebodyElseChoseMustBeReplaced(t *testing.T) {
 	}
 
 	// Replacing it opens the service, and the flag is cleared for good.
-	if res := holder.do(http.MethodPut, "/api/v1/me/password", map[string]string{"current_password": "temporary-pass-1234", "new_password": "chosen-by-me-9876"}); res.status != http.StatusNoContent {
+	if res := holder.do(http.MethodPut, "/api/v1/me/password", map[string]string{"current_password": "TempIssued!11", "new_password": "ChosenByMe!22"}); res.status != http.StatusNoContent {
 		t.Fatalf("change the password: %d %s", res.status, res.body)
 	}
 	var flagged bool
@@ -5334,11 +5334,11 @@ func TestAPasswordSomebodyElseChoseMustBeReplaced(t *testing.T) {
 	if err := h.db.Pool.QueryRow(ctx, `SELECT id FROM users WHERE username='temp-holder'`).Scan(&holderID); err != nil {
 		t.Fatal(err)
 	}
-	if res := admin.do(http.MethodPost, "/api/v1/admin/users/"+holderID+"/password", map[string]string{"password": "reset-by-admin-4321"}); res.status != http.StatusNoContent {
+	if res := admin.do(http.MethodPost, "/api/v1/admin/users/"+holderID+"/password", map[string]string{"password": "ResetByAdmin!33"}); res.status != http.StatusNoContent {
 		t.Fatalf("reset the password: %d %s", res.status, res.body)
 	}
 	again := &client{h: h}
-	relogin := again.do(http.MethodPost, "/api/v1/auth/login", map[string]string{"username": "temp-holder", "password": "reset-by-admin-4321"})
+	relogin := again.do(http.MethodPost, "/api/v1/auth/login", map[string]string{"username": "temp-holder", "password": "ResetByAdmin!33"})
 	if relogin.status != http.StatusOK {
 		t.Fatalf("login after the reset: %d %s", relogin.status, relogin.body)
 	}
