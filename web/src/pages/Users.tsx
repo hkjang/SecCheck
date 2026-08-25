@@ -26,7 +26,20 @@ export default function UsersPage() {
   }).catch(() => undefined) }, [])
   const shown = users || []
   const lockedCount = page.locked
-  const active = async (user: User) => { try { const out = await post<{ released_items?: number }>(`/api/v1/admin/users/${user.id}/active`, { active: !user.active }); forgetDirectory(); const released = Number(out?.released_items || 0); toast.push(user.active ? (released ? `계정을 비활성화하고 담당 항목 ${released}개의 담당자를 비웠습니다.` : '계정을 비활성화했습니다.') : '계정을 활성화했습니다.'); load() } catch (e) { toast.push(errorMessage(e), 'error') } }
+  // Closing an account frees the items it held, but the reviews it filed or is
+  // judging stay on the row under a name nobody can act as. Those are named
+  // before the decision, not discovered later.
+  const active = async (user: User) => {
+    if (user.active) {
+      try {
+        const work = await get<Record<string, number>>(`/api/v1/admin/users/${user.id}/open-work`)
+        const parts = ([['requester', '요청자'], ['reviewer', '검토자'], ['approver', '승인자'], ['follow_ups', '미이행 후속조치']] as const)
+          .filter(([key]) => Number(work[key] || 0) > 0).map(([key, label]) => `${label} ${work[key]}건`)
+        if (parts.length && !confirm(`${user.display_name} 계정이 아직 맡고 있는 일이 있습니다.\n${parts.join(' · ')}\n\n비활성화해도 이 자리는 비워지지 않습니다. 심의 화면의 \`요청자 인계\`나 검토자 재지정으로 먼저 넘기는 것을 권합니다.\n\n그래도 비활성화할까요?`)) return
+      } catch { /* the summary is advice; a failure must not block the action */ }
+    }
+    try { const out = await post<{ released_items?: number }>(`/api/v1/admin/users/${user.id}/active`, { active: !user.active }); forgetDirectory(); const released = Number(out?.released_items || 0); toast.push(user.active ? (released ? `계정을 비활성화하고 담당 항목 ${released}개의 담당자를 비웠습니다.` : '계정을 비활성화했습니다.') : '계정을 활성화했습니다.'); load() } catch (e) { toast.push(errorMessage(e), 'error') }
+  }
   const unlock = async (user: User) => { try { await post(`/api/v1/admin/users/${user.id}/unlock`); toast.push('로그인 잠금을 해제했습니다.'); load() } catch (e) { toast.push(errorMessage(e), 'error') } }
   const resetTotp = async (user: User) => { if (!confirm(`${user.display_name} 계정의 일회용 코드를 초기화할까요? 해당 사용자의 모든 세션이 종료됩니다.`)) return; try { await post(`/api/v1/admin/users/${user.id}/totp/reset`); toast.push('일회용 코드를 초기화했습니다.'); load() } catch (e) { toast.push(errorMessage(e), 'error') } }
   return <div className="page"><div className="page-header"><div><h1 className="page-title">사용자 및 역할</h1><p className="page-description">RBAC 역할을 조합하고 비활성 계정의 세션을 즉시 종료하며, 로그인 실패로 잠긴 계정을 해제하거나 임시 비밀번호를 발급합니다.</p></div><Button variant="primary" onClick={() => setCreate(true)}><Plus size={15} /> 로컬 사용자</Button></div>

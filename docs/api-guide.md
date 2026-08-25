@@ -60,6 +60,7 @@ Authorization: Bearer sck_a1b2c3d4_xxxxxxxxxxxxxxxxxxxxxxxxxxxx
 | :--- | :--- | :--- | :--- |
 | `POST` | `/review-requests/{id}/change-requests/bulk` | 선택 항목 일괄 보완 요청 | `SECURITY_REVIEWER` |
 | `POST` | `/admin/settings/upload/test` | ClamAV(clamd) 연결 테스트 | `SYSTEM_ADMIN` |
+| `GET` | `/admin/users/{id}/open-work` | 계정이 아직 맡고 있는 진행 중 심의·미이행 후속조치 수 | `SYSTEM_ADMIN` |
 | `GET` | `/security-controls` | 통합 Security Control 목록 및 영향 통계 | 전체 |
 | `GET` | `/security-controls/{id}/impact` | 특정 Control 변경 시 영향 받는 템플릿/심의 조회 | 전체 |
 | `GET` | `/templates` | 체크리스트 템플릿 목록 및 게시 버전 조회 | 전체 |

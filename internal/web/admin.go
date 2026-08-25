@@ -162,6 +162,51 @@ func (s *Server) updateUserRoles(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(204)
 }
 
+// openWorkOf counts what an account still owns that nobody else can finish:
+// reviews it filed or is judging or approving that have not reached a final
+// state, and outstanding follow-ups the register still chases it for.
+// Deactivating an account releases its checklist items, but those roles stay
+// on the row -- so an administrator closing an account was told how many items
+// were freed and nothing at all about the reviews left without an owner.
+func (s *Server) openWorkOf(ctx context.Context, userID string) (map[string]int, error) {
+	out := map[string]int{}
+	var requester, reviewer, approver, followUps int
+	err := s.Store.Pool.QueryRow(ctx, `SELECT
+                count(*) FILTER (WHERE r.requester_id=$1),
+                count(*) FILTER (WHERE r.reviewer_id=$1),
+                count(*) FILTER (WHERE r.approver_id=$1)
+                FROM review_requests r
+                WHERE r.status NOT IN ('APPROVED','CLOSED','CANCELLED','REJECTED')
+                  AND (r.requester_id=$1 OR r.reviewer_id=$1 OR r.approver_id=$1)`, userID).
+		Scan(&requester, &reviewer, &approver)
+	if err != nil {
+		return nil, err
+	}
+	// A follow-up outlives the review: it is chased after approval, and the
+	// person it is chased from is the review's requester.
+	if err = s.Store.Pool.QueryRow(ctx, `SELECT count(*) FROM review_results rr
+                JOIN submission_items si ON si.id=rr.submission_item_id
+                JOIN submissions sub ON sub.id=si.submission_id
+                JOIN review_requests r ON r.id=sub.review_request_id
+                WHERE r.requester_id=$1 AND btrim(rr.follow_up)<>'' AND rr.follow_up_done_at IS NULL`, userID).Scan(&followUps); err != nil {
+		return nil, err
+	}
+	out["requester"], out["reviewer"], out["approver"], out["follow_ups"] = requester, reviewer, approver, followUps
+	out["total"] = requester + reviewer + approver + followUps
+	return out, nil
+}
+
+// userOpenWork answers the same question before the account is closed, so the
+// administrator can hand the work over first rather than discover it later.
+func (s *Server) userOpenWork(w http.ResponseWriter, r *http.Request) {
+	work, err := s.openWorkOf(r.Context(), r.PathValue("id"))
+	if err != nil {
+		s.fault(w, r, "QUERY_FAILED", "남은 업무를 확인하지 못했습니다.", err)
+		return
+	}
+	jsonResponse(w, 200, work)
+}
+
 func (s *Server) setUserActive(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 	var in struct {
@@ -180,7 +225,13 @@ func (s *Server) setUserActive(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	released := 0
+	// What the account still owns is counted before it is closed, because a
+	// deactivated reviewer no longer "holds" anything the queries can see.
+	work := map[string]int{}
 	if !in.Active {
+		if counted, workErr := s.openWorkOf(r.Context(), id); workErr == nil {
+			work = counted
+		}
 		_, _ = s.Store.Pool.Exec(r.Context(), `DELETE FROM sessions WHERE user_id=$1`, id)
 		// Checklist items stay assigned to a closed account otherwise: the row
 		// carries a name the directory no longer returns, so the work reads as
@@ -199,8 +250,8 @@ func (s *Server) setUserActive(w http.ResponseWriter, r *http.Request) {
 		}
 		released = int(tag.RowsAffected())
 	}
-	_ = s.Store.Audit(r.Context(), auditFrom(r, "CHANGE_PERMISSION", "USER", id, nil, map[string]any{"active": in.Active, "released_items": released}))
-	jsonResponse(w, 200, map[string]any{"active": in.Active, "released_items": released})
+	_ = s.Store.Audit(r.Context(), auditFrom(r, "CHANGE_PERMISSION", "USER", id, nil, map[string]any{"active": in.Active, "released_items": released, "open_work": work}))
+	jsonResponse(w, 200, map[string]any{"active": in.Active, "released_items": released, "open_work": work})
 }
 
 // resetUserPassword gives administrators a recovery path for local accounts.

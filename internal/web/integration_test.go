@@ -5444,3 +5444,78 @@ func TestAReviewCanBeHandedToAnotherRequester(t *testing.T) {
 		t.Log("the deactivated account can still read the review it handed over")
 	}
 }
+
+// Closing an account releases the checklist items it held and said so, but the
+// reviews it filed, was judging or was approving stayed on the row with a name
+// nobody can act as. The administrator now sees that work before deciding.
+func TestClosingAnAccountReportsTheWorkItStillOwns(t *testing.T) {
+	h := newHarness(t)
+	ctx := context.Background()
+	admin := h.login(adminOf(h))
+	leaverID := h.user("leaver", "REQUESTER", "SECURITY_REVIEWER")
+	otherID := h.user("leaver-colleague", "REQUESTER")
+	leaver := h.login("leaver")
+	colleague := h.login("leaver-colleague")
+
+	work := func() map[string]int {
+		t.Helper()
+		res := admin.do(http.MethodGet, "/api/v1/admin/users/"+leaverID+"/open-work", nil)
+		if res.status != http.StatusOK {
+			t.Fatalf("open work: %d %s", res.status, res.body)
+		}
+		out := map[string]int{}
+		for key, value := range res.json() {
+			out[key] = int(value.(float64))
+		}
+		return out
+	}
+
+	// Nothing owned yet.
+	if got := work(); got["total"] != 0 {
+		t.Fatalf("a fresh account already owns %d things: %v", got["total"], got)
+	}
+
+	// One review filed, one being judged for somebody else.
+	mine := leaver.createReview("떠나는 사람의 심의")
+	theirs := colleague.createReview("동료의 심의")
+	if _, err := h.db.Pool.Exec(ctx, `UPDATE review_requests SET reviewer_id=$2 WHERE id=$1`, theirs, leaverID); err != nil {
+		t.Fatal(err)
+	}
+	got := work()
+	if got["requester"] != 1 || got["reviewer"] != 1 || got["total"] != 2 {
+		t.Fatalf("the account owns %v, want one review filed and one being judged", got)
+	}
+
+	// A finished review is not outstanding work.
+	if _, err := h.db.Pool.Exec(ctx, `UPDATE review_requests SET status='APPROVED' WHERE id=$1`, mine); err != nil {
+		t.Fatal(err)
+	}
+	if got := work(); got["requester"] != 0 || got["total"] != 1 {
+		t.Fatalf("after the review was approved the account owns %v", got)
+	}
+
+	// But a follow-up promised on it is: the register chases it after approval.
+	var itemID string
+	if err := h.db.Pool.QueryRow(ctx, `SELECT si.id FROM submissions sub JOIN submission_items si ON si.submission_id=sub.id WHERE sub.review_request_id=$1 LIMIT 1`, mine).Scan(&itemID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := h.db.Pool.Exec(ctx, `INSERT INTO review_results(id,submission_item_id,reviewer_id,result,opinion,follow_up,follow_up_due_date) VALUES($1,$2,$3,'CONDITIONAL','조건부','로그 보존 연장',current_date+30)`, store.NewID(), itemID, otherID); err != nil {
+		t.Fatal(err)
+	}
+	if got := work(); got["follow_ups"] != 1 || got["total"] != 2 {
+		t.Fatalf("with an outstanding follow-up the account owns %v", got)
+	}
+
+	// Deactivating reports the same summary alongside the released items.
+	res := admin.do(http.MethodPost, "/api/v1/admin/users/"+leaverID+"/active", map[string]any{"active": false})
+	if res.status != http.StatusOK {
+		t.Fatalf("deactivate: %d %s", res.status, res.body)
+	}
+	summary, ok := res.json()["open_work"].(map[string]any)
+	if !ok {
+		t.Fatalf("deactivating says nothing about the work left behind: %s", res.body)
+	}
+	if summary["total"] != float64(2) {
+		t.Fatalf("the deactivation reports %v outstanding, want 2", summary["total"])
+	}
+}
