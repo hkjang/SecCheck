@@ -9,7 +9,7 @@ type Report = {
   from: string; to: string
   totals: { created: number; submitted: number; completed: number; rejected: number; in_progress: number }
   cycle_time: { measured: number; average_days: number; median_days: number; p90_days: number }
-  by_status: Row[]; by_department: Row[]; by_result: Row[]; recurring_findings: Row[]; follow_ups: Row[]; follow_ups_total: number; aging: Row[]
+  by_status: Row[]; by_department: Row[]; by_result: Row[]; recurring_findings: Row[]; repeated_findings?: Row[]; follow_ups: Row[]; follow_ups_total: number; aging: Row[]
 }
 const resultLabel: Record<string, string> = { COMPLIANT: '적합', CONDITIONAL: '조건부 적합', INSUFFICIENT: '미흡', NON_COMPLIANT: '부적합', NA_ACCEPTED: 'N/A 인정', RECHECK: '재확인' }
 
@@ -63,6 +63,7 @@ export default function Reports() {
         <ReportTable title="검토 결과 분포" rows={data.by_result} columns={[['result', '판정'], ['count', '항목 수']]} render={{ result: v => <>{resultLabel[String(v)] || String(v)}</> }} />
       </div>
       <ReportTable title="부서별 현황" rows={data.by_department} columns={[['department', '부서'], ['created', '신규'], ['completed', '완료'], ['average_days', '평균 처리일']]} render={{ department: v => <Link className="table-link" to={`/reviews?department=${encodeURIComponent(String(v))}${periodQuery}`}>{String(v)}</Link> }} />
+      <ReportTable title="같은 서비스에서 반복된 지적" rows={data.repeated_findings || []} columns={[['service_name', '서비스'], ['department', '부서'], ['item_code', '항목코드'], ['title', '보안요건'], ['times', '지적 횟수'], ['last_decided_on', '마지막 판정일']]} empty="같은 항목이 두 번 이상 지적된 서비스가 없습니다." />
       <ReportTable title="반복 미흡·부적합 항목" rows={data.recurring_findings} columns={[['item_code', '항목코드'], ['title', '보안요건'], ['category', '분류'], ['count', '발생 건수']]} empty="이 기간에 미흡·부적합 판정이 없습니다." />
       <FollowUpTable rows={data.follow_ups} total={data.follow_ups_total} includeDone={includeDone} onToggleScope={() => setIncludeDone(v => !v)} onChanged={reload} />
       <ReportTable title="진행 중 심의 경과" rows={data.aging} columns={[['bucket', '최근 변경 이후'], ['count', '건수']]} empty="진행 중인 심의가 없습니다." />

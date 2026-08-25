@@ -6409,3 +6409,65 @@ func TestAnItemShowsWhatWasDecidedLastTime(t *testing.T) {
 		t.Fatalf("the earlier evidence reads %v", names)
 	}
 }
+
+// "Which control fails most often" is a different question from "which service
+// keeps failing the same control", and only the first had an answer: one
+// service failing an item twice was hidden among everybody else's single
+// failures.
+func TestTheReportNamesServicesThatKeepFailingTheSameItem(t *testing.T) {
+	h := newHarness(t)
+	ctx := context.Background()
+	h.user("repeat-author", "REQUESTER")
+	h.user("repeat-reviewer", "SECURITY_REVIEWER")
+	author := h.login("repeat-author")
+	reviewer := h.login("repeat-reviewer")
+	var reviewerID string
+	if err := h.db.Pool.QueryRow(ctx, `SELECT id FROM users WHERE username='repeat-reviewer'`).Scan(&reviewerID); err != nil {
+		t.Fatal(err)
+	}
+
+	judge := func(service, result string) (string, string) {
+		t.Helper()
+		reviewID := author.createReview(service)
+		itemID := firstItemID(t, h, reviewID)
+		if _, err := h.db.Pool.Exec(ctx, `UPDATE review_requests SET reviewer_id=$2,status='REVIEWING' WHERE id=$1`, reviewID, reviewerID); err != nil {
+			t.Fatal(err)
+		}
+		if res := reviewer.do(http.MethodPut, "/api/v1/review-requests/"+reviewID+"/review-results/"+itemID,
+			map[string]any{"result": result, "opinion": "판정", "expected_updated_at": ""}); res.status != http.StatusOK {
+			t.Fatalf("verdict: %d %s", res.status, res.body)
+		}
+		var code string
+		if err := h.db.Pool.QueryRow(ctx, `SELECT item_code FROM submission_items WHERE id=$1`, itemID).Scan(&code); err != nil {
+			t.Fatal(err)
+		}
+		return reviewID, code
+	}
+
+	// The same service fails the same item twice; another service fails it once.
+	_, code := judge("반복 지적 서비스", "INSUFFICIENT")
+	judge("반복 지적 서비스", "NON_COMPLIANT")
+	judge("한 번만 지적된 서비스", "INSUFFICIENT")
+
+	res := reviewer.do(http.MethodGet, "/api/v1/reports/reviews", nil)
+	if res.status != http.StatusOK {
+		t.Fatalf("report: %d %s", res.status, res.body)
+	}
+	rows, ok := res.json()["repeated_findings"].([]any)
+	if !ok {
+		t.Fatalf("the report says nothing about repeated findings: %s", res.body)
+	}
+	named := map[string]float64{}
+	for _, raw := range rows {
+		row := raw.(map[string]any)
+		if row["item_code"] == code {
+			named[row["service_name"].(string)] = row["times"].(float64)
+		}
+	}
+	if named["반복 지적 서비스"] != 2 {
+		t.Fatalf("the service that failed twice is reported as %v", named["반복 지적 서비스"])
+	}
+	if _, listed := named["한 번만 지적된 서비스"]; listed {
+		t.Fatal("a service with a single failure is listed as repeating")
+	}
+}

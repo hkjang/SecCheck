@@ -62,7 +62,10 @@ type reportData struct {
 	ByDepartment []map[string]any `json:"by_department"`
 	ByResult     []map[string]any `json:"by_result"`
 	Recurring    []map[string]any `json:"recurring_findings"`
-	FollowUps    []map[string]any `json:"follow_ups"`
+	// Repeated is the same control failing again on the same service, which is
+	// what an improvement plan is actually about.
+	Repeated  []map[string]any `json:"repeated_findings"`
+	FollowUps []map[string]any `json:"follow_ups"`
 	// How many the register actually holds, so a screen showing the first few
 	// hundred can say so instead of looking complete.
 	FollowUpsTotal int64            `json:"follow_ups_total"`
@@ -146,6 +149,23 @@ func (s *Server) buildReport(r *http.Request, scope reportScope) (reportData, er
                 WHERE `+scope.where+` AND rr.result IN ('INSUFFICIENT','NON_COMPLIANT')
                 GROUP BY si.item_code,si.title,si.category ORDER BY count(*) DESC,si.item_code LIMIT 20`,
 		scope.args, "item_code", "title", "category", "count"); err != nil {
+		return data, err
+	}
+	// The sharper question behind the recurring findings: not "which control
+	// fails most often across the estate" but "which service keeps failing the
+	// same control". One service failing an item twice is a pattern the item
+	// count hides among everybody else's single failures.
+	if data.Repeated, err = s.reportRows(ctx, `SELECT r.service_name,r.department,si.item_code,si.title,count(DISTINCT r.id) AS times,
+                to_char(display_date(max(COALESCE(r.approved_at,r.updated_at))),'YYYY-MM-DD') AS last_decided_on
+                FROM review_results rr
+                JOIN submission_items si ON si.id=rr.submission_item_id
+                JOIN submissions sub ON sub.id=si.submission_id
+                JOIN review_requests r ON r.id=sub.review_request_id
+                WHERE `+scope.where+` AND rr.result IN ('INSUFFICIENT','NON_COMPLIANT')
+                GROUP BY r.service_name,r.department,si.item_code,si.title
+                HAVING count(DISTINCT r.id) > 1
+                ORDER BY count(DISTINCT r.id) DESC,max(COALESCE(r.approved_at,r.updated_at)) DESC LIMIT 20`,
+		scope.args, "service_name", "department", "item_code", "title", "times", "last_decided_on"); err != nil {
 		return data, err
 	}
 	// A conditional pass usually comes with something the team promised to do
@@ -268,6 +288,7 @@ func (s *Server) writeReportWorkbook(w http.ResponseWriter, r *http.Request, dat
 		{"부서별", []any{"부서", "신규", "완료", "평균 처리일"}, []string{"department", "created", "completed", "average_days"}, data.ByDepartment},
 		{"검토 결과", []any{"판정", "항목 수"}, []string{"result", "count"}, data.ByResult},
 		{"반복 미흡 항목", []any{"항목코드", "보안요건", "분류", "발생 건수"}, []string{"item_code", "title", "category", "count"}, data.Recurring},
+		{"반복 지적 서비스", []any{"서비스", "부서", "항목코드", "보안요건", "지적 횟수", "마지막 판정일"}, []string{"service_name", "department", "item_code", "title", "times", "last_decided_on"}, data.Repeated},
 		{"경과 기간", []any{"경과", "진행 중 건수"}, []string{"bucket", "count"}, data.Aging},
 		{"미조치 항목", []any{"심의번호", "서비스", "부서", "항목코드", "보안요건", "판정", "조치 사항", "판정일", "조치 기한", "기한 초과", "보고일", "보고자", "확인일", "확인자", "이행 결과"},
 			[]string{"review_number", "service_name", "department", "item_code", "title", "result", "follow_up", "decided_on", "due_on", "overdue", "reported_on", "reported_by", "done_on", "done_by", "follow_up_note"}, data.FollowUps},
