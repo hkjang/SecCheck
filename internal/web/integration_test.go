@@ -8028,3 +8028,62 @@ func TestAReviewCanOnlyBeHandedToSomebodyWhoCanTakeIt(t *testing.T) {
 		t.Errorf("with self review allowed the pair was still refused: %d %s", res.status, res.body)
 	}
 }
+
+// Every credential change in the service promises that the sessions it
+// replaces are gone: the reset says so, the guide says so, and an
+// administrator resetting a compromised account is relying on it. The sweep
+// threw its error away, so a failed one still answered 204 -- the password
+// changed and the intruder stayed signed in behind it.
+func TestAPasswordChangeAndItsSessionSweepAreOneChange(t *testing.T) {
+	h := newHarness(t)
+	ctx := context.Background()
+	victimID := h.user("sweep-victim", "REQUESTER")
+	admin := h.login(adminOf(h))
+	victim := h.login("sweep-victim")
+	if res := victim.do(http.MethodGet, "/api/v1/me", nil); res.status != http.StatusOK {
+		t.Fatalf("the victim is not signed in: %d", res.status)
+	}
+	before := func() string {
+		t.Helper()
+		var hash string
+		if err := h.db.Pool.QueryRow(ctx, `SELECT password_hash FROM users WHERE id=$1`, victimID).Scan(&hash); err != nil {
+			t.Fatal(err)
+		}
+		return hash
+	}
+	original := before()
+
+	// Reading sessions still works, deleting them does not: the shape of a
+	// sweep that fails while everything else looks healthy.
+	if _, err := h.db.Pool.Exec(ctx, `CREATE FUNCTION block_session_delete() RETURNS trigger AS $$ BEGIN RAISE EXCEPTION 'blocked'; END $$ LANGUAGE plpgsql`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := h.db.Pool.Exec(ctx, `CREATE TRIGGER no_session_delete BEFORE DELETE ON sessions FOR EACH ROW EXECUTE FUNCTION block_session_delete()`); err != nil {
+		t.Fatal(err)
+	}
+	res := admin.do(http.MethodPost, "/api/v1/admin/users/"+victimID+"/password", map[string]any{"password": "AnotherSecret-2026!"})
+	if res.status == http.StatusNoContent {
+		t.Fatal("a reset whose session sweep failed reported success")
+	}
+	if before() != original {
+		t.Error("the password changed even though the sessions it replaces are still open")
+	}
+	// The session the reset was supposed to end is still usable, which is why
+	// the half-applied reset is worse than none.
+	if res := victim.do(http.MethodGet, "/api/v1/me", nil); res.status != http.StatusOK {
+		t.Fatalf("the untouched session stopped working: %d", res.status)
+	}
+
+	if _, err := h.db.Pool.Exec(ctx, `DROP TRIGGER no_session_delete ON sessions`); err != nil {
+		t.Fatal(err)
+	}
+	if res := admin.do(http.MethodPost, "/api/v1/admin/users/"+victimID+"/password", map[string]any{"password": "AnotherSecret-2026!"}); res.status != http.StatusNoContent {
+		t.Fatalf("the retry after the fault: %d %s", res.status, res.body)
+	}
+	if before() == original {
+		t.Error("the retry did not change the password")
+	}
+	if res := victim.do(http.MethodGet, "/api/v1/me", nil); res.status == http.StatusOK {
+		t.Error("the session survived a successful reset")
+	}
+}

@@ -1,12 +1,14 @@
 package web
 
 import (
+	"context"
 	"fmt"
 	"net/http"
 	"strings"
 	"time"
 
 	"github.com/hkjang/SecCheck/internal/auth"
+	"github.com/jackc/pgx/v5"
 )
 
 // listSessions lets people see where their account is signed in. The rows
@@ -100,9 +102,45 @@ func (s *Server) enableTOTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	// Other sessions were opened with one factor only.
-	_, _ = s.Store.Pool.Exec(r.Context(), `DELETE FROM sessions WHERE user_id=$1 AND id<>$2`, sess.User.ID, sess.ID)
+	if err := s.endSessions(r.Context(), sess.User.ID, sess.ID); err != nil {
+		s.fault(w, r, "SESSION_SWEEP_FAILED", "일회용 코드는 설정되었으나 다른 로그인 세션을 종료하지 못했습니다. 개인 프로필의 세션 목록에서 직접 종료하세요.", err)
+		return
+	}
 	_ = s.Store.Audit(r.Context(), auditFrom(r, "TOTP_ENABLED", "USER", sess.User.ID, nil, nil))
 	w.WriteHeader(204)
+}
+
+// inTx runs one unit of work that has to happen completely or not at all.
+func (s *Server) inTx(ctx context.Context, work func(tx pgx.Tx) error) error {
+	tx, err := s.Store.Pool.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback(ctx)
+	if err = work(tx); err != nil {
+		return err
+	}
+	return tx.Commit(ctx)
+}
+
+// endSessions revokes the logins that a credential change is supposed to
+// invalidate. Every one of these calls used to throw the error away, so a
+// sweep that failed left the service claiming what it had promised: the
+// password was changed, the account closed or the second factor reset, and
+// "모든 세션이 종료됩니다" was reported to the operator while the session that
+// prompted the change was still open. A revocation that did not happen is
+// worth an error, and where the caller can roll the change back it does.
+func (s *Server) endSessions(ctx context.Context, userID, exceptID string) error {
+	query, args := `DELETE FROM sessions WHERE user_id=$1`, []any{userID}
+	if exceptID != "" {
+		query += ` AND id<>$2`
+		args = append(args, exceptID)
+	}
+	if _, err := s.Store.Pool.Exec(ctx, query, args...); err != nil {
+		s.Store.Log(ctx, "ERROR", "", "auth", "세션을 종료하지 못했습니다.", map[string]any{"error": err.Error(), "user_id": userID})
+		return err
+	}
+	return nil
 }
 
 // disableTOTP requires the current password so a borrowed session cannot strip
@@ -134,7 +172,10 @@ func (s *Server) resetUserTOTP(w http.ResponseWriter, r *http.Request) {
 		problem(w, 404, "NOT_FOUND", "사용자를 찾을 수 없습니다.", nil)
 		return
 	}
-	_, _ = s.Store.Pool.Exec(r.Context(), `DELETE FROM sessions WHERE user_id=$1`, id)
+	if err := s.endSessions(r.Context(), id, ""); err != nil {
+		s.fault(w, r, "SESSION_SWEEP_FAILED", "일회용 코드는 초기화되었으나 이 계정의 로그인 세션을 종료하지 못했습니다. 다시 시도하세요.", err)
+		return
+	}
 	_ = s.Store.Audit(r.Context(), auditFrom(r, "TOTP_RESET", "USER", id, nil, nil))
 	w.WriteHeader(204)
 }

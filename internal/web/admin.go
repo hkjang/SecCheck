@@ -16,6 +16,7 @@ import (
 	"github.com/hkjang/SecCheck/internal/notify"
 	"github.com/hkjang/SecCheck/internal/scanner"
 	"github.com/hkjang/SecCheck/internal/store"
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 )
 
@@ -244,7 +245,10 @@ func (s *Server) setUserActive(w http.ResponseWriter, r *http.Request) {
 		if counted, workErr := s.openWorkOf(r.Context(), id); workErr == nil {
 			work = counted
 		}
-		_, _ = s.Store.Pool.Exec(r.Context(), `DELETE FROM sessions WHERE user_id=$1`, id)
+		if err = s.endSessions(r.Context(), id, ""); err != nil {
+			s.fault(w, r, "SESSION_SWEEP_FAILED", "계정 상태는 바뀌었으나 로그인 세션을 종료하지 못했습니다. 다시 시도하세요.", err)
+			return
+		}
 		// Checklist items stay assigned to a closed account otherwise: the row
 		// carries a name the directory no longer returns, so the work reads as
 		// owned by nobody in particular and nobody picks it up. Reviews the
@@ -291,11 +295,20 @@ func (s *Server) resetUserPassword(w http.ResponseWriter, r *http.Request) {
 		problem(w, 422, "EXTERNAL_ACCOUNT", "SSO 계정의 비밀번호는 사내 인증 서버에서 관리합니다.", nil)
 		return
 	}
-	if _, err = s.Store.Pool.Exec(r.Context(), `UPDATE users SET password_hash=$2,must_change_password=true,failed_login_count=0,locked_until=NULL,updated_at=now() WHERE id=$1`, id, hash); err != nil {
-		s.fault(w, r, "UPDATE_FAILED", "비밀번호를 재설정하지 못했습니다.", err)
+	// The new password and the end of every session it replaces are one
+	// change: an administrator resetting a compromised account is told the
+	// sessions are gone, and a half-applied reset would leave the intruder
+	// signed in behind a password the owner no longer knows.
+	if err = s.inTx(r.Context(), func(tx pgx.Tx) error {
+		if _, txErr := tx.Exec(r.Context(), `UPDATE users SET password_hash=$2,must_change_password=true,failed_login_count=0,locked_until=NULL,updated_at=now() WHERE id=$1`, id, hash); txErr != nil {
+			return txErr
+		}
+		_, txErr := tx.Exec(r.Context(), `DELETE FROM sessions WHERE user_id=$1`, id)
+		return txErr
+	}); err != nil {
+		s.fault(w, r, "UPDATE_FAILED", "비밀번호를 재설정하지 못했습니다. 비밀번호는 그대로이고 세션도 유지됩니다.", err)
 		return
 	}
-	_, _ = s.Store.Pool.Exec(r.Context(), `DELETE FROM sessions WHERE user_id=$1`, id)
 	_ = s.Store.Audit(r.Context(), auditFrom(r, "RESET_PASSWORD", "USER", id, nil, map[string]any{"username": s.usernameOf(r.Context(), id)}))
 	w.WriteHeader(204)
 }

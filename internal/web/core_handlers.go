@@ -17,6 +17,7 @@ import (
 	"github.com/hkjang/SecCheck/internal/cryptox"
 	"github.com/hkjang/SecCheck/internal/maintenance"
 	"github.com/hkjang/SecCheck/internal/store"
+	"github.com/jackc/pgx/v5"
 	"golang.org/x/crypto/bcrypt"
 )
 
@@ -274,11 +275,19 @@ func (s *Server) changePassword(w http.ResponseWriter, r *http.Request) {
 		problem(w, 422, "VALIDATION_FAILED", "새 비밀번호는 12자 이상이어야 합니다.", nil)
 		return
 	}
-	if _, err = s.Store.Pool.Exec(r.Context(), `UPDATE users SET password_hash=$2,must_change_password=false,failed_login_count=0,locked_until=NULL,updated_at=now() WHERE id=$1`, sess.User.ID, hash); err != nil {
-		s.fault(w, r, "UPDATE_FAILED", "비밀번호를 변경하지 못했습니다.", err)
+	// Changing the password and signing the other devices out are one change.
+	// Somebody changing it because a session was taken is told the other
+	// sessions are gone, and half of that is worse than neither.
+	if err = s.inTx(r.Context(), func(tx pgx.Tx) error {
+		if _, txErr := tx.Exec(r.Context(), `UPDATE users SET password_hash=$2,must_change_password=false,failed_login_count=0,locked_until=NULL,updated_at=now() WHERE id=$1`, sess.User.ID, hash); txErr != nil {
+			return txErr
+		}
+		_, txErr := tx.Exec(r.Context(), `DELETE FROM sessions WHERE user_id=$1 AND id<>$2`, sess.User.ID, sess.ID)
+		return txErr
+	}); err != nil {
+		s.fault(w, r, "UPDATE_FAILED", "비밀번호를 변경하지 못했습니다. 기존 비밀번호와 세션이 그대로 유지됩니다.", err)
 		return
 	}
-	_, _ = s.Store.Pool.Exec(r.Context(), `DELETE FROM sessions WHERE user_id=$1 AND id<>$2`, sess.User.ID, sess.ID)
 	_ = s.Store.Audit(r.Context(), auditFrom(r, "CHANGE_PASSWORD", "USER", sess.User.ID, nil, nil))
 	w.WriteHeader(204)
 }
