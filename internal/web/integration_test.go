@@ -7544,3 +7544,95 @@ func TestLastYearsEvidenceIsOfferedWithoutAVerdict(t *testing.T) {
 		}
 	}
 }
+
+// Rejection was the end of the road. The requester could not edit the review,
+// could not resubmit it and could not cancel it; the reviewer could not ask
+// for changes, because that needs a review in progress. The user guide told
+// people to read the reason and carry on, and the only way to carry on was to
+// file a new review and lose the thread.
+func TestARejectedReviewCanBeReopenedForRework(t *testing.T) {
+	h := newHarness(t)
+	ctx := context.Background()
+	h.user("reopen-author", "REQUESTER")
+	h.user("reopen-lead", "SECURITY_REVIEWER")
+	h.user("reopen-other", "SECURITY_REVIEWER")
+	author := h.login("reopen-author")
+	lead := h.login("reopen-lead")
+	other := h.login("reopen-other")
+	var leadID string
+	if err := h.db.Pool.QueryRow(ctx, `SELECT id FROM users WHERE username='reopen-lead'`).Scan(&leadID); err != nil {
+		t.Fatal(err)
+	}
+
+	reviewID := author.createReview("반려될 서비스")
+	if _, err := h.db.Pool.Exec(ctx, `UPDATE review_requests SET reviewer_id=$2,status='REJECTED',final_result='REJECTED',final_opinion='구성이 미흡합니다' WHERE id=$1`, reviewID, leadID); err != nil {
+		t.Fatal(err)
+	}
+	// The dead end, as it stood: the author can do nothing at all with it.
+	if res := author.do(http.MethodPost, "/api/v1/review-requests/"+reviewID+"/submit", map[string]any{}); res.status == http.StatusOK {
+		t.Fatal("a rejected review was resubmitted without being reopened")
+	}
+	if res := author.do(http.MethodPost, "/api/v1/review-requests/"+reviewID+"/reopen", map[string]any{"reason": "내가 다시 열겠다"}); res.status != http.StatusForbidden {
+		t.Errorf("the author reopened their own rejected review: %d %s", res.status, res.body)
+	}
+	// A reviewer who is not this review's reviewer -- and who could act, since
+	// the named one still can -- is refused too.
+	if res := other.do(http.MethodPost, "/api/v1/review-requests/"+reviewID+"/reopen", map[string]any{"reason": "남의 심의"}); res.status != http.StatusConflict {
+		t.Errorf("an unrelated reviewer reopened it: %d %s", res.status, res.body)
+	}
+	if res := lead.do(http.MethodPost, "/api/v1/review-requests/"+reviewID+"/reopen", map[string]any{"reason": ""}); res.status != http.StatusUnprocessableEntity {
+		t.Errorf("reopening without a reason was accepted: %d %s", res.status, res.body)
+	}
+
+	res := lead.do(http.MethodPost, "/api/v1/review-requests/"+reviewID+"/reopen", map[string]any{"reason": "네트워크 구성도만 보완하면 됩니다"})
+	if res.status != http.StatusOK {
+		t.Fatalf("reopening: %d %s", res.status, res.body)
+	}
+	detail := author.do(http.MethodGet, "/api/v1/review-requests/"+reviewID, nil).json()
+	if detail["status"] != "CHANGE_REQUESTED" {
+		t.Fatalf("the reopened review is in %v, want CHANGE_REQUESTED", detail["status"])
+	}
+	// The conclusion is withdrawn with the rejection, but what was decided and
+	// why is still on the record.
+	if detail["final_result"] != "" || detail["final_opinion"] != "" {
+		t.Errorf("the withdrawn conclusion is still on the review: %v / %v", detail["final_result"], detail["final_opinion"])
+	}
+	var reopened int
+	if err := h.db.Pool.QueryRow(ctx, `SELECT count(*) FROM audit_logs WHERE event_type='REOPEN' AND target_id=$1`, reviewID).Scan(&reopened); err != nil {
+		t.Fatal(err)
+	}
+	if reopened != 1 {
+		t.Errorf("the reopening was recorded %d times", reopened)
+	}
+	var told int
+	if err := h.db.Pool.QueryRow(ctx, `SELECT count(*) FROM notifications WHERE event_type='CHANGE_REQUEST' AND target_id=$1`, reviewID).Scan(&told); err != nil {
+		t.Fatal(err)
+	}
+	if told != 1 {
+		t.Errorf("the author was told %d times that the review is open again", told)
+	}
+
+	// And now the promise in the guide holds: the author edits and resubmits.
+	items := []map[string]any{}
+	if err := json.Unmarshal([]byte(author.do(http.MethodGet, "/api/v1/review-requests/"+reviewID+"/items", nil).body), &items); err != nil {
+		t.Fatal(err)
+	}
+	ids := []string{}
+	for _, item := range items {
+		ids = append(ids, item["id"].(string))
+	}
+	if res := author.do(http.MethodPost, "/api/v1/review-requests/"+reviewID+"/responses/bulk",
+		map[string]any{"item_ids": ids, "applicability": "N/A", "na_reason": "해당 없음", "self_assessment": "N/A"}); res.status != http.StatusOK {
+		t.Fatalf("reworking: %d %s", res.status, res.body)
+	}
+	if res := author.do(http.MethodPost, "/api/v1/review-requests/"+reviewID+"/submit", map[string]any{}); res.status != http.StatusOK {
+		t.Fatalf("resubmitting after rework: %d %s", res.status, res.body)
+	}
+	if again := author.do(http.MethodGet, "/api/v1/review-requests/"+reviewID, nil).json(); again["status"] != "RESUBMITTED" {
+		t.Errorf("the reworked review went to %v", again["status"])
+	}
+	// Reopening only applies to a rejection.
+	if res := lead.do(http.MethodPost, "/api/v1/review-requests/"+reviewID+"/reopen", map[string]any{"reason": "다시"}); res.status != http.StatusConflict {
+		t.Errorf("a review that is not rejected was reopened: %d %s", res.status, res.body)
+	}
+}

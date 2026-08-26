@@ -2161,6 +2161,60 @@ func (s *Server) cancelReview(w http.ResponseWriter, r *http.Request) {
 	jsonResponse(w, 200, map[string]string{"status": "CANCELLED"})
 }
 
+// reopenRejectedReview gives a rejected review somewhere to go. Rejection was
+// the end of the road: the requester could not edit it, could not resubmit it
+// and could not cancel it; the reviewer could not ask for changes, because
+// that needs a review in progress. The user guide told people to read the
+// reason and carry on -- and the only way to carry on was to file a new review
+// and lose the thread. Reopening puts it back into 보완 필요, which is the
+// state the workflow already has for "the author has work to do", so
+// everything downstream -- editing, resubmission, the reviewer's queue --
+// works as it always has.
+func (s *Server) reopenRejectedReview(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	sess := session(r)
+	var in struct {
+		Reason string `json:"reason"`
+	}
+	if !decodeJSON(w, r, &in) {
+		return
+	}
+	in.Reason = strings.TrimSpace(in.Reason)
+	if in.Reason == "" || len([]rune(in.Reason)) > longTextLimit {
+		problem(w, 422, "VALIDATION_FAILED", fmt.Sprintf("보완 재개 사유를 %d자 이내로 작성하세요.", longTextLimit), map[string]string{"reason": "필수 입력 항목입니다."})
+		return
+	}
+	if !containsRole(sess.User, "SECURITY_REVIEWER") || s.selfReviewBlocked(r.Context(), id, sess.User.ID) {
+		problem(w, 403, "FORBIDDEN", "이 심의를 다시 열 수 없습니다.", nil)
+		return
+	}
+	// The reviewer who judged it owns the decision to reopen it; if they can
+	// no longer act, any reviewer may, for the same reason a stalled review
+	// goes back to the group.
+	var allowed bool
+	_ = s.Store.Pool.QueryRow(r.Context(), `SELECT EXISTS(SELECT 1 FROM review_requests r WHERE r.id=$1 AND r.status='REJECTED'
+                AND (r.reviewer_id=$2 OR r.reviewer_id IS NULL OR NOT `+stillHolds("r.reviewer_id", "SECURITY_REVIEWER")+`))`, id, sess.User.ID).Scan(&allowed)
+	if !allowed {
+		problem(w, 409, "STATE_CONFLICT", "반려된 심의만, 그 심의의 담당 보안 담당자가 다시 열 수 있습니다.", nil)
+		return
+	}
+	// The conclusion is withdrawn along with the rejection: leaving 반려 on the
+	// row while the author reworks it would describe a decision that no longer
+	// stands. What was decided and why stays in the decision history and in
+	// the audit log.
+	tag, err := s.Store.Pool.Exec(r.Context(), `UPDATE review_requests SET status='CHANGE_REQUESTED',final_result='',final_opinion='',approved_at=NULL,updated_at=now() WHERE id=$1 AND status='REJECTED'`, id)
+	if err != nil || tag.RowsAffected() == 0 {
+		problem(w, 409, "STATE_CONFLICT", "반려된 심의만 다시 열 수 있습니다.", nil)
+		return
+	}
+	var requester, number, service string
+	_ = s.Store.Pool.QueryRow(r.Context(), `SELECT requester_id,review_number,service_name FROM review_requests WHERE id=$1`, id).Scan(&requester, &number, &service)
+	s.addTargetedNotification(r.Context(), requester, "CHANGE_REQUEST", "반려 심의 보완 재개",
+		fmt.Sprintf("%s(%s) 심의를 보완할 수 있도록 다시 열었습니다. %s", number, service, in.Reason), "REVIEW_REQUEST", id)
+	_ = s.Store.Audit(r.Context(), auditFrom(r, "REOPEN", "REVIEW_REQUEST", id, map[string]string{"status": "REJECTED"}, map[string]string{"status": "CHANGE_REQUESTED", "reason": in.Reason}))
+	jsonResponse(w, 200, map[string]string{"status": "CHANGE_REQUESTED"})
+}
+
 func (s *Server) closeReview(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 	tag, err := s.Store.Pool.Exec(r.Context(), `UPDATE review_requests SET status='CLOSED',updated_at=now() WHERE id=$1 AND reviewer_id=$2 AND status IN ('APPROVED','REJECTED')`, id, session(r).User.ID)

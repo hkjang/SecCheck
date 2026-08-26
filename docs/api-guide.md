@@ -48,6 +48,7 @@ Authorization: Bearer sck_a1b2c3d4_xxxxxxxxxxxxxxxxxxxxxxxxxxxx
 | `PUT` | `/review-requests/{id}/review-results/{itemID}` | 항목별 검토 결과 및 의견 저장 | `SECURITY_REVIEWER` |
 | `POST` | `/review-requests/{id}/approve` | 심의 최종 승인 | `APPROVER` |
 | `POST` | `/review-requests/{id}/reject` | 심의 반려 | `APPROVER` |
+| `POST` | `/review-requests/{id}/reopen` | 반려 심의 보완 재개(`보완 필요`로 되돌림) | `SECURITY_REVIEWER` |
 
 ### 📎 증적 파일 (Evidences)
 | 메서드 | 경로 | 설명 | 권한 |
