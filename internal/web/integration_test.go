@@ -6930,7 +6930,7 @@ func TestCancellingAReviewClearsItsOutstandingWork(t *testing.T) {
 		t.Fatal("before cancelling, the review is missing from the 미처리 보완 요청 list")
 	}
 
-	if res := owner.do(http.MethodPost, "/api/v1/review-requests/"+reviewID+"/cancel", nil); res.status != http.StatusOK {
+	if res := owner.do(http.MethodPost, "/api/v1/review-requests/"+reviewID+"/cancel", map[string]any{"reason": "서비스를 접었습니다"}); res.status != http.StatusOK {
 		t.Fatalf("cancelling: %d %s", res.status, res.body)
 	}
 
@@ -7267,7 +7267,7 @@ func TestTheRegisterDropsActionsFromCancelledReviews(t *testing.T) {
 		map[string]any{"item_id": firstItemID(t, h, dropped), "reason": "보완 후 재제출", "due_date": "2030-03-31"}); res.status != http.StatusCreated {
 		t.Fatalf("sending it back: %d %s", res.status, res.body)
 	}
-	if res := owner.do(http.MethodPost, "/api/v1/review-requests/"+dropped+"/cancel", nil); res.status != http.StatusOK {
+	if res := owner.do(http.MethodPost, "/api/v1/review-requests/"+dropped+"/cancel", map[string]any{"reason": "서비스를 접었습니다"}); res.status != http.StatusOK {
 		t.Fatalf("cancelling: %d %s", res.status, res.body)
 	}
 
@@ -7634,5 +7634,78 @@ func TestARejectedReviewCanBeReopenedForRework(t *testing.T) {
 	// Reopening only applies to a rejection.
 	if res := lead.do(http.MethodPost, "/api/v1/review-requests/"+reviewID+"/reopen", map[string]any{"reason": "다시"}); res.status != http.StatusConflict {
 		t.Errorf("a review that is not rejected was reopened: %d %s", res.status, res.body)
+	}
+}
+
+// A project dropped after submission had nowhere to go: cancelling was allowed
+// only while the review was still on the requester's desk, so the reviewer had
+// to judge all eighty items of a service nobody would build, or leave it
+// stalling and reminding forever.
+func TestAReviewCanBeCancelledAfterItHasBeenSubmitted(t *testing.T) {
+	h := newHarness(t)
+	ctx := context.Background()
+	h.user("drop-requester", "REQUESTER")
+	h.user("drop-lead", "SECURITY_REVIEWER")
+	author := h.login("drop-requester")
+	lead := h.login("drop-lead")
+	var leadID string
+	if err := h.db.Pool.QueryRow(ctx, `SELECT id FROM users WHERE username='drop-lead'`).Scan(&leadID); err != nil {
+		t.Fatal(err)
+	}
+
+	reviewID := author.createReview("접히는 서비스")
+	if _, err := h.db.Pool.Exec(ctx, `UPDATE review_requests SET reviewer_id=$2,status='REVIEWING' WHERE id=$1`, reviewID, leadID); err != nil {
+		t.Fatal(err)
+	}
+
+	// Nobody else gets to decide that the service is not being built.
+	if res := lead.do(http.MethodPost, "/api/v1/review-requests/"+reviewID+"/cancel", map[string]any{"reason": "그만하죠"}); res.status == http.StatusOK {
+		t.Errorf("the reviewer cancelled somebody else's review: %d %s", res.status, res.body)
+	}
+	// Once other people are working on it, "왜" is the first thing they ask.
+	res := author.do(http.MethodPost, "/api/v1/review-requests/"+reviewID+"/cancel", map[string]any{})
+	if res.status != http.StatusUnprocessableEntity || res.errorCode() != "REASON_REQUIRED" {
+		t.Fatalf("cancelling a review under review without a reason: %d %s", res.status, res.body)
+	}
+
+	if res := author.do(http.MethodPost, "/api/v1/review-requests/"+reviewID+"/cancel", map[string]any{"reason": "서비스 출시 계획이 취소되었습니다"}); res.status != http.StatusOK {
+		t.Fatalf("cancelling: %d %s", res.status, res.body)
+	}
+	var status string
+	if err := h.db.Pool.QueryRow(ctx, `SELECT status FROM review_requests WHERE id=$1`, reviewID).Scan(&status); err != nil {
+		t.Fatal(err)
+	}
+	if status != "CANCELLED" {
+		t.Fatalf("the review is in %s", status)
+	}
+	// The person who had it on their desk hears about it, with the reason.
+	var body string
+	if err := h.db.Pool.QueryRow(ctx, `SELECT body FROM notifications WHERE recipient_id=$1 AND event_type='REVIEW_CANCELLED'`, leadID).Scan(&body); err != nil {
+		t.Fatalf("the reviewer was not told: %v", err)
+	}
+	if !strings.Contains(body, "서비스 출시 계획이 취소되었습니다") {
+		t.Errorf("the notice does not carry the reason: %s", body)
+	}
+	// And the reason is on the record.
+	var recorded string
+	if err := h.db.Pool.QueryRow(ctx, `SELECT COALESCE(after_value->>'reason','') FROM audit_logs WHERE event_type='CANCEL' AND target_id=$1`, reviewID).Scan(&recorded); err != nil {
+		t.Fatal(err)
+	}
+	if recorded != "서비스 출시 계획이 취소되었습니다" {
+		t.Errorf("the audit entry records the reason as %q", recorded)
+	}
+
+	// A review still being written needs no ceremony, and a decided one is
+	// part of the record.
+	draft := author.createReview("작성 중 서비스")
+	if res := author.do(http.MethodPost, "/api/v1/review-requests/"+draft+"/cancel", nil); res.status != http.StatusOK {
+		t.Errorf("cancelling a draft: %d %s", res.status, res.body)
+	}
+	decided := author.createReview("승인된 서비스")
+	if _, err := h.db.Pool.Exec(ctx, `UPDATE review_requests SET status='APPROVED',approved_at=now() WHERE id=$1`, decided); err != nil {
+		t.Fatal(err)
+	}
+	if res := author.do(http.MethodPost, "/api/v1/review-requests/"+decided+"/cancel", map[string]any{"reason": "역시 취소"}); res.status != http.StatusConflict {
+		t.Errorf("an approved review was cancelled: %d %s", res.status, res.body)
 	}
 }

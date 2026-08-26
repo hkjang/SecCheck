@@ -2150,16 +2150,69 @@ func (s *Server) rejectReview(w http.ResponseWriter, r *http.Request) {
 	s.decideApproval(w, r, "REJECTED")
 }
 
+// cancelReview records that the service is not being built after all. It used
+// to be possible only while the review was still on the requester's desk, so a
+// project dropped after submission had nowhere to go: the reviewer had to
+// judge all eighty items of a service nobody would build, or leave it stalling
+// and reminding forever. Whether the service is going ahead is the
+// requester's fact to state, not the reviewer's decision, so they may say so
+// at any point before the review is decided -- with a reason, once other
+// people have started working on it, and with those people told to stop.
 func (s *Server) cancelReview(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
-	tag, err := s.Store.Pool.Exec(r.Context(), `UPDATE review_requests SET status='CANCELLED',updated_at=now() WHERE id=$1 AND requester_id=$2 AND status IN ('DRAFT','CHANGE_REQUESTED')`, id, session(r).User.ID)
-	if err != nil || tag.RowsAffected() == 0 {
-		problem(w, 409, "STATE_CONFLICT", "작성 중이거나 보완 중인 본인 심의만 취소할 수 있습니다.", nil)
+	sess := session(r)
+	var in struct {
+		Reason string `json:"reason"`
+	}
+	if r.ContentLength > 0 && !decodeJSON(w, r, &in) {
 		return
 	}
-	_ = s.Store.Audit(r.Context(), auditFrom(r, "CANCEL", "REVIEW_REQUEST", id, nil, map[string]string{"status": "CANCELLED"}))
+	in.Reason = strings.TrimSpace(in.Reason)
+	if len([]rune(in.Reason)) > longTextLimit {
+		problem(w, 422, "VALIDATION_FAILED", fmt.Sprintf("취소 사유는 %d자 이내로 작성하세요.", longTextLimit), map[string]string{"reason": "너무 깁니다."})
+		return
+	}
+	var status, reviewer, approver, number, service string
+	if err := s.Store.Pool.QueryRow(r.Context(), `SELECT status,COALESCE(reviewer_id,''),COALESCE(approver_id,''),review_number,service_name FROM review_requests WHERE id=$1 AND requester_id=$2`, id, sess.User.ID).
+		Scan(&status, &reviewer, &approver, &number, &service); err != nil {
+		problem(w, 409, "STATE_CONFLICT", "본인이 신청한 심의만 취소할 수 있습니다.", nil)
+		return
+	}
+	if !contains(cancellableStatuses, status) {
+		problem(w, 409, "STATE_CONFLICT", "이미 결정된 심의는 취소할 수 없습니다.", map[string]string{"status": status})
+		return
+	}
+	// A review still being written is the requester's own business; one that
+	// somebody else has started reading is not, and "왜" is the first thing
+	// they will ask.
+	handed := status != "DRAFT"
+	if handed && in.Reason == "" {
+		problem(w, 422, "REASON_REQUIRED", "제출한 심의를 취소하려면 사유가 필요합니다. 검토자에게 그대로 전달됩니다.", map[string]string{"reason": "필수 입력 항목입니다."})
+		return
+	}
+	tag, err := s.Store.Pool.Exec(r.Context(), `UPDATE review_requests SET status='CANCELLED',updated_at=now() WHERE id=$1 AND requester_id=$2 AND status=$3`, id, sess.User.ID, status)
+	if err != nil || tag.RowsAffected() == 0 {
+		problem(w, 409, "STATE_CONFLICT", "심의를 취소하지 못했습니다.", nil)
+		return
+	}
+	if handed {
+		// Whoever had it on their desk stops working on it now rather than
+		// finding out when they open it.
+		body := fmt.Sprintf("%s(%s) 심의가 요청자에 의해 취소되었습니다. %s", number, service, in.Reason)
+		for _, recipient := range []string{reviewer, approver} {
+			if recipient != "" && recipient != sess.User.ID {
+				s.addTargetedNotification(r.Context(), recipient, "REVIEW_CANCELLED", "심의 취소", body, "REVIEW_REQUEST", id)
+			}
+		}
+	}
+	_ = s.Store.Audit(r.Context(), auditFrom(r, "CANCEL", "REVIEW_REQUEST", id, map[string]string{"status": status}, map[string]string{"status": "CANCELLED", "reason": in.Reason}))
 	jsonResponse(w, 200, map[string]string{"status": "CANCELLED"})
 }
+
+// cancellableStatuses are the states before a decision has been recorded. An
+// approved, rejected or closed review is part of the record and stays as it
+// is; a cancelled one is already cancelled.
+var cancellableStatuses = []string{"DRAFT", "CHANGE_REQUESTED", "SUBMITTED", "RESUBMITTED", "REVIEWING", "APPROVAL_PENDING"}
 
 // reopenRejectedReview gives a rejected review somewhere to go. Rejection was
 // the end of the road: the requester could not edit it, could not resubmit it
