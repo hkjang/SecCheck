@@ -106,8 +106,14 @@ func (s *Server) createUser(w http.ResponseWriter, r *http.Request) {
 	if !decodeJSON(w, r, &in) {
 		return
 	}
-	if strings.TrimSpace(in.Username) == "" || strings.TrimSpace(in.DisplayName) == "" || len(in.Password) < 12 {
-		problem(w, 422, "VALIDATION_FAILED", "사용자명, 표시 이름 및 12자 이상의 비밀번호가 필요합니다.", nil)
+	if strings.TrimSpace(in.Username) == "" || strings.TrimSpace(in.DisplayName) == "" {
+		problem(w, 422, "VALIDATION_FAILED", "사용자명과 표시 이름이 필요합니다.", nil)
+		return
+	}
+	// The service asks every other team whether they control weak passwords;
+	// its own accounts accepted twelve of the same letter.
+	if reason := auth.PasswordProblem(in.Password, in.Username); reason != "" {
+		problem(w, 422, "WEAK_PASSWORD", reason, map[string]string{"password": reason})
 		return
 	}
 	hash, err := auth.PasswordHash(in.Password)
@@ -279,6 +285,13 @@ func (s *Server) resetUserPassword(w http.ResponseWriter, r *http.Request) {
 		Password string `json:"password"`
 	}
 	if !decodeJSON(w, r, &in) {
+		return
+	}
+	// A temporary password is a password: it is typed once by the person it
+	// was handed to, and until they change it the account is only as safe as
+	// this string.
+	if reason := auth.PasswordProblem(in.Password, s.usernameOf(r.Context(), id)); reason != "" {
+		problem(w, 422, "WEAK_PASSWORD", reason, map[string]string{"password": reason})
 		return
 	}
 	hash, err := auth.PasswordHash(in.Password)

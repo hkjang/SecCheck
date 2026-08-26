@@ -118,6 +118,7 @@ Authorization: Bearer sck_a1b2c3d4_xxxxxxxxxxxxxxxxxxxxxxxxxxxx
 | `NA_REASON_REQUIRED` | `N/A` 선택 시 사유가 필요합니다 |
 | `DUE_DATE_REQUIRED` / `FOLLOW_UP_DUE_REQUIRED` | 보완 요청·후속조치에는 기한이 필요합니다 |
 | `REASON_REQUIRED` | 제출한 심의를 취소하려면 사유가 필요합니다(검토자·승인자에게 전달됩니다) |
+| `WEAK_PASSWORD` | 비밀번호가 정책에 맞지 않습니다(12자 이상, 흔한 비밀번호·아이디·서비스 이름·같은 문자 반복·연속 문자 불가). `details`에 사유가 담깁니다 |
 | `NOT_FOUND` | 대상이 없거나 접근 범위 밖입니다 |
 | `FORMAT_NOT_SUPPORTED` | 지원하지 않는 내보내기 형식입니다 |
 | `UPLOAD_REJECTED` | 확장자·크기·MIME 검증에 걸렸습니다 |

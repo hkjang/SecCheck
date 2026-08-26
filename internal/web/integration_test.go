@@ -89,8 +89,15 @@ func (h *harness) user(username string, roles ...string) string {
 
 func (h *harness) login(username string) *client {
 	h.t.Helper()
+	return h.loginWith(username, testPassword)
+}
+
+// loginWith signs in with a password other than the fixture's, which is what a
+// person does after an administrator has reset theirs.
+func (h *harness) loginWith(username, password string) *client {
+	h.t.Helper()
 	c := &client{h: h}
-	res := c.do(http.MethodPost, "/api/v1/auth/login", map[string]string{"username": username, "password": testPassword})
+	res := c.do(http.MethodPost, "/api/v1/auth/login", map[string]string{"username": username, "password": password})
 	if res.status != http.StatusOK {
 		h.t.Fatalf("login %s: status %d body %s", username, res.status, res.body)
 	}
@@ -2867,7 +2874,7 @@ func TestAuditEntriesSurviveWhatTheyDescribe(t *testing.T) {
 
 	// An administrator acting on somebody else's account names them.
 	target := h.user("reset-target", "REQUESTER")
-	if res := admin.do(http.MethodPost, "/api/v1/admin/users/"+target+"/password", map[string]string{"password": "TempPassword!99"}); res.status != http.StatusNoContent {
+	if res := admin.do(http.MethodPost, "/api/v1/admin/users/"+target+"/password", map[string]string{"password": "Handover-Spring-2026!"}); res.status != http.StatusNoContent {
 		t.Fatalf("resetting: %d %s", res.status, res.body)
 	}
 	if err := h.db.Pool.QueryRow(ctx, `SELECT COALESCE(after_value::text,'') FROM audit_logs WHERE event_type='RESET_PASSWORD' AND target_id=$1`, target).Scan(&recorded); err != nil {
@@ -8574,5 +8581,47 @@ func TestAControlSaysHowServicesHaveBeenJudgedAgainstIt(t *testing.T) {
 	// The list of checklists that carry the control is still there.
 	if items, _ := res.json()["items"].([]any); len(items) == 0 {
 		t.Error("the impact answer lost the checklist items")
+	}
+}
+
+// The checklist this service ships asks other teams whether they control weak
+// passwords. Its own accounts accepted twelve of the same letter, the account's
+// own username, and the name of the service.
+func TestAPasswordThatIsGuessedFirstIsRefused(t *testing.T) {
+	h := newHarness(t)
+	h.user("weak-target", "REQUESTER")
+	admin := h.login(adminOf(h))
+	target := h.login("weak-target")
+
+	var targetID string
+	if err := h.db.Pool.QueryRow(context.Background(), `SELECT id FROM users WHERE username='weak-target'`).Scan(&targetID); err != nil {
+		t.Fatal(err)
+	}
+	// An administrator handing out a temporary password is handing out the
+	// only thing protecting that account until it is changed.
+	for _, weak := range []string{"aaaaaaaaaaaa", "password1234", "weak-target-2026"} {
+		res := admin.do(http.MethodPost, "/api/v1/admin/users/"+targetID+"/password", map[string]string{"password": weak})
+		if res.status != http.StatusUnprocessableEntity || res.errorCode() != "WEAK_PASSWORD" {
+			t.Errorf("the temporary password %q was accepted: %d %s", weak, res.status, res.body)
+		}
+	}
+	if res := admin.do(http.MethodPost, "/api/v1/admin/users/"+targetID+"/password", map[string]string{"password": "Autumn-Handover-2026"}); res.status != http.StatusNoContent {
+		t.Fatalf("a reasonable temporary password was refused: %d %s", res.status, res.body)
+	}
+
+	// The reset ended their session, as a reset does, so they sign in with
+	// what they were given and choose their own.
+	target = h.loginWith("weak-target", "Autumn-Handover-2026")
+	res := target.do(http.MethodPut, "/api/v1/me/password", map[string]string{"current_password": "Autumn-Handover-2026", "new_password": "seccheck-2026-pw"})
+	if res.status != http.StatusUnprocessableEntity || res.errorCode() != "WEAK_PASSWORD" {
+		t.Fatalf("a password carrying the service name was accepted: %d %s", res.status, res.body)
+	}
+	if details, _ := res.json()["error"].(map[string]any)["details"].(map[string]any); details == nil || details["new_password"] == nil {
+		t.Errorf("the refusal does not say which field is wrong: %s", res.body)
+	}
+	// Creating an account follows the same rule, so a weak password cannot be
+	// smuggled in at the one moment nobody is watching.
+	if res := admin.do(http.MethodPost, "/api/v1/admin/users", map[string]any{"username": "fresh.user", "display_name": "새 사용자", "password": "123456789012", "roles": []string{"REQUESTER"}}); res.status != http.StatusUnprocessableEntity {
+		t.Errorf("a new account was created with a guessed password: %d %s", res.status, res.body)
 	}
 }

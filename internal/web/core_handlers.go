@@ -270,6 +270,10 @@ func (s *Server) changePassword(w http.ResponseWriter, r *http.Request) {
 		problem(w, 422, "VALIDATION_FAILED", "새 비밀번호는 현재 비밀번호와 달라야 합니다.", nil)
 		return
 	}
+	if reason := auth.PasswordProblem(in.NewPassword, sess.User.Username); reason != "" {
+		problem(w, 422, "WEAK_PASSWORD", reason, map[string]string{"new_password": reason})
+		return
+	}
 	hash, err := auth.PasswordHash(in.NewPassword)
 	if err != nil {
 		problem(w, 422, "VALIDATION_FAILED", "새 비밀번호는 12자 이상이어야 합니다.", nil)
