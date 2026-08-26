@@ -109,7 +109,8 @@ func (s *Server) reviewFilter(r *http.Request) (string, []any) {
 		where += " AND review_requests.reviewer_id IS NULL AND review_requests.status IN ('SUBMITTED','RESUBMITTED')"
 	}
 	if strings.TrimSpace(query.Get("stalled")) == "1" {
-		where += fmt.Sprintf(" AND review_requests.status IN ('SUBMITTED','RESUBMITTED','REVIEWING') AND review_requests.updated_at < now()-make_interval(days=>%d)", maintenance.StalledReviewDays)
+		where += fmt.Sprintf(" AND review_requests.status = ANY($%d) AND review_requests.updated_at < now()-make_interval(days=>%d)", len(args)+1, maintenance.StalledReviewDays)
+		args = append(args, maintenance.StalledStatuses)
 	}
 	// Both of these are the list behind a dashboard count, and the count stops
 	// at a cancelled review, so the list has to as well.

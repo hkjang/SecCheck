@@ -23,6 +23,14 @@ import (
 // service treats it as stuck.
 const StalledReviewDays = 3
 
+// StalledStatuses are the states in which a review is waiting on a person
+// rather than on work in progress. Sharing the days but not the states left
+// exactly the discrepancy the shared constant exists to prevent: the sweep
+// chased reviews waiting for a final signature and the dashboard did not count
+// them, so the screen said 2 while the mail chased 5 -- and the reviews it
+// left out were the ones at the last gate before the service opens.
+var StalledStatuses = []string{"SUBMITTED", "RESUBMITTED", "REVIEWING", "APPROVAL_PENDING"}
+
 const (
 	batchSize     = 5000
 	maxBatches    = 40
@@ -700,11 +708,11 @@ func (w *Worker) remindStalledReviews(ctx context.Context) int64 {
                 UPDATE review_requests SET stalled_reminded_at=now()
                 WHERE id IN (
                   SELECT r.id FROM review_requests r
-                  WHERE r.status IN ('SUBMITTED','RESUBMITTED','REVIEWING','APPROVAL_PENDING')
+                  WHERE r.status = ANY($2)
                     AND r.updated_at < now()-make_interval(days=>$1)
                     AND (r.stalled_reminded_at IS NULL OR r.stalled_reminded_at < now()-make_interval(days=>$1))
                   LIMIT 200)
-                RETURNING id,review_number,service_name,status,COALESCE(reviewer_id,''),COALESCE(approver_id,''),updated_at`, stalledReviewDays)
+                RETURNING id,review_number,service_name,status,COALESCE(reviewer_id,''),COALESCE(approver_id,''),updated_at`, stalledReviewDays, StalledStatuses)
 	if err != nil {
 		w.Store.Log(ctx, "ERROR", "", "maintenance", "stalled review query failed", map[string]any{"error": err.Error()})
 		return 0

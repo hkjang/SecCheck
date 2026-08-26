@@ -353,7 +353,7 @@ func (s *Server) dashboard(w http.ResponseWriter, r *http.Request) {
 		if !ok {
 			return
 		}
-		longPending, ok := count(`SELECT count(*) FROM review_requests WHERE status IN ('SUBMITTED','RESUBMITTED','REVIEWING') AND updated_at<now()-make_interval(days=>$1)`, maintenance.StalledReviewDays)
+		longPending, ok := count(`SELECT count(*) FROM review_requests WHERE status = ANY($2) AND updated_at<now()-make_interval(days=>$1)`, maintenance.StalledReviewDays, maintenance.StalledStatuses)
 		if !ok {
 			return
 		}

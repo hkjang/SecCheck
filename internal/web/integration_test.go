@@ -7076,3 +7076,58 @@ func TestEvidenceCanBeCarriedForwardFromLastYear(t *testing.T) {
 		t.Errorf("the refusal was not reported: %s", res.body)
 	}
 }
+
+// The stall reminder and the stall counter answer one question and used to
+// disagree about it: the sweep chased reviews waiting for a final signature,
+// the dashboard counted only the three earlier states. The number on the
+// screen was short by exactly the reviews standing at the last gate before the
+// service opens, and the list behind the number left them out too.
+func TestTheStalledCountAgreesWithWhatTheSweepChases(t *testing.T) {
+	h := newHarness(t)
+	ctx := context.Background()
+	h.user("stall-owner", "REQUESTER")
+	h.user("stall-lead", "SECURITY_REVIEWER")
+	owner := h.login("stall-owner")
+	lead := h.login("stall-lead")
+
+	aged := map[string]string{}
+	for _, status := range []string{"SUBMITTED", "RESUBMITTED", "REVIEWING", "APPROVAL_PENDING"} {
+		id := owner.createReview("정체 서비스 " + status)
+		if _, err := h.db.Pool.Exec(ctx, `UPDATE review_requests SET status=$2,updated_at=now()-interval '5 days' WHERE id=$1`, id, status); err != nil {
+			t.Fatal(err)
+		}
+		aged[status] = id
+	}
+	// A review that moved yesterday is not stuck, whatever state it is in.
+	fresh := owner.createReview("어제 움직인 서비스")
+	if _, err := h.db.Pool.Exec(ctx, `UPDATE review_requests SET status='APPROVAL_PENDING',updated_at=now()-interval '1 day' WHERE id=$1`, fresh); err != nil {
+		t.Fatal(err)
+	}
+
+	board := lead.do(http.MethodGet, "/api/v1/dashboard", nil).json()
+	analytics, _ := board["security_analytics"].(map[string]any)
+	if analytics["long_pending"] != float64(len(aged)) {
+		t.Errorf("the dashboard counts %v stalled reviews, want %d", analytics["long_pending"], len(aged))
+	}
+
+	res := lead.do(http.MethodGet, "/api/v1/review-requests?stalled=1&limit=50", nil)
+	if res.status != http.StatusOK {
+		t.Fatalf("stalled list: %d %s", res.status, res.body)
+	}
+	listed, _ := res.json()["items"].([]any)
+	if float64(len(listed)) != analytics["long_pending"] {
+		t.Errorf("the count says %v and the list behind it holds %d", analytics["long_pending"], len(listed))
+	}
+	seen := map[string]bool{}
+	for _, raw := range listed {
+		seen[raw.(map[string]any)["id"].(string)] = true
+	}
+	for status, id := range aged {
+		if !seen[id] {
+			t.Errorf("a review stuck in %s is missing from the stalled list", status)
+		}
+	}
+	if seen[fresh] {
+		t.Error("a review that moved yesterday is listed as stalled")
+	}
+}
