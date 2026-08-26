@@ -8320,3 +8320,86 @@ func TestTheApproverIsToldWhatTheyAreSigning(t *testing.T) {
 		t.Errorf("an outsider read the approval brief: %d %s", res.status, res.body)
 	}
 }
+
+// An optional item that asks for evidence used to block the submission for
+// having none, even when nobody had answered it: the service says the item
+// need not be answered and then refuses to accept the review until a file is
+// attached to it. The only ways out were to answer N/A with a reason or to
+// attach a file to a question the author was never asked.
+func TestAnOptionalItemNobodyAnsweredDoesNotDemandEvidence(t *testing.T) {
+	h := newHarness(t)
+	ctx := context.Background()
+	h.user("optional-author", "REQUESTER")
+	author := h.login("optional-author")
+
+	reviewID := author.createReview("선택 항목 서비스")
+	items := []map[string]any{}
+	if err := json.Unmarshal([]byte(author.do(http.MethodGet, "/api/v1/review-requests/"+reviewID+"/items", nil).body), &items); err != nil {
+		t.Fatal(err)
+	}
+	optional := items[0]["id"].(string)
+	// An imported template can carry this combination: the item is not
+	// compulsory, but if it does apply it has to be evidenced.
+	if _, err := h.db.Pool.Exec(ctx, `UPDATE submission_items SET required=false,evidence_required=true WHERE id=$1`, optional); err != nil {
+		t.Fatal(err)
+	}
+	// Everything else is answered so the only thing that could block the
+	// submission is the optional item.
+	ids := []string{}
+	for _, item := range items {
+		if id := item["id"].(string); id != optional {
+			ids = append(ids, id)
+		}
+	}
+	if res := author.do(http.MethodPost, "/api/v1/review-requests/"+reviewID+"/responses/bulk",
+		map[string]any{"item_ids": ids, "applicability": "N/A", "na_reason": "해당 없음", "self_assessment": "N/A"}); res.status != http.StatusOK {
+		t.Fatalf("answering the rest: %d %s", res.status, res.body)
+	}
+
+	check := author.do(http.MethodGet, "/api/v1/review-requests/"+reviewID+"/submission-check", nil).json()
+	if ready, _ := check["ready"].(bool); !ready {
+		t.Fatalf("an untouched optional item blocks the submission: %v", check["issues"])
+	}
+	if res := author.do(http.MethodPost, "/api/v1/review-requests/"+reviewID+"/submit", map[string]any{}); res.status != http.StatusOK {
+		t.Fatalf("submitting with an untouched optional item: %d %s", res.status, res.body)
+	}
+	// The filter counts agree with the gate: the item is not reported as
+	// missing evidence either.
+	after := []map[string]any{}
+	if err := json.Unmarshal([]byte(author.do(http.MethodGet, "/api/v1/review-requests/"+reviewID+"/items", nil).body), &after); err != nil {
+		t.Fatal(err)
+	}
+	for _, item := range after {
+		if item["id"] != optional {
+			continue
+		}
+		flags, _ := item["flags"].(map[string]any)
+		if missing, _ := flags["missing_evidence"].(bool); missing {
+			t.Error("the untouched optional item is flagged as missing evidence")
+		}
+	}
+
+	// Once the author says the item applies, the evidence is asked for -- that
+	// is what evidence_required means.
+	if _, err := h.db.Pool.Exec(ctx, `UPDATE review_requests SET status='DRAFT' WHERE id=$1`, reviewID); err != nil {
+		t.Fatal(err)
+	}
+	if res := author.do(http.MethodPut, "/api/v1/review-requests/"+reviewID+"/responses/"+optional,
+		map[string]any{"applicability": "Y", "self_assessment": "COMPLIANT", "current_state": "적용했습니다", "expected_updated_at": ""}); res.status != http.StatusOK {
+		t.Fatalf("answering the optional item: %d %s", res.status, res.body)
+	}
+	blocked := author.do(http.MethodGet, "/api/v1/review-requests/"+reviewID+"/submission-check", nil).json()
+	if ready, _ := blocked["ready"].(bool); ready {
+		t.Fatal("an answered item that requires evidence was accepted without any")
+	}
+	issues, _ := blocked["issues"].([]any)
+	var named bool
+	for _, raw := range issues {
+		if issue, _ := raw.(map[string]any); issue != nil && issue["item_id"] == optional {
+			named = true
+		}
+	}
+	if !named {
+		t.Errorf("the refusal does not name the item that now needs evidence: %v", issues)
+	}
+}

@@ -1118,7 +1118,7 @@ func (s *Server) listSubmissionItems(w http.ResponseWriter, r *http.Request) {
 	rows, err := s.Store.Pool.Query(r.Context(), `SELECT si.id,si.template_name,si.template_version,si.item_code,si.section,si.category,si.title,si.question,si.guide,si.legal_basis,si.example,si.severity,si.required,si.answer_type,si.evidence_required,si.options_json,si.sort_order,COALESCE(to_jsonb(resp),'{}'),COALESCE(to_jsonb(rr),'{}'),COALESCE((SELECT jsonb_agg((to_jsonb(e)-'stored_filename')||jsonb_build_object('uploaded_by_name',eu.display_name) ORDER BY e.created_at) FROM evidences e JOIN users eu ON eu.id=e.uploaded_by WHERE e.submission_item_id=si.id AND e.deleted_at IS NULL),'[]'),COALESCE((SELECT jsonb_agg(to_jsonb(cr) ORDER BY cr.created_at) FROM change_requests cr WHERE cr.submission_item_id=si.id),'[]'),COALESCE((SELECT jsonb_agg(to_jsonb(c)||jsonb_build_object('author_name',u.display_name) ORDER BY c.created_at) FROM comments c JOIN users u ON u.id=c.author_id WHERE c.submission_item_id=si.id),'[]'),COALESCE(`+staleVerdictSQL+`,false),
                 jsonb_build_object(
                   'missing_answer', COALESCE(resp.applicability,'')='',
-                  'missing_evidence', si.evidence_required AND COALESCE(resp.applicability,'')<>'N/A' AND NOT EXISTS(SELECT 1 FROM evidences e WHERE e.submission_item_id=si.id AND e.deleted_at IS NULL),
+                  'missing_evidence', si.evidence_required AND COALESCE(resp.applicability,'')<>'N/A' AND (si.required OR COALESCE(resp.applicability,'')<>'') AND NOT EXISTS(SELECT 1 FROM evidences e WHERE e.submission_item_id=si.id AND e.deleted_at IS NULL),
                   'open_change', EXISTS(SELECT 1 FROM change_requests cr WHERE cr.submission_item_id=si.id AND cr.status<>'VERIFIED'),
                   'stale_verdict', COALESCE(`+staleVerdictSQL+`,false),
                   'carried', resp.carried_at IS NOT NULL,
@@ -1469,7 +1469,14 @@ func (s *Server) validateSubmission(ctx context.Context, id string) ([]map[strin
 		if applicability == "N/A" && strings.TrimSpace(na) == "" {
 			reasons = append(reasons, "N/A 사유 누락")
 		}
-		if evidenceRequired && applicability != "N/A" && ev == 0 {
+		// A required item will need its evidence whatever the author answers,
+		// so it is asked for straight away. An optional one is asked for only
+		// once the author has said it applies: refusing an untouched optional
+		// item for having no evidence is a demand nobody can meet honestly --
+		// the service has just said the item need not be answered, and the
+		// only ways out were to answer N/A with a reason or to attach a file
+		// to a question that was never asked.
+		if evidenceRequired && applicability != "N/A" && (required || applicability != "") && ev == 0 {
 			reasons = append(reasons, "필수 증적 누락")
 		}
 		if bad > 0 {
