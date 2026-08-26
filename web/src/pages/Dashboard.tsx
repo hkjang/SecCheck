@@ -8,7 +8,7 @@ import { useAuth } from '../main'
 
 type FollowUp = { id: string; review_id: string; item_id?: string; review_number: string; service_name: string; item_code: string; title: string; follow_up: string; due_date?: string; overdue: boolean; reported: boolean }
 type MyItems = { review_id: string; review_number: string; service_name: string; status: string; items: number; unanswered: number; to_fix: number }
-type DashboardData = { status_counts: Record<string, number>; opening_soon: number; opening_soon_unfinished: number; open_change_requests: number; my_queue: QueueEntry[]; due_soon: DueChange[]; my_follow_ups?: FollowUp[]; my_items?: MyItems[]; security_analytics?: { unassigned?: number; long_pending?: number; long_pending_days?: number } }
+type DashboardData = { status_counts: Record<string, number>; opening_soon: number; opening_soon_unfinished: number; open_change_requests: number; my_queue: QueueEntry[]; due_soon: DueChange[]; my_follow_ups?: FollowUp[]; my_items?: MyItems[]; has_more?: Record<string, boolean>; security_analytics?: { unassigned?: number; long_pending?: number; long_pending_days?: number } }
 export default function Dashboard() {
   const { user } = useAuth()
   // Only a security lead sees these; for everybody else the server omits them.
@@ -27,6 +27,9 @@ export default function Dashboard() {
   const due = data.due_soon || []
   const actions = data.my_follow_ups || []
   const mine = data.my_items || []
+  // A card that stops at twelve without a word reads as the whole of the
+  // reader's work, and that is the number they act on.
+  const more = (key: string) => data.has_more?.[key] ? <span className="subtle"> · 12건만 표시</span> : null
   const analytics = data.security_analytics
   return <div className="page"><div className="page-header"><div><h1 className="page-title">안녕하세요, {user.display_name}님</h1><p className="page-description">오늘 처리할 보안성 심의 업무를 확인하세요.</p></div><div className="header-actions">{user.roles.some(r => ['REQUESTER', 'SYSTEM_ADMIN'].includes(r)) && <Link to="/reviews/new"><Button variant="primary"><Plus size={15} /> 신규 심의 요청</Button></Link>}</div></div>
     {/* Every number here is a set of reviews, so every number opens that set:
@@ -41,14 +44,14 @@ export default function Dashboard() {
       <Link className="table-link" to="/reviews?stalled=1">{analytics.long_pending_days ?? 3}일 이상 멈춘 심의 {analytics.long_pending ?? 0}건 <ArrowRight size={13} /></Link>
     </div></section>}
 
-    <section className="card"><div className="card-header"><h2><Inbox size={17} /> 내 차례</h2><div className="header-actions"><Badge tone={queue.length ? 'blue' : ''}>{queue.length}건</Badge><Link className="table-link" to="/reviews?mine=1">전체 보기 <ArrowRight size={13} /></Link></div></div>
+    <section className="card"><div className="card-header"><h2><Inbox size={17} /> 내 차례</h2><div className="header-actions"><Badge tone={queue.length ? 'blue' : ''}>{queue.length}건</Badge>{more('my_queue')}<Link className="table-link" to="/reviews?mine=1">전체 보기 <ArrowRight size={13} /></Link></div></div>
       <div className="card-body">{queue.length ? queue.map(q => <div className="queue-row" key={q.id}><Badge tone="blue">{q.action}</Badge><div className="grow"><Link className="table-link" to={`/reviews/${q.id}`}>{q.review_number}</Link> <strong>{q.service_name}</strong><span className="subtle">오픈 예정 {formatDate(q.planned_open_date)} · 최근 변경 {formatDate(q.updated_at, true)}</span></div><StatusBadge status={q.status} /></div>) : <Empty title="지금 처리할 심의가 없습니다." description="새로 배정되면 상단 알림과 이 목록에 함께 표시됩니다." />}</div></section>
 
     {/* 내 차례 lists reviews; this lists the checklist items inside them that
         somebody handed to me by name. Each row opens that review already
         filtered to 내 담당 항목, which is the screen the reader wanted. */}
     {mine.length > 0 && <section className="card">
-      <div className="card-header"><h2><ListChecks size={17} /> 내 담당 항목</h2><Badge tone="blue">{mine.reduce((n, m) => n + Number(m.unanswered) + Number(m.to_fix), 0)}건</Badge></div>
+      <div className="card-header"><h2><ListChecks size={17} /> 내 담당 항목</h2><Badge tone="blue">{mine.reduce((n, m) => n + Number(m.unanswered) + Number(m.to_fix), 0)}건</Badge>{more('my_items')}</div>
       <div className="table-wrap"><table><caption className="sr-only">나에게 배정된 체크리스트 항목</caption>
         <thead><tr><th scope="col">심의</th><th scope="col">배정</th><th scope="col">미작성</th><th scope="col">보완 필요</th><th scope="col">상태</th></tr></thead>
         <tbody>{mine.map(m => <tr key={m.review_id}>
@@ -60,11 +63,11 @@ export default function Dashboard() {
         </tr>)}</tbody></table></div>
     </section>}
 
-    {due.length > 0 && <section className="card"><div className="card-header"><h2><CalendarClock size={17} /> 보완 조치 기한</h2><Badge tone={due.some(d => d.overdue) ? 'red' : 'amber'}>{due.length}건</Badge></div>
+    {due.length > 0 && <section className="card"><div className="card-header"><h2><CalendarClock size={17} /> 보완 조치 기한</h2><Badge tone={due.some(d => d.overdue) ? 'red' : 'amber'}>{due.length}건</Badge>{more('due_soon')}</div>
       <div className="table-wrap"><table><caption className="sr-only">기한이 임박했거나 지난 보완 요청</caption><thead><tr><th scope="col">심의</th><th scope="col">항목</th><th scope="col">기한</th><th scope="col">상태</th></tr></thead><tbody>{due.map(d => <tr key={d.id}><td><Link className="table-link" to={`/reviews/${d.review_request_id}${d.item_id ? `?item=${d.item_id}` : ''}`}>{d.review_number}</Link><div className="subtle">{d.service_name}</div></td><td><strong>{d.item_code}</strong><div className="subtle">{d.title}</div></td><td>{formatDate(d.due_date)}</td><td><Badge tone={d.overdue ? 'red' : 'amber'}>{d.overdue ? '기한 초과' : '임박'}</Badge></td></tr>)}</tbody></table></div></section>}
 
     {actions.length > 0 && <section className="card">
-      <div className="card-header"><h2><ClipboardCheck size={17} /> 내 후속조치</h2><Badge tone={actions.some(a => a.overdue) ? 'red' : 'amber'}>{actions.length}건</Badge></div>
+      <div className="card-header"><h2><ClipboardCheck size={17} /> 내 후속조치</h2><Badge tone={actions.some(a => a.overdue) ? 'red' : 'amber'}>{actions.length}건</Badge>{more('my_follow_ups')}</div>
       <div className="table-wrap"><table><caption className="sr-only">이행해야 할 후속조치</caption>
         <thead><tr><th scope="col">심의</th><th scope="col">항목</th><th scope="col">조치 사항</th><th scope="col">기한</th><th scope="col">상태</th></tr></thead>
         <tbody>{actions.map(a => <tr key={a.id}>

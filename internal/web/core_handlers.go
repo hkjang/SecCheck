@@ -377,12 +377,20 @@ func (s *Server) dashboard(w http.ResponseWriter, r *http.Request) {
 		analytics["long_pending"] = longPending
 		analytics["long_pending_days"] = maintenance.StalledReviewDays
 	}
-	jsonResponse(w, 200, map[string]any{"status_counts": counts, "opening_soon": overdue, "opening_soon_unfinished": openingUnfinished, "open_change_requests": openChanges, "security_analytics": analytics, "my_queue": s.myQueue(r), "due_soon": s.dueChangeRequests(r), "my_follow_ups": s.myFollowUps(r), "my_items": s.myAssignedItems(r)})
+	// Each card says whether it is showing everything: a list that stops at
+	// twelve without a word reads as the whole of somebody's work.
+	queue, queueMore := s.myQueue(r)
+	due, dueMore := s.dueChangeRequests(r)
+	follows, followsMore := s.myFollowUps(r)
+	mine, mineMore := s.myAssignedItems(r)
+	jsonResponse(w, 200, map[string]any{"status_counts": counts, "opening_soon": overdue, "opening_soon_unfinished": openingUnfinished, "open_change_requests": openChanges, "security_analytics": analytics,
+		"my_queue": queue, "due_soon": due, "my_follow_ups": follows, "my_items": mine,
+		"has_more": map[string]bool{"my_queue": queueMore, "due_soon": dueMore, "my_follow_ups": followsMore, "my_items": mineMore}})
 }
 
 // myQueue lists the reviews that are actually waiting on the signed-in person,
 // so the dashboard opens on work rather than on statistics.
-func (s *Server) myQueue(r *http.Request) []map[string]any {
+func (s *Server) myQueue(r *http.Request) ([]map[string]any, bool) {
 	sess := session(r)
 	where := myTurnClause(sess, 1)
 	rows, err := s.Store.Pool.Query(r.Context(), `SELECT review_requests.id,review_number,service_name,review_requests.status,planned_open_date,review_requests.updated_at,
@@ -392,15 +400,15 @@ func (s *Server) myQueue(r *http.Request) []map[string]any {
                   WHEN review_requests.status='REVIEWING' THEN '검토 진행'
                   ELSE '승인'
                 END
-                FROM review_requests WHERE `+where+` ORDER BY planned_open_date ASC NULLS LAST, review_requests.updated_at ASC LIMIT 12`, sess.User.ID)
+                FROM review_requests WHERE `+where+` ORDER BY planned_open_date ASC NULLS LAST, review_requests.updated_at ASC LIMIT 13`, sess.User.ID)
 	if err != nil {
-		return []map[string]any{}
+		return []map[string]any{}, false
 	}
 	rows2, scanErr := scanDynamic(rows, []string{"id", "review_number", "service_name", "status", "planned_open_date", "updated_at", "action"})
 	if scanErr != nil {
-		return []map[string]any{}
+		return []map[string]any{}, false
 	}
-	return rows2
+	return trimDashboard(rows2)
 }
 
 // dueChangeRequests surfaces the change requests whose due date has passed or
@@ -409,7 +417,7 @@ func (s *Server) myQueue(r *http.Request) []map[string]any {
 // collects outstanding actions is for the security team; the people who
 // actually carry them out cannot open it, so their own commitments were
 // visible only one review at a time.
-func (s *Server) myFollowUps(r *http.Request) []map[string]any {
+func (s *Server) myFollowUps(r *http.Request) ([]map[string]any, bool) {
 	sess := session(r)
 	where, args := accessFilter(sess, 1)
 	if hasAnyRole(sess.User, "SECURITY_REVIEWER", "AUDITOR") {
@@ -425,15 +433,15 @@ func (s *Server) myFollowUps(r *http.Request) []map[string]any {
                 JOIN submissions sub ON sub.id=si.submission_id
                 JOIN review_requests ON review_requests.id=sub.review_request_id
                 WHERE btrim(rr.follow_up)<>'' AND rr.follow_up_done_at IS NULL AND review_requests.status<>'CANCELLED' AND `+where+`
-                ORDER BY rr.follow_up_due_date NULLS LAST,review_requests.review_number LIMIT 12`, args...)
+                ORDER BY rr.follow_up_due_date NULLS LAST,review_requests.review_number LIMIT 13`, args...)
 	if err != nil {
-		return []map[string]any{}
+		return []map[string]any{}, false
 	}
 	rows2, scanErr := scanDynamic(rows, []string{"id", "review_id", "review_number", "service_name", "item_id", "item_code", "title", "follow_up", "due_date", "overdue", "reported"})
 	if scanErr != nil {
-		return []map[string]any{}
+		return []map[string]any{}, false
 	}
-	return rows2
+	return trimDashboard(rows2)
 }
 
 // myAssignedItems answers "where is the work that is mine". Assigning items to
@@ -444,7 +452,7 @@ func (s *Server) myFollowUps(r *http.Request) []map[string]any {
 // three. A correction handed to somebody by name counts as theirs too, even
 // when the item itself was written by someone else: it is work with their
 // name on it and a date attached.
-func (s *Server) myAssignedItems(r *http.Request) []map[string]any {
+func (s *Server) myAssignedItems(r *http.Request) ([]map[string]any, bool) {
 	rows, err := s.Store.Pool.Query(r.Context(), `SELECT review_requests.id AS review_id,review_requests.review_number,review_requests.service_name,review_requests.status,
                 count(*) AS items,
                 count(*) FILTER (WHERE resp.assigned_to=$1 AND COALESCE(resp.applicability,'')='') AS unanswered,
@@ -462,18 +470,18 @@ func (s *Server) myAssignedItems(r *http.Request) []map[string]any {
                 GROUP BY review_requests.id,review_requests.review_number,review_requests.service_name,review_requests.status
                 HAVING count(*) FILTER (WHERE resp.assigned_to=$1 AND COALESCE(resp.applicability,'')='') > 0
                     OR count(*) FILTER (WHERE mine.open_change) > 0
-                ORDER BY count(*) FILTER (WHERE mine.open_change) DESC,count(*) FILTER (WHERE resp.assigned_to=$1 AND COALESCE(resp.applicability,'')='') DESC,review_requests.review_number LIMIT 12`, session(r).User.ID)
+                ORDER BY count(*) FILTER (WHERE mine.open_change) DESC,count(*) FILTER (WHERE resp.assigned_to=$1 AND COALESCE(resp.applicability,'')='') DESC,review_requests.review_number LIMIT 13`, session(r).User.ID)
 	if err != nil {
-		return []map[string]any{}
+		return []map[string]any{}, false
 	}
 	out, scanErr := scanDynamic(rows, []string{"review_id", "review_number", "service_name", "status", "items", "unanswered", "to_fix"})
 	if scanErr != nil {
-		return []map[string]any{}
+		return []map[string]any{}, false
 	}
-	return out
+	return trimDashboard(out)
 }
 
-func (s *Server) dueChangeRequests(r *http.Request) []map[string]any {
+func (s *Server) dueChangeRequests(r *http.Request) ([]map[string]any, bool) {
 	sess := session(r)
 	where, args := accessFilter(sess, 1)
 	if hasAnyRole(sess.User, "SECURITY_REVIEWER", "AUDITOR") {
@@ -485,21 +493,34 @@ func (s *Server) dueChangeRequests(r *http.Request) []map[string]any {
                 JOIN review_requests ON review_requests.id=c.review_request_id
                 JOIN submission_items si ON si.id=c.submission_item_id
                 WHERE c.status<>'VERIFIED' AND c.due_date IS NOT NULL AND c.due_date <= display_today()+7 AND review_requests.status<>'CANCELLED' AND `+where+`
-                ORDER BY c.due_date ASC LIMIT 12`, args...)
+                ORDER BY c.due_date ASC LIMIT 13`, args...)
 	if err != nil {
-		return []map[string]any{}
+		return []map[string]any{}, false
 	}
 	rows2, scanErr := scanDynamic(rows, []string{"id", "review_request_id", "review_number", "service_name", "item_id", "item_code", "title", "due_date", "status", "overdue"})
 	if scanErr != nil {
-		return []map[string]any{}
+		return []map[string]any{}, false
 	}
-	return rows2
+	return trimDashboard(rows2)
 }
 
 // searchPageSize is how many hits of each kind a search shows. One more than
 // this is read from the database so the screen knows whether it is showing
 // everything.
 const searchPageSize = 20
+
+// dashboardRows is how many rows a dashboard card shows. One more than that
+// is fetched so the card can say there are more: a list that stops at twelve
+// without a word reads as the whole of somebody's work, which is the number
+// they then act on.
+const dashboardRows = 12
+
+func trimDashboard(rows []map[string]any) ([]map[string]any, bool) {
+	if len(rows) > dashboardRows {
+		return rows[:dashboardRows], true
+	}
+	return rows, false
+}
 
 func trimSearch(rows []map[string]any) ([]map[string]any, bool) {
 	if len(rows) > searchPageSize {

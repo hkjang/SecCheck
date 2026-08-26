@@ -8474,3 +8474,33 @@ func TestASelectItemWithNoOptionsCannotBePublished(t *testing.T) {
 		t.Errorf("the template list reports %v unusable items", found)
 	}
 }
+
+// A dashboard card that stops at twelve rows without a word reads as the whole
+// of somebody's work, and that is the number they act on. The lists were
+// capped in silence: thirteen reviews waiting looked exactly like twelve.
+func TestADashboardCardSaysWhenItIsShowingOnlyPartOfTheWork(t *testing.T) {
+	h := newHarness(t)
+	ctx := context.Background()
+	h.user("cap-owner", "REQUESTER")
+	owner := h.login("cap-owner")
+
+	for i := 0; i < 13; i++ {
+		id := owner.createReview(fmt.Sprintf("대기 서비스 %02d", i))
+		if _, err := h.db.Pool.Exec(ctx, `UPDATE review_requests SET planned_open_date=display_today()+($2::int) WHERE id=$1`, id, i+1); err != nil {
+			t.Fatal(err)
+		}
+	}
+	board := owner.do(http.MethodGet, "/api/v1/dashboard", nil).json()
+	queue, _ := board["my_queue"].([]any)
+	if len(queue) != 12 {
+		t.Fatalf("the card shows %d rows, want the cap of 12", len(queue))
+	}
+	hasMore, _ := board["has_more"].(map[string]any)
+	if hasMore == nil || hasMore["my_queue"] != true {
+		t.Errorf("thirteen reviews waiting were shown as twelve with no word about the rest: %v", board["has_more"])
+	}
+	// A card that is showing everything says so by staying quiet.
+	if hasMore["my_items"] != false || hasMore["due_soon"] != false {
+		t.Errorf("empty cards claim to be truncated: %v", hasMore)
+	}
+}

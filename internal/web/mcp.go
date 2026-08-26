@@ -209,7 +209,9 @@ func (s *Server) callMCPTool(r *http.Request, raw json.RawMessage) (any, *rpcErr
 	case "seccheck.dashboard":
 		data, err = s.mcpDashboard(r, sess)
 	case "seccheck.my_queue":
-		data = map[string]any{"my_queue": s.myQueue(r), "due_soon": s.dueChangeRequests(r)}
+		queue, queueMore := s.myQueue(r)
+		due, dueMore := s.dueChangeRequests(r)
+		data = map[string]any{"my_queue": queue, "due_soon": due, "has_more": map[string]bool{"my_queue": queueMore, "due_soon": dueMore}}
 	case "seccheck.review_report":
 		if !hasAnyRole(sess.User, "SYSTEM_ADMIN", "SECURITY_REVIEWER", "AUDITOR", "APPROVER") {
 			return nil, &rpcError{Code: -32001, Message: "이 도구를 사용할 권한이 없습니다."}
