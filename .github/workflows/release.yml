@@ -3,6 +3,14 @@ name: offline-image-release
 on:
   push:
     tags: ['v*.*.*']
+  # Re-cutting the offline image for a tag that already exists -- a runner
+  # that died mid-build, a registry that was unreachable -- otherwise means
+  # deleting and re-pushing the tag.
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: '다시 빌드할 태그 (예: v1.0.124)'
+        required: true
 
 permissions:
   contents: write
@@ -31,6 +39,8 @@ jobs:
           --health-retries 20
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ inputs.tag || github.ref }}
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version-file: go.mod
@@ -41,9 +51,14 @@ jobs:
         id: version
         shell: bash
         run: |
-          version="${GITHUB_REF_NAME#v}"
+          ref="${{ inputs.tag || github.ref_name }}"
+          version="${ref#v}"
           test "$(tr -d '\r\n' < VERSION)" = "$version"
           echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "tag=$ref" >> "$GITHUB_OUTPUT"
+          # The commit under test is the one checked out, which for a manual
+          # re-cut is the tag rather than whatever the branch points at now.
+          echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
       - name: Require a green security-ci run for this commit
         env:
           GH_TOKEN: ${{ github.token }}
@@ -54,24 +69,24 @@ jobs:
           # the vulnerability, secret, container and DAST gates. Refusing to
           # publish a commit whose CI is not green covers all of them.
           for attempt in $(seq 1 60); do
-            status=$(gh run list --workflow=ci.yml --commit "$GITHUB_SHA" \
+            status=$(gh run list --workflow=ci.yml --commit "${{ steps.version.outputs.sha }}" \
               --repo "$GITHUB_REPOSITORY" --limit 1 --json status,conclusion \
               --jq '.[0] | "\(.status) \(.conclusion)"' || echo "")
             case "$status" in
               "completed success")
-                echo "security-ci passed for $GITHUB_SHA"
+                echo "security-ci passed for ${{ steps.version.outputs.sha }}"
                 exit 0 ;;
               "completed "*)
-                echo "::error::security-ci concluded '${status#completed }' for $GITHUB_SHA; refusing to release"
+                echo "::error::security-ci concluded '${status#completed }' for ${{ steps.version.outputs.sha }}; refusing to release"
                 exit 1 ;;
               "")
-                echo "no security-ci run found for $GITHUB_SHA yet (attempt $attempt)" ;;
+                echo "no security-ci run found for ${{ steps.version.outputs.sha }} yet (attempt $attempt)" ;;
               *)
                 echo "security-ci is $status (attempt $attempt)" ;;
             esac
             sleep 20
           done
-          echo "::error::security-ci did not conclude for $GITHUB_SHA within 20 minutes"
+          echo "::error::security-ci did not conclude for ${{ steps.version.outputs.sha }} within 20 minutes"
           exit 1
       - name: Build and test image
         env:
@@ -169,21 +184,21 @@ jobs:
           } > "$notes"
           # The curated upgrade notes for this version, followed by the
           # generated commit list.
-          awk -v want="## $GITHUB_REF_NAME" '
+          awk -v want="## ${{ steps.version.outputs.tag }}" '
             $0 == want {found=1; next}
             found && /^## v/ {exit}
             found {print}
           ' CHANGELOG.md >> "$notes"
-          gh release create "$GITHUB_REF_NAME" \
+          gh release create "${{ steps.version.outputs.tag }}" \
             "seccheck-v${{ steps.version.outputs.version }}.tar.gz" \
             --repo hkjang/SecCheck \
             --verify-tag \
             --generate-notes \
             --notes-file "$notes" \
-            --title "SecCheck $GITHUB_REF_NAME"
+            --title "SecCheck ${{ steps.version.outputs.tag }}"
       - name: Verify single release asset
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          test "$(gh release view "$GITHUB_REF_NAME" --repo hkjang/SecCheck --json assets --jq '.assets | length')" = "1"
-          test "$(gh release view "$GITHUB_REF_NAME" --repo hkjang/SecCheck --json assets --jq '.assets[0].name')" = "seccheck-v${{ steps.version.outputs.version }}.tar.gz"
+          test "$(gh release view "${{ steps.version.outputs.tag }}" --repo hkjang/SecCheck --json assets --jq '.assets | length')" = "1"
+          test "$(gh release view "${{ steps.version.outputs.tag }}" --repo hkjang/SecCheck --json assets --jq '.assets[0].name')" = "seccheck-v${{ steps.version.outputs.version }}.tar.gz"

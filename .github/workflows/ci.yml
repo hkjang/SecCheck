@@ -4,6 +4,10 @@ on:
   push:
     branches: [main]
   pull_request:
+  # GitHub occasionally does not create a run for a push. Without a manual
+  # trigger the only way to get one is to push again, which puts an empty
+  # commit in the history of a release just to make the checks appear.
+  workflow_dispatch:
 
 permissions:
   contents: read
