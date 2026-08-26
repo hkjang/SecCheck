@@ -67,7 +67,7 @@ Authorization: Bearer sck_a1b2c3d4_xxxxxxxxxxxxxxxxxxxxxxxxxxxx
 | `GET` | `/admin/api-keys` | 설치 전체의 API 키와 소유자·마지막 사용 시각 | `SYSTEM_ADMIN` |
 | `POST` | `/admin/api-keys/{id}/revoke` | 다른 사용자의 API 키 폐기 | `SYSTEM_ADMIN` |
 | `GET` | `/security-controls` | 통합 Security Control 목록 및 영향 통계 | 전체 |
-| `GET` | `/security-controls/{id}/impact` | 특정 Control 변경 시 영향 받는 템플릿/심의 조회 | 전체 |
+| `GET` | `/security-controls/{id}/impact` | 연결된 체크리스트와 영향 심의 범위, 그리고 이 Control의 판정 이력(`{items, outcomes}`) |
 | `GET` | `/templates` | 체크리스트 템플릿 목록 및 게시 버전 조회 | 전체 |
 | `GET` | `/templates/{id}/rule-check` | 게시된 체크리스트에서 심의에 쓸 수 없는 항목(규칙 오류로 배정되지 않거나, 선택지가 없어 답할 수 없는 항목) | `TEMPLATE_ADMIN`, `SECURITY_REVIEWER` |
 

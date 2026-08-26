@@ -159,5 +159,49 @@ func (s *Server) controlImpact(w http.ResponseWriter, r *http.Request) {
 		s.fault(w, r, "QUERY_FAILED", "목록을 불러오지 못했습니다.", err)
 		return
 	}
-	jsonResponse(w, 200, items)
+	jsonResponse(w, 200, map[string]any{"items": items, "outcomes": s.controlOutcomes(r, r.PathValue("id"))})
+}
+
+// controlOutcomes answers "how is this control actually doing". The catalogue
+// could say which checklists carry a control and how many reviews they reached,
+// and stopped there: whether services keep passing it or keep failing it -- the
+// question a control owner has -- was somewhere in the reports, spread over
+// item codes that differ from template to template. The verdicts are counted
+// through the control the items are mapped to, so a control renamed or
+// re-coded in a new template keeps one history.
+func (s *Server) controlOutcomes(r *http.Request, controlID string) map[string]any {
+	out := map[string]any{"judged": 0, "compliant": 0, "conditional": 0, "insufficient": 0, "non_compliant": 0, "na": 0, "recent_findings": []map[string]any{}}
+	var judged, compliant, conditional, insufficient, nonCompliant, na int
+	if err := s.Store.Pool.QueryRow(r.Context(), `SELECT count(*),
+                count(*) FILTER (WHERE rr.result='COMPLIANT'),
+                count(*) FILTER (WHERE rr.result='CONDITIONAL'),
+                count(*) FILTER (WHERE rr.result='INSUFFICIENT'),
+                count(*) FILTER (WHERE rr.result='NON_COMPLIANT'),
+                count(*) FILTER (WHERE rr.result='NA_ACCEPTED')
+                FROM review_results rr
+                JOIN submission_items si ON si.id=rr.submission_item_id
+                JOIN checklist_items i ON i.id=si.source_item_id
+                WHERE i.control_id=$1 AND COALESCE(rr.result,'')<>''`, controlID).
+		Scan(&judged, &compliant, &conditional, &insufficient, &nonCompliant, &na); err != nil {
+		return out
+	}
+	out["judged"], out["compliant"], out["conditional"] = judged, compliant, conditional
+	out["insufficient"], out["non_compliant"], out["na"] = insufficient, nonCompliant, na
+	rows, err := s.Store.Pool.Query(r.Context(), `SELECT rq.id AS review_id,rq.review_number,rq.service_name,si.item_code,rr.result,
+                to_char(display_date(COALESCE(rq.approved_at,rq.updated_at)),'YYYY-MM-DD') AS decided_on
+                FROM review_results rr
+                JOIN submission_items si ON si.id=rr.submission_item_id
+                JOIN submissions sub ON sub.id=si.submission_id
+                JOIN review_requests rq ON rq.id=sub.review_request_id
+                JOIN checklist_items i ON i.id=si.source_item_id
+                WHERE i.control_id=$1 AND rr.result IN ('INSUFFICIENT','NON_COMPLIANT','CONDITIONAL','RECHECK')
+                ORDER BY COALESCE(rq.approved_at,rq.updated_at) DESC LIMIT 10`, controlID)
+	if err != nil {
+		return out
+	}
+	findings, scanErr := scanDynamic(rows, []string{"review_id", "review_number", "service_name", "item_code", "result", "decided_on"})
+	if scanErr == nil {
+		out["recent_findings"] = findings
+	}
+	return out
 }

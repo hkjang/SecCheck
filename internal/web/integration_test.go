@@ -8504,3 +8504,75 @@ func TestADashboardCardSaysWhenItIsShowingOnlyPartOfTheWork(t *testing.T) {
 		t.Errorf("empty cards claim to be truncated: %v", hasMore)
 	}
 }
+
+// The control catalogue could say which checklists carry a control and how
+// many reviews they reached, and stopped there. Whether services keep passing
+// it or keep failing it -- the question the person who owns the control has --
+// was somewhere in the reports, spread across item codes that differ from one
+// template to the next.
+func TestAControlSaysHowServicesHaveBeenJudgedAgainstIt(t *testing.T) {
+	h := newHarness(t)
+	ctx := context.Background()
+	h.user("control-admin", "TEMPLATE_ADMIN")
+	h.user("control-author", "REQUESTER")
+	h.user("control-reviewer", "SECURITY_REVIEWER")
+	admin := h.login("control-admin")
+	author := h.login("control-author")
+	reviewer := h.login("control-reviewer")
+	var reviewerID string
+	if err := h.db.Pool.QueryRow(ctx, `SELECT id FROM users WHERE username='control-reviewer'`).Scan(&reviewerID); err != nil {
+		t.Fatal(err)
+	}
+
+	created := admin.do(http.MethodPost, "/api/v1/security-controls", map[string]any{"code": "AC-01", "title": "접근 통제", "description": "권한 검토"})
+	if created.status != http.StatusCreated && created.status != http.StatusOK {
+		t.Fatalf("creating a control: %d %s", created.status, created.body)
+	}
+	controlID := created.json()["id"].(string)
+
+	// Two services judged on the same control, one badly. The item codes are
+	// whatever the templates say; the control is what ties them together.
+	judged := func(service, result string) string {
+		t.Helper()
+		reviewID := author.createReview(service)
+		itemID := firstItemID(t, h, reviewID)
+		if _, err := h.db.Pool.Exec(ctx, `UPDATE checklist_items SET control_id=$2 WHERE id=(SELECT source_item_id FROM submission_items WHERE id=$1)`, itemID, controlID); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := h.db.Pool.Exec(ctx, `UPDATE review_requests SET reviewer_id=$2,status='REVIEWING' WHERE id=$1`, reviewID, reviewerID); err != nil {
+			t.Fatal(err)
+		}
+		if res := reviewer.do(http.MethodPut, "/api/v1/review-requests/"+reviewID+"/review-results/"+itemID,
+			map[string]any{"result": result, "opinion": "판정", "expected_updated_at": ""}); res.status != http.StatusOK {
+			t.Fatalf("judging %s: %d %s", service, res.status, res.body)
+		}
+		return reviewID
+	}
+	judged("통제 서비스 가", "COMPLIANT")
+	failing := judged("통제 서비스 나", "NON_COMPLIANT")
+
+	res := admin.do(http.MethodGet, "/api/v1/security-controls/"+controlID+"/impact", nil)
+	if res.status != http.StatusOK {
+		t.Fatalf("control impact: %d %s", res.status, res.body)
+	}
+	outcomes, _ := res.json()["outcomes"].(map[string]any)
+	if outcomes == nil {
+		t.Fatalf("the impact answer carries no judgement history: %s", res.body)
+	}
+	if outcomes["judged"] != float64(2) || outcomes["compliant"] != float64(1) || outcomes["non_compliant"] != float64(1) {
+		t.Errorf("the control's history reads %v", outcomes)
+	}
+	// The failures are named, because a count without the services behind it
+	// cannot be acted on.
+	findings, _ := outcomes["recent_findings"].([]any)
+	if len(findings) != 1 {
+		t.Fatalf("the control lists %d findings, want the non-compliant one: %v", len(findings), findings)
+	}
+	if entry := findings[0].(map[string]any); entry["review_id"] != failing || entry["service_name"] != "통제 서비스 나" {
+		t.Errorf("the finding names %v", entry)
+	}
+	// The list of checklists that carry the control is still there.
+	if items, _ := res.json()["items"].([]any); len(items) == 0 {
+		t.Error("the impact answer lost the checklist items")
+	}
+}
