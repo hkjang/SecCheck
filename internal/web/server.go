@@ -142,6 +142,7 @@ func (s *Server) routes() {
 	s.handle("POST", "/api/v1/review-requests/{id}/approve", "워크플로", "최종 승인", []string{"APPROVER"}, false, s.approveReview)
 	s.handle("POST", "/api/v1/review-requests/{id}/reject", "워크플로", "반려", []string{"APPROVER"}, false, s.rejectReview)
 	s.handle("POST", "/api/v1/review-requests/{id}/reopen", "워크플로", "반려된 심의를 보완할 수 있도록 다시 엶(보완 필요 상태로)", []string{"SECURITY_REVIEWER"}, false, s.reopenRejectedReview)
+	s.handle("POST", "/api/v1/review-requests/{id}/withdraw-approval", "워크플로", "승인 대기 중인 심의의 결재 요청 회수(검토 중으로 되돌림)", []string{"SECURITY_REVIEWER"}, false, s.withdrawApproval)
 	s.handle("POST", "/api/v1/review-requests/{id}/cancel", "워크플로", "요청자 본인의 심의 취소", []string{"REQUESTER"}, false, s.cancelReview)
 	s.handle("POST", "/api/v1/review-requests/{id}/close", "워크플로", "승인 또는 반려된 심의 종료", []string{"SECURITY_REVIEWER"}, false, s.closeReview)
 	s.handle("GET", "/api/v1/review-requests/{id}/assignees", "심의", "항목 담당자로 지정할 수 있는 사용자 목록", nil, false, s.listAssignees)

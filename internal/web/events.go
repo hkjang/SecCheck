@@ -62,6 +62,7 @@ var auditEventLabels = map[string]string{
 	"UPDATE_CHANGE_REQUEST":          "보완 요청 상태 변경",
 	"CANCEL":                         "심의 취소",
 	"REOPEN":                         "반려 심의 보완 재개",
+	"WITHDRAW_APPROVAL":              "결재 요청 회수",
 	"CLOSE":                          "심의 종료",
 	"UPLOAD_EVIDENCE":                "증적 업로드",
 	"UPLOAD_EVIDENCE_VERSION":        "증적 새 버전 업로드",

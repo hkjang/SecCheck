@@ -39,6 +39,7 @@ var requestPayloads = map[string][]payloadField{
 	"POST /api/v1/review-requests/{id}/participants":                        {{"user_id", "string"}, {"role", "string"}},
 	"POST /api/v1/review-requests/{id}/reject":                              {{"comment", "string"}},
 	"POST /api/v1/review-requests/{id}/reopen":                              {{"reason", "string"}},
+	"POST /api/v1/review-requests/{id}/withdraw-approval":                   {{"reason", "string"}},
 	"POST /api/v1/review-requests/{id}/cancel":                              {{"reason", "string"}},
 	"POST /api/v1/review-requests/{id}/responses/bulk":                      {{"item_ids", "[]string"}, {"applicability", "string"}, {"self_assessment", "string"}, {"na_reason", "string"}, {"current_state", "string"}, {"action_plan", "string"}, {"assigned_to", "string"}, {"overwrite", "bool"}, {"assign_only", "bool"}},
 	"POST /api/v1/review-results/{id}/follow-up":                            {{"action", "string"}, {"done", "bool"}, {"note", "string"}},

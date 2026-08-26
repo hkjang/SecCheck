@@ -7709,3 +7709,93 @@ func TestAReviewCanBeCancelledAfterItHasBeenSubmitted(t *testing.T) {
 		t.Errorf("an approved review was cancelled: %d %s", res.status, res.body)
 	}
 }
+
+// Pressing 검토 완료 was a one-way door. A typo in the final opinion, a verdict
+// the reviewer wanted to revisit, or an approver who has since left all left
+// the review parked in 승인 대기 where only the approver could move it -- and
+// the one move available, rejection, is a recorded decision about the service
+// rather than a correction of the reviewer's own work.
+func TestAnApprovalRequestCanBeWithdrawn(t *testing.T) {
+	h := newHarness(t)
+	ctx := context.Background()
+	h.user("wd-author", "REQUESTER")
+	h.user("wd-lead", "SECURITY_REVIEWER")
+	h.user("wd-other", "SECURITY_REVIEWER")
+	approverID := h.user("wd-approver", "APPROVER")
+	author := h.login("wd-author")
+	lead := h.login("wd-lead")
+	other := h.login("wd-other")
+	var leadID string
+	if err := h.db.Pool.QueryRow(ctx, `SELECT id FROM users WHERE username='wd-lead'`).Scan(&leadID); err != nil {
+		t.Fatal(err)
+	}
+
+	reviewID := author.createReview("결재 대기 서비스")
+	if _, err := h.db.Pool.Exec(ctx, `UPDATE review_requests SET reviewer_id=$2,approver_id=$3,status='APPROVAL_PENDING',final_result='APPROVED',final_opinion='오타가 있는 최종 의견' WHERE id=$1`,
+		reviewID, leadID, approverID); err != nil {
+		t.Fatal(err)
+	}
+
+	if res := other.do(http.MethodPost, "/api/v1/review-requests/"+reviewID+"/withdraw-approval", map[string]any{"reason": "남의 심의"}); res.status != http.StatusConflict {
+		t.Errorf("an unrelated reviewer withdrew the request: %d %s", res.status, res.body)
+	}
+	if res := author.do(http.MethodPost, "/api/v1/review-requests/"+reviewID+"/withdraw-approval", map[string]any{"reason": "내가 회수"}); res.status != http.StatusForbidden {
+		t.Errorf("the requester withdrew the approval request: %d %s", res.status, res.body)
+	}
+	if res := lead.do(http.MethodPost, "/api/v1/review-requests/"+reviewID+"/withdraw-approval", map[string]any{"reason": " "}); res.status != http.StatusUnprocessableEntity {
+		t.Errorf("withdrawing without a reason was accepted: %d %s", res.status, res.body)
+	}
+
+	if res := lead.do(http.MethodPost, "/api/v1/review-requests/"+reviewID+"/withdraw-approval", map[string]any{"reason": "최종 의견을 고쳐서 다시 올리겠습니다"}); res.status != http.StatusOK {
+		t.Fatalf("withdrawing: %d %s", res.status, res.body)
+	}
+	var status, result, opinion string
+	if err := h.db.Pool.QueryRow(ctx, `SELECT status,final_result,final_opinion FROM review_requests WHERE id=$1`, reviewID).Scan(&status, &result, &opinion); err != nil {
+		t.Fatal(err)
+	}
+	if status != "REVIEWING" {
+		t.Fatalf("the withdrawn review is in %s, want REVIEWING", status)
+	}
+	// A conclusion nobody has been asked to approve does not belong on the
+	// review.
+	if result != "" || opinion != "" {
+		t.Errorf("the withdrawn conclusion is still there: %q / %q", result, opinion)
+	}
+	var told string
+	if err := h.db.Pool.QueryRow(ctx, `SELECT body FROM notifications WHERE recipient_id=$1 AND event_type='APPROVAL_WITHDRAWN'`, approverID).Scan(&told); err != nil {
+		t.Fatalf("the approver was not told: %v", err)
+	}
+	if !strings.Contains(told, "최종 의견을 고쳐서") {
+		t.Errorf("the notice does not carry the reason: %s", told)
+	}
+	var recorded int
+	if err := h.db.Pool.QueryRow(ctx, `SELECT count(*) FROM audit_logs WHERE event_type='WITHDRAW_APPROVAL' AND target_id=$1`, reviewID).Scan(&recorded); err != nil {
+		t.Fatal(err)
+	}
+	if recorded != 1 {
+		t.Errorf("the withdrawal was recorded %d times", recorded)
+	}
+
+	// Back under review, the reviewer may record verdicts again and the
+	// completion gate is a content check rather than a state refusal -- which
+	// is the whole point of taking it back.
+	items := []map[string]any{}
+	if err := json.Unmarshal([]byte(lead.do(http.MethodGet, "/api/v1/review-requests/"+reviewID+"/items", nil).body), &items); err != nil {
+		t.Fatal(err)
+	}
+	if res := lead.do(http.MethodPut, "/api/v1/review-requests/"+reviewID+"/review-results/"+items[0]["id"].(string),
+		map[string]any{"result": "COMPLIANT", "opinion": "다시 검토", "expected_updated_at": ""}); res.status != http.StatusOK {
+		t.Fatalf("recording a verdict after withdrawal: %d %s", res.status, res.body)
+	}
+	if res := lead.do(http.MethodPost, "/api/v1/review-requests/"+reviewID+"/complete-review",
+		map[string]any{"final_result": "APPROVED", "final_opinion": "고친 최종 의견"}); res.errorCode() == "STATE_CONFLICT" {
+		t.Fatalf("the withdrawn review is still refused on its state: %d %s", res.status, res.body)
+	}
+	// And a review that is not waiting for a signature cannot be withdrawn.
+	if _, err := h.db.Pool.Exec(ctx, `UPDATE review_requests SET status='APPROVED' WHERE id=$1`, reviewID); err != nil {
+		t.Fatal(err)
+	}
+	if res := lead.do(http.MethodPost, "/api/v1/review-requests/"+reviewID+"/withdraw-approval", map[string]any{"reason": "다시"}); res.status != http.StatusConflict {
+		t.Errorf("an approved review was withdrawn: %d %s", res.status, res.body)
+	}
+}

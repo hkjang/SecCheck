@@ -2150,6 +2150,55 @@ func (s *Server) rejectReview(w http.ResponseWriter, r *http.Request) {
 	s.decideApproval(w, r, "REJECTED")
 }
 
+// withdrawApproval takes a review back off the approver's desk. Pressing
+// 검토 완료 was a one-way door: a typo in the final opinion, a verdict the
+// reviewer wanted to change, or an approver who has since left and cannot be
+// replaced all left the review parked in 승인 대기 with only the approver able
+// to move it -- and rejection, the one move available, is a recorded decision
+// about the service rather than a correction of the reviewer's own work.
+func (s *Server) withdrawApproval(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	sess := session(r)
+	var in struct {
+		Reason string `json:"reason"`
+	}
+	if !decodeJSON(w, r, &in) {
+		return
+	}
+	in.Reason = strings.TrimSpace(in.Reason)
+	if in.Reason == "" || len([]rune(in.Reason)) > longTextLimit {
+		problem(w, 422, "VALIDATION_FAILED", fmt.Sprintf("회수 사유를 %d자 이내로 작성하세요.", longTextLimit), map[string]string{"reason": "필수 입력 항목입니다."})
+		return
+	}
+	if !containsRole(sess.User, "SECURITY_REVIEWER") || s.selfReviewBlocked(r.Context(), id, sess.User.ID) {
+		problem(w, 403, "FORBIDDEN", "이 심의의 결재 요청을 회수할 수 없습니다.", nil)
+		return
+	}
+	var allowed bool
+	_ = s.Store.Pool.QueryRow(r.Context(), `SELECT EXISTS(SELECT 1 FROM review_requests r WHERE r.id=$1 AND r.status='APPROVAL_PENDING'
+                AND (r.reviewer_id=$2 OR r.reviewer_id IS NULL OR NOT `+stillHolds("r.reviewer_id", "SECURITY_REVIEWER")+`))`, id, sess.User.ID).Scan(&allowed)
+	if !allowed {
+		problem(w, 409, "STATE_CONFLICT", "승인 대기 중인 심의만, 그 심의의 담당 보안 담당자가 회수할 수 있습니다.", nil)
+		return
+	}
+	// The conclusion goes back to being a draft: it is re-entered at 검토 완료,
+	// and leaving the withdrawn one on the review would show a result nobody
+	// has asked anybody to approve.
+	tag, err := s.Store.Pool.Exec(r.Context(), `UPDATE review_requests SET status='REVIEWING',final_result='',final_opinion='',updated_at=now() WHERE id=$1 AND status='APPROVAL_PENDING'`, id)
+	if err != nil || tag.RowsAffected() == 0 {
+		problem(w, 409, "STATE_CONFLICT", "승인 대기 중인 심의만 회수할 수 있습니다.", nil)
+		return
+	}
+	var approver, number, service string
+	_ = s.Store.Pool.QueryRow(r.Context(), `SELECT COALESCE(approver_id,''),review_number,service_name FROM review_requests WHERE id=$1`, id).Scan(&approver, &number, &service)
+	if approver != "" && approver != sess.User.ID {
+		s.addTargetedNotification(r.Context(), approver, "APPROVAL_WITHDRAWN", "결재 요청 회수",
+			fmt.Sprintf("%s(%s) 심의의 결재 요청이 회수되었습니다. 검토자가 다시 검토합니다. %s", number, service, in.Reason), "REVIEW_REQUEST", id)
+	}
+	_ = s.Store.Audit(r.Context(), auditFrom(r, "WITHDRAW_APPROVAL", "REVIEW_REQUEST", id, map[string]string{"status": "APPROVAL_PENDING"}, map[string]string{"status": "REVIEWING", "reason": in.Reason}))
+	jsonResponse(w, 200, map[string]string{"status": "REVIEWING"})
+}
+
 // cancelReview records that the service is not being built after all. It used
 // to be possible only while the review was still on the requester's desk, so a
 // project dropped after submission had nowhere to go: the reviewer had to
