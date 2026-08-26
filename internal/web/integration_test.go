@@ -7131,3 +7131,82 @@ func TestTheStalledCountAgreesWithWhatTheSweepChases(t *testing.T) {
 		t.Error("a review that moved yesterday is listed as stalled")
 	}
 }
+
+// "담당자 없는 심의" has never meant only an empty column: a reviewer who leaves
+// or loses the role leaves their reviews unowned, and the service already
+// treats them that way in 내 차례 and in the unclaimed-queue mail. The card
+// that exists to surface exactly this counted the column literally, so it
+// showed 0 while the sweep was chasing the review.
+func TestAReviewWhoseOwnerHasGoneCountsAsUnassigned(t *testing.T) {
+	h := newHarness(t)
+	ctx := context.Background()
+	h.user("orphan-owner", "REQUESTER")
+	h.user("orphan-lead", "SECURITY_REVIEWER")
+	departedID := h.user("orphan-departed", "SECURITY_REVIEWER")
+	stayingID := h.user("orphan-staying", "SECURITY_REVIEWER")
+	leavingApproverID := h.user("orphan-approver", "APPROVER")
+	owner := h.login("orphan-owner")
+	lead := h.login("orphan-lead")
+
+	waiting := func(service, status, reviewer, approver string) string {
+		t.Helper()
+		id := owner.createReview(service)
+		if _, err := h.db.Pool.Exec(ctx, `UPDATE review_requests SET status=$2,reviewer_id=NULLIF($3,''),approver_id=NULLIF($4,'') WHERE id=$1`, id, status, reviewer, approver); err != nil {
+			t.Fatal(err)
+		}
+		return id
+	}
+	held := waiting("담당자 있는 서비스", "SUBMITTED", stayingID, "")
+	orphaned := waiting("담당자 퇴사 서비스", "SUBMITTED", departedID, "")
+	never := waiting("배정 안 된 서비스", "SUBMITTED", "", "")
+	signature := waiting("승인 대기 서비스", "APPROVAL_PENDING", stayingID, leavingApproverID)
+
+	// Before anybody leaves, only the review nobody was ever given counts.
+	unassigned := func() (float64, []string) {
+		t.Helper()
+		board := lead.do(http.MethodGet, "/api/v1/dashboard", nil).json()
+		analytics, _ := board["security_analytics"].(map[string]any)
+		n, _ := analytics["unassigned"].(float64)
+		res := lead.do(http.MethodGet, "/api/v1/review-requests?unassigned=1&limit=50", nil)
+		if res.status != http.StatusOK {
+			t.Fatalf("unassigned list: %d %s", res.status, res.body)
+		}
+		listed := []string{}
+		for _, raw := range res.json()["items"].([]any) {
+			listed = append(listed, raw.(map[string]any)["id"].(string))
+		}
+		if float64(len(listed)) != n {
+			t.Errorf("the count says %v and the list behind it holds %d", n, len(listed))
+		}
+		return n, listed
+	}
+	if n, listed := unassigned(); n != 1 || len(listed) != 1 || listed[0] != never {
+		t.Fatalf("before anybody left, unassigned = %v %v, want only the never-assigned review", n, listed)
+	}
+
+	// The reviewer leaves and the approver loses the role: two different ways
+	// of ending up with nobody who can act.
+	if _, err := h.db.Pool.Exec(ctx, `UPDATE users SET active=false WHERE id=$1`, departedID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := h.db.Pool.Exec(ctx, `DELETE FROM user_roles WHERE user_id=$1 AND role_code='APPROVER'`, leavingApproverID); err != nil {
+		t.Fatal(err)
+	}
+
+	n, listed := unassigned()
+	if n != 3 {
+		t.Errorf("after both owners went, the card counts %v unowned reviews, want 3", n)
+	}
+	seen := map[string]bool{}
+	for _, id := range listed {
+		seen[id] = true
+	}
+	for name, id := range map[string]string{"the departed reviewer's review": orphaned, "the never-assigned review": never, "the review waiting on a lapsed approver": signature} {
+		if !seen[id] {
+			t.Errorf("%s is missing from 담당자 없는 심의", name)
+		}
+	}
+	if seen[held] {
+		t.Error("a review with an active reviewer is listed as unowned")
+	}
+}

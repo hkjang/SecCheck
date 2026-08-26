@@ -349,7 +349,7 @@ func (s *Server) dashboard(w http.ResponseWriter, r *http.Request) {
 	// asked for them.
 	analytics := map[string]any{}
 	if admin {
-		unassigned, ok := count(`SELECT count(*) FROM review_requests WHERE reviewer_id IS NULL AND status IN ('SUBMITTED','RESUBMITTED')`)
+		unassigned, ok := count(`SELECT count(*) FROM review_requests WHERE ` + unownedClause())
 		if !ok {
 			return
 		}

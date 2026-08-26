@@ -106,7 +106,7 @@ func (s *Server) reviewFilter(r *http.Request) (string, []any) {
 	// The dashboard counts these two; without a filter behind them the number
 	// is a fact nobody can act on.
 	if strings.TrimSpace(query.Get("unassigned")) == "1" {
-		where += " AND review_requests.reviewer_id IS NULL AND review_requests.status IN ('SUBMITTED','RESUBMITTED')"
+		where += " AND " + unownedClause()
 	}
 	if strings.TrimSpace(query.Get("stalled")) == "1" {
 		where += fmt.Sprintf(" AND review_requests.status = ANY($%d) AND review_requests.updated_at < now()-make_interval(days=>%d)", len(args)+1, maintenance.StalledReviewDays)
@@ -185,6 +185,20 @@ func (s *Server) listReviewRequests(w http.ResponseWriter, r *http.Request) {
 // stopped, so nobody notices; the review simply stops moving.
 func stillHolds(column, role string) string {
 	return fmt.Sprintf(`EXISTS(SELECT 1 FROM user_roles ur JOIN users u ON u.id=ur.user_id WHERE ur.user_id=%s AND ur.role_code='%s' AND u.active)`, column, role)
+}
+
+// unownedClause selects the reviews that are waiting on somebody who cannot
+// act on them. "담당자 없는 심의" has never meant only an empty column: when a
+// reviewer leaves or loses the role, the service already puts their reviews
+// back into everybody else's 내 차례 queue and the sweep already chases them as
+// unclaimed. The queue-status card and the list behind it were the one place
+// that still read the column literally, so the card that exists to surface
+// exactly this said 0 while the mail was chasing the review.
+func unownedClause() string {
+	return "((review_requests.status IN ('SUBMITTED','RESUBMITTED','REVIEWING') AND (review_requests.reviewer_id IS NULL OR NOT " +
+		stillHolds("review_requests.reviewer_id", "SECURITY_REVIEWER") + "))" +
+		" OR (review_requests.status='APPROVAL_PENDING' AND (review_requests.approver_id IS NULL OR NOT " +
+		stillHolds("review_requests.approver_id", "APPROVER") + ")))"
 }
 
 // myTurnClause selects the reviews that are waiting on this specific person,
