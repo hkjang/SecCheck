@@ -630,3 +630,36 @@ func TestAScreenThatFetchesOnMountCanSayItFailed(t *testing.T) {
 		t.Fatalf("only %d screens were found to fetch on mount; the check is not reading the pages", checked)
 	}
 }
+
+// The pre-push script exists to say what the pipeline will say. It can only do
+// that while it runs the same scanner: a second copy of the pinned digest
+// would drift, and then the script would be checking something the pipeline no
+// longer runs -- worse than no script, because people would trust it.
+func TestThePrePushScriptUsesThePipelinesOwnScanner(t *testing.T) {
+	script, err := os.ReadFile(filepath.Join("..", "..", "scripts", "precheck.sh"))
+	if err != nil {
+		t.Fatalf("the pre-push script is missing: %v", err)
+	}
+	workflow, err := os.ReadFile(filepath.Join("..", "..", ".github", "workflows", "ci.yml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	pinned := regexp.MustCompile(`ghcr\.io/gitleaks/gitleaks@sha256:[0-9a-f]{64}`)
+	if !pinned.Match(workflow) {
+		t.Fatal("the pipeline no longer pins the secret scanner by digest")
+	}
+	if pinned.Match(script) {
+		t.Error("the script carries its own copy of the scanner digest, which will drift from the pipeline's")
+	}
+	// It has to read the pin from the workflow, which is the only way the two
+	// can stay the same thing.
+	if !strings.Contains(string(script), ".github/workflows/ci.yml") {
+		t.Error("the script does not take the scanner from the workflow")
+	}
+	// And both have to look at the same thing: the tree, not one commit.
+	for name, body := range map[string]string{"ci.yml": string(workflow), "precheck.sh": string(script)} {
+		if strings.Contains(body, "gitleaks") && !strings.Contains(body, "--no-git") {
+			t.Errorf("%s scans a commit rather than the tree that will be shipped", name)
+		}
+	}
+}
