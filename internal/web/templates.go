@@ -994,6 +994,25 @@ type importReport struct {
 	// Spreadsheet cells hold far more than a checklist item should, and
 	// failing a whole workbook over one long cell helps nobody.
 	ShortenedFields int `json:"shortened_fields"`
+	// Counts say how much the parser changed; the row numbers say where. A
+	// three-hundred-row workbook that reports "12 rows skipped" and nothing
+	// else leaves the reader to diff the spreadsheet against the created items
+	// by hand to find out which twelve -- which is the work the dry run was
+	// supposed to save.
+	SkippedRowNumbers   []int `json:"skipped_row_numbers"`
+	GeneratedCodeRows   []int `json:"generated_code_rows"`
+	ShortenedRowNumbers []int `json:"shortened_row_numbers"`
+}
+
+// reportedRows keeps the lists short enough to read and to send: past this
+// many the count is the useful number anyway.
+const reportedRows = 50
+
+func noteRow(list []int, row int) []int {
+	if len(list) >= reportedRows {
+		return list
+	}
+	return append(list, row)
 }
 
 func parseImportRows(rows [][]string, header int, mapping []importColumn, category string) []itemInput {
@@ -1002,7 +1021,7 @@ func parseImportRows(rows [][]string, header int, mapping []importColumn, catego
 }
 
 func parseImportRowsWithReport(rows [][]string, header int, mapping []importColumn, category string) ([]itemInput, importReport) {
-	report := importReport{DuplicateCodes: []string{}, MissingFields: []string{}}
+	report := importReport{DuplicateCodes: []string{}, MissingFields: []string{}, SkippedRowNumbers: []int{}, GeneratedCodeRows: []int{}, ShortenedRowNumbers: []int{}}
 	items := []itemInput{}
 	idx := map[string]int{}
 	seenCodes := map[string]int{}
@@ -1032,12 +1051,14 @@ func parseImportRowsWithReport(rows [][]string, header int, mapping []importColu
 			// note, not a checklist item.
 			if strings.TrimSpace(strings.Join(row, "")) != "" {
 				report.SkippedRows++
+				report.SkippedRowNumbers = noteRow(report.SkippedRowNumbers, i+1)
 			}
 			continue
 		}
 		if code == "" {
 			code = fmt.Sprintf("%s-%03d", strings.ToUpper(category), i-header)
 			report.GeneratedCodes++
+			report.GeneratedCodeRows = noteRow(report.GeneratedCodeRows, i+1)
 		}
 		code, taken := itemCodeFor(code, seenCodes)
 		if taken != "" && !contains(report.DuplicateCodes, taken) {
@@ -1047,6 +1068,7 @@ func parseImportRowsWithReport(rows [][]string, header int, mapping []importColu
 		parsedItem := itemInput{Section: cut(get("section"), itemFieldLimits["section"]), ItemCode: code, Category: category, Title: cut(title, itemFieldLimits["title"]), Question: cut(question, itemFieldLimits["question"]), Guide: cut(get("guide"), itemFieldLimits["guide"]), LegalBasis: cut(get("legal_basis"), itemFieldLimits["legal_basis"]), Example: cut(get("example"), itemFieldLimits["example"]), Severity: severity, AnswerType: "YNNA", Required: true, SortOrder: len(items) + 1}
 		if field, _ := checkedItemText(map[string]string{"item_code": code, "title": title, "question": question, "guide": get("guide"), "legal_basis": get("legal_basis"), "example": get("example"), "section": get("section")}); field != "" {
 			report.ShortenedFields++
+			report.ShortenedRowNumbers = noteRow(report.ShortenedRowNumbers, i+1)
 		}
 		items = append(items, parsedItem)
 	}

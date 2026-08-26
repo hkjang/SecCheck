@@ -112,3 +112,58 @@ func TestLongCodesThatShareTheirFirstFortyCharactersStayDistinct(t *testing.T) {
 		t.Error("the wizard does not warn that codes collided")
 	}
 }
+
+// The dry run said what the parser would change -- twelve rows skipped, three
+// codes invented -- and never which rows, so finding them meant diffing a
+// three-hundred-row workbook against the created items by hand. That is the
+// work the preview exists to save.
+func TestTheImportPreviewNamesTheRowsItChanged(t *testing.T) {
+	long := strings.Repeat("가", 400)
+	rows := [][]string{
+		{"항목코드", "보안요건", "점검항목", "중요도"},
+		{"A-1", "정상 항목", "정상적으로 작성된 질문입니다", "상"},
+		{"", "", "", ""}, // blank spacer: not reported
+		{"", "표 아래 참고 문구입니다", "", ""},        // row 4: a note that becomes an item
+		{"", "코드 없는 항목", "코드가 비어 있습니다", "중"}, // row 5: code invented
+		{"주석", "", "", ""},              // row 6: text but nothing to make an item from
+		{"A-2", long, "너무 긴 보안요건", "하"}, // row 7: shortened
+	}
+	header, mapping := detectHeaders(rows)
+	items, report := parseImportRowsWithReport(rows, header, mapping, "DEVELOPMENT")
+	if len(items) != 4 {
+		t.Fatalf("parsed %d items, want 4: %+v", len(items), report)
+	}
+	if report.SkippedRows != 1 || len(report.SkippedRowNumbers) != 1 || report.SkippedRowNumbers[0] != 6 {
+		t.Errorf("skipped rows reported as %d %v, want row 6", report.SkippedRows, report.SkippedRowNumbers)
+	}
+	if report.GeneratedCodes != 2 || len(report.GeneratedCodeRows) != 2 || report.GeneratedCodeRows[0] != 4 || report.GeneratedCodeRows[1] != 5 {
+		t.Errorf("invented codes reported as %d %v, want rows 4 and 5", report.GeneratedCodes, report.GeneratedCodeRows)
+	}
+	if report.ShortenedFields != 1 || len(report.ShortenedRowNumbers) != 1 || report.ShortenedRowNumbers[0] != 7 {
+		t.Errorf("shortened rows reported as %d %v, want row 7", report.ShortenedFields, report.ShortenedRowNumbers)
+	}
+	// The row numbers are the ones the reader sees in the spreadsheet, so they
+	// count the header row too.
+	for _, row := range append(append([]int{}, report.SkippedRowNumbers...), report.ShortenedRowNumbers...) {
+		if row < 1 || row > len(rows) {
+			t.Errorf("row %d is not a row of this sheet (1..%d)", row, len(rows))
+		}
+	}
+}
+
+// A workbook can be long enough that the list is no help; past the cap the
+// count is the useful number and the list must not grow without bound.
+func TestTheImportPreviewCapsTheRowsItLists(t *testing.T) {
+	rows := [][]string{{"항목코드", "보안요건", "점검항목"}}
+	for i := 0; i < reportedRows+20; i++ {
+		rows = append(rows, []string{"", "", "", "버려질 메모"})
+	}
+	header, mapping := detectHeaders(rows)
+	_, report := parseImportRowsWithReport(rows, header, mapping, "DEVELOPMENT")
+	if report.SkippedRows != reportedRows+20 {
+		t.Errorf("skipped %d rows, want %d", report.SkippedRows, reportedRows+20)
+	}
+	if len(report.SkippedRowNumbers) != reportedRows {
+		t.Errorf("listed %d row numbers, want the cap of %d", len(report.SkippedRowNumbers), reportedRows)
+	}
+}

@@ -5,7 +5,9 @@ import { errorMessage, upload } from '../lib/api'
 import { Badge, Button, Empty, Field, useToast } from '../components/ui'
 
 type Mapping = { index: number; header: string; field: string }
-type Report = { parsed: number; skipped_rows: number; generated_codes: number; duplicate_codes: string[]; missing_fields: string[]; shortened_fields: number }
+type Report = { parsed: number; skipped_rows: number; generated_codes: number; duplicate_codes: string[]; missing_fields: string[]; shortened_fields: number; skipped_row_numbers?: number[]; generated_code_rows?: number[]; shortened_row_numbers?: number[] }
+// A count says how much the parser changed; the row numbers say where to look.
+const atRows = (rows?: number[], total?: number) => !rows?.length ? '' : ` (행 ${rows.slice(0, 12).join(', ')}${(total ?? rows.length) > rows.slice(0, 12).length ? ' …' : ''})`
 type ParsedItem = { item_code: string; section: string; title: string; question: string; severity: string }
 type Sheet = { name: string; rows: number; header_row: number; mapping: Mapping[]; columns: Mapping[]; preview: string[][]; report: Report; items: ParsedItem[] }
 const fieldLabel: Record<string, string> = { item_code: '항목코드', title: '보안요건', question: '점검항목', guide: '점검 가이드', severity: '중요도', section: '구분', legal_basis: '관련 근거', example: '현황 및 증적' }
@@ -82,9 +84,9 @@ export default function ImportWizard() {
           {(current.report.skipped_rows > 0 || current.report.generated_codes > 0 || current.report.duplicate_codes.length > 0 || current.report.missing_fields.length > 0 || current.report.shortened_fields > 0) &&
             <div className="guide-block"><strong><AlertTriangle size={14} /> 가져오기 시 이렇게 처리됩니다</strong>
               <ul>
-                {current.report.skipped_rows > 0 && <li>{current.report.skipped_rows}개 행은 보안요건과 점검항목이 모두 비어 있어 건너뜁니다.</li>}
-                {current.report.shortened_fields > 0 && <li>{current.report.shortened_fields}개 항목의 긴 항목이 최대 길이로 잘립니다(제목 300자, 안내·질문·예시 4,000자, 근거 2,000자).</li>}
-                {current.report.generated_codes > 0 && <li>{current.report.generated_codes}개 항목은 항목코드가 없어 <code>{form.category}-001</code> 형식으로 자동 부여됩니다.</li>}
+                {current.report.skipped_rows > 0 && <li>{current.report.skipped_rows}개 행은 보안요건과 점검항목이 모두 비어 있어 건너뜁니다{atRows(current.report.skipped_row_numbers, current.report.skipped_rows)}.</li>}
+                {current.report.shortened_fields > 0 && <li>{current.report.shortened_fields}개 항목의 긴 항목이 최대 길이로 잘립니다{atRows(current.report.shortened_row_numbers, current.report.shortened_fields)}(제목 300자, 안내·질문·예시 4,000자, 근거 2,000자).</li>}
+                {current.report.generated_codes > 0 && <li>{current.report.generated_codes}개 항목은 항목코드가 없어 <code>{form.category}-001</code> 형식으로 자동 부여됩니다{atRows(current.report.generated_code_rows, current.report.generated_codes)}.</li>}
                 {current.report.duplicate_codes.length > 0 && <li>중복 항목코드 {current.report.duplicate_codes.length}개에 <code>-DUP2</code> 접미사가 붙습니다: {current.report.duplicate_codes.slice(0, 5).join(', ')}{current.report.duplicate_codes.length > 5 ? ' 외' : ''}</li>}
                 {current.report.missing_fields.length > 0 && <li>매핑되지 않은 컬럼: {current.report.missing_fields.map(f => fieldLabel[f] || f).join(', ')}. 필요하면 왼쪽에서 지정하세요.</li>}
               </ul></div>}
