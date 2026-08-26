@@ -6790,3 +6790,96 @@ func TestTheDashboardTellsAContributorWhereTheirItemsAre(t *testing.T) {
 		t.Errorf("the requester who assigned the items sees %d rows of their own: %v", len(rows), rows)
 	}
 }
+
+// Handing a correction to a named contributor used to redirect the notice
+// rather than widen it: the named person heard about it and the requester who
+// owns the review -- and watches it come back as 보완 필요 -- heard nothing.
+// The delegated correction was equally invisible on the contributor's own
+// dashboard unless the item happened to be assigned to them as well.
+func TestACorrectionHandedToSomebodyReachesThemAndTheOwner(t *testing.T) {
+	h := newHarness(t)
+	ctx := context.Background()
+	ownerID := h.user("fix-owner", "REQUESTER")
+	helperID := h.user("fix-helper", "CONTRIBUTOR", "REQUESTER")
+	h.user("fix-reviewer", "SECURITY_REVIEWER")
+	owner := h.login("fix-owner")
+	helper := h.login("fix-helper")
+	reviewer := h.login("fix-reviewer")
+	var reviewerID string
+	if err := h.db.Pool.QueryRow(ctx, `SELECT id FROM users WHERE username='fix-reviewer'`).Scan(&reviewerID); err != nil {
+		t.Fatal(err)
+	}
+
+	reviewID := owner.createReview("보완 알림 서비스")
+	owner.do(http.MethodPost, "/api/v1/review-requests/"+reviewID+"/participants", map[string]string{"user_id": helperID})
+	items := []map[string]any{}
+	if err := json.Unmarshal([]byte(owner.do(http.MethodGet, "/api/v1/review-requests/"+reviewID+"/items", nil).body), &items); err != nil {
+		t.Fatal(err)
+	}
+	itemID := items[0]["id"].(string)
+	if _, err := h.db.Pool.Exec(ctx, `UPDATE review_requests SET reviewer_id=$2,status='REVIEWING' WHERE id=$1`, reviewID, reviewerID); err != nil {
+		t.Fatal(err)
+	}
+
+	if res := reviewer.do(http.MethodPost, "/api/v1/review-requests/"+reviewID+"/change-requests",
+		map[string]any{"item_id": itemID, "reason": "접근 통제 설정을 보완하세요", "assignee_id": helperID, "due_date": "2030-04-30"}); res.status != http.StatusCreated {
+		t.Fatalf("requesting a correction: %d %s", res.status, res.body)
+	}
+
+	told := func(userID string) int {
+		t.Helper()
+		var n int
+		if err := h.db.Pool.QueryRow(ctx, `SELECT count(*) FROM notifications WHERE recipient_id=$1 AND event_type='CHANGE_REQUEST'`, userID).Scan(&n); err != nil {
+			t.Fatal(err)
+		}
+		return n
+	}
+	if got := told(helperID); got != 1 {
+		t.Errorf("the person the correction was handed to received %d notices, want 1", got)
+	}
+	if got := told(ownerID); got != 1 {
+		t.Errorf("the requester whose review came back received %d notices, want 1", got)
+	}
+	// The notice the owner gets points at the item, not just the review.
+	var target string
+	if err := h.db.Pool.QueryRow(ctx, `SELECT COALESCE(item_id,'') FROM notifications WHERE recipient_id=$1 AND event_type='CHANGE_REQUEST'`, ownerID).Scan(&target); err != nil {
+		t.Fatal(err)
+	}
+	if target != itemID {
+		t.Errorf("the owner's notice points at %q, want the item %q", target, itemID)
+	}
+
+	mine := func(c *client) []map[string]any {
+		t.Helper()
+		out := []map[string]any{}
+		raw, _ := json.Marshal(c.do(http.MethodGet, "/api/v1/dashboard", nil).json()["my_items"])
+		if err := json.Unmarshal(raw, &out); err != nil {
+			t.Fatalf("my_items: %v (%s)", err, raw)
+		}
+		return out
+	}
+	// The item itself belongs to nobody in particular; the correction is what
+	// carries the helper's name, and that is enough to make it their work.
+	rows := mine(helper)
+	if len(rows) != 1 || rows[0]["review_id"] != reviewID {
+		t.Fatalf("the delegated correction is missing from the helper's dashboard: %v", rows)
+	}
+	if rows[0]["to_fix"] != float64(1) {
+		t.Errorf("the card counts %v corrections for them, want 1", rows[0]["to_fix"])
+	}
+
+	// Handing a correction to nobody still tells the owner, and only once.
+	if _, err := h.db.Pool.Exec(ctx, `UPDATE review_requests SET status='REVIEWING' WHERE id=$1`, reviewID); err != nil {
+		t.Fatal(err)
+	}
+	if res := reviewer.do(http.MethodPost, "/api/v1/review-requests/"+reviewID+"/change-requests",
+		map[string]any{"item_id": items[1]["id"].(string), "reason": "로그 보관 기간을 늘리세요", "due_date": "2030-05-30"}); res.status != http.StatusCreated {
+		t.Fatalf("requesting an unassigned correction: %d %s", res.status, res.body)
+	}
+	if got := told(ownerID); got != 2 {
+		t.Errorf("after an unassigned correction the owner has %d notices, want 2", got)
+	}
+	if got := told(helperID); got != 1 {
+		t.Errorf("a correction nobody was named for reached the helper anyway: %d notices", got)
+	}
+}

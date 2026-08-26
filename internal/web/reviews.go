@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -1754,15 +1755,36 @@ func (s *Server) bulkChangeRequests(w http.ResponseWriter, r *http.Request) {
 		s.fault(w, r, "CREATE_FAILED", "보완 요청을 만들지 못했습니다.", err)
 		return
 	}
-	recipient := in.AssigneeID
-	if recipient == "" {
-		_ = s.Store.Pool.QueryRow(r.Context(), `SELECT requester_id FROM review_requests WHERE id=$1`, id).Scan(&recipient)
-	}
 	// One notice for one piece of work: ten separate mails for the same
-	// correction is how people learn to ignore them.
-	s.addTargetedNotification(r.Context(), recipient, "CHANGE_REQUEST", fmt.Sprintf("보완 요청 %d건", created), in.Reason, "REVIEW_REQUEST", id)
+	// correction is how people learn to ignore them. One notice each for the
+	// person doing the work and the person who owns the review, though --
+	// leaving the owner out is not restraint, it is a lost message.
+	for _, recipient := range s.changeRequestRecipients(r.Context(), id, in.AssigneeID) {
+		s.addTargetedNotification(r.Context(), recipient, "CHANGE_REQUEST", fmt.Sprintf("보완 요청 %d건", created), in.Reason, "REVIEW_REQUEST", id)
+	}
 	_ = s.Store.Audit(r.Context(), auditFrom(r, "REQUEST_CHANGE", "REVIEW_REQUEST", id, nil, map[string]any{"items": created, "requested": len(in.ItemIDs), "reason": in.Reason, "due_date": in.DueDate, "assignee_id": in.AssigneeID}))
 	jsonResponse(w, 201, map[string]any{"created": created, "requested": len(in.ItemIDs), "skipped": int64(len(in.ItemIDs)) - created})
+}
+
+// changeRequestRecipients names everybody who has to know a correction was
+// asked for. Handing a correction to somebody by name used to redirect the
+// notice: the named person was told and the review's requester -- who owns
+// the review, is accountable for it and sees it come back as CHANGE_REQUESTED
+// -- was told nothing at all. The review left the reviewer's desk and, as far
+// as its owner could tell from their notifications, nothing had happened.
+func (s *Server) changeRequestRecipients(ctx context.Context, reviewID, assignee string) []string {
+	var requester string
+	if err := s.Store.Pool.QueryRow(ctx, `SELECT requester_id FROM review_requests WHERE id=$1`, reviewID).Scan(&requester); err != nil {
+		s.Store.Log(ctx, "ERROR", "", "review", "change request recipients could not be resolved", map[string]any{"error": err.Error(), "review_id": reviewID})
+	}
+	out := []string{}
+	for _, candidate := range []string{strings.TrimSpace(assignee), requester} {
+		if candidate == "" || slices.Contains(out, candidate) {
+			continue
+		}
+		out = append(out, candidate)
+	}
+	return out
 }
 
 // pastDueDate reports a deadline that has already gone by in the installation's
@@ -1860,11 +1882,9 @@ func (s *Server) createChangeRequest(w http.ResponseWriter, r *http.Request) {
 		s.fault(w, r, "CREATE_FAILED", "보완 요청을 만들지 못했습니다.", err)
 		return
 	}
-	recipient := in.AssigneeID
-	if recipient == "" {
-		_ = s.Store.Pool.QueryRow(r.Context(), `SELECT requester_id FROM review_requests WHERE id=$1`, id).Scan(&recipient)
+	for _, recipient := range s.changeRequestRecipients(r.Context(), id, in.AssigneeID) {
+		s.addItemNotification(r.Context(), recipient, "CHANGE_REQUEST", "보완 요청", in.Reason, id, in.ItemID)
 	}
-	s.addItemNotification(r.Context(), recipient, "CHANGE_REQUEST", "보완 요청", in.Reason, id, in.ItemID)
 	_ = s.Store.Audit(r.Context(), auditFrom(r, "REQUEST_CHANGE", "CHANGE_REQUEST", crid, nil, in))
 	jsonResponse(w, 201, map[string]any{"id": crid, "status": "OPEN"})
 }

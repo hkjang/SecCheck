@@ -421,23 +421,28 @@ func (s *Server) myFollowUps(r *http.Request) []map[string]any {
 // and the person on the receiving end could see their share only by opening
 // each review and switching the filter -- there was no view across reviews at
 // all, so a contributor with items in three reviews had to remember which
-// three.
+// three. A correction handed to somebody by name counts as theirs too, even
+// when the item itself was written by someone else: it is work with their
+// name on it and a date attached.
 func (s *Server) myAssignedItems(r *http.Request) []map[string]any {
 	rows, err := s.Store.Pool.Query(r.Context(), `SELECT review_requests.id AS review_id,review_requests.review_number,review_requests.service_name,review_requests.status,
                 count(*) AS items,
-                count(*) FILTER (WHERE COALESCE(resp.applicability,'')='') AS unanswered,
-                count(*) FILTER (WHERE EXISTS(SELECT 1 FROM change_requests cr WHERE cr.submission_item_id=si.id AND cr.status<>'VERIFIED')) AS to_fix
-                FROM responses resp
-                JOIN submission_items si ON si.id=resp.submission_item_id
+                count(*) FILTER (WHERE resp.assigned_to=$1 AND COALESCE(resp.applicability,'')='') AS unanswered,
+                count(*) FILTER (WHERE mine.open_change) AS to_fix
+                FROM submission_items si
                 JOIN submissions sub ON sub.id=si.submission_id
                 JOIN review_requests ON review_requests.id=sub.review_request_id
-                WHERE resp.assigned_to=$1
+                LEFT JOIN responses resp ON resp.submission_item_id=si.id
+                CROSS JOIN LATERAL (SELECT
+                        EXISTS(SELECT 1 FROM change_requests cr WHERE cr.submission_item_id=si.id AND cr.status<>'VERIFIED') AS open_change,
+                        EXISTS(SELECT 1 FROM change_requests cr WHERE cr.submission_item_id=si.id AND cr.status<>'VERIFIED' AND cr.assignee_id=$1) AS my_change) mine
+                WHERE (resp.assigned_to=$1 OR mine.my_change)
                   AND sub.revision=(SELECT max(revision) FROM submissions WHERE review_request_id=review_requests.id)
                   AND review_requests.status IN ('DRAFT','CHANGE_REQUESTED')
                 GROUP BY review_requests.id,review_requests.review_number,review_requests.service_name,review_requests.status
-                HAVING count(*) FILTER (WHERE COALESCE(resp.applicability,'')='') > 0
-                    OR count(*) FILTER (WHERE EXISTS(SELECT 1 FROM change_requests cr WHERE cr.submission_item_id=si.id AND cr.status<>'VERIFIED')) > 0
-                ORDER BY count(*) FILTER (WHERE COALESCE(resp.applicability,'')='') DESC,review_requests.review_number LIMIT 12`, session(r).User.ID)
+                HAVING count(*) FILTER (WHERE resp.assigned_to=$1 AND COALESCE(resp.applicability,'')='') > 0
+                    OR count(*) FILTER (WHERE mine.open_change) > 0
+                ORDER BY count(*) FILTER (WHERE mine.open_change) DESC,count(*) FILTER (WHERE resp.assigned_to=$1 AND COALESCE(resp.applicability,'')='') DESC,review_requests.review_number LIMIT 12`, session(r).User.ID)
 	if err != nil {
 		return []map[string]any{}
 	}
