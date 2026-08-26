@@ -1,6 +1,6 @@
 import { ChangeEvent, useEffect, useMemo, useRef, useState } from 'react'
 import { Link, useNavigate, useParams, useSearchParams } from 'react-router-dom'
-import { AlertTriangle, ArrowLeft, RotateCcw, Check, CheckCircle2, CheckSquare, ChevronDown, ChevronRight, ChevronUp, Copy, Download, FileCheck2, FilePlus2, Filter, ListChecks, MessageSquareWarning, Paperclip, Play, RefreshCw, History, Save, Search, Send, ShieldCheck, SlidersHorizontal, Trash2, UserRound, Upload, ZoomIn } from 'lucide-react'
+import { AlertTriangle, ArrowLeft, HelpCircle, RotateCcw, Check, CheckCircle2, CheckSquare, ChevronDown, ChevronRight, ChevronUp, Copy, Download, FileCheck2, FilePlus2, Filter, ListChecks, MessageSquareWarning, Paperclip, Play, RefreshCw, History, Save, Search, Send, ShieldCheck, SlidersHorizontal, Trash2, UserRound, Upload, ZoomIn } from 'lucide-react'
 import { api, del, directory, errorMessage, get, post, put, upload, ApiError } from '../lib/api'
 import { ChangeRequest, ChecklistItem, DirectoryUser, Review } from '../lib/types'
 import { Badge, Button, Empty, Field, LongText, PeopleField, formatBytes, formatDate, LoadFailed, Loading, Modal, StatusBadge, Toggle, useDownload, useToast } from '../components/ui'
@@ -388,6 +388,7 @@ function ItemEditor({ review, item, reviewer, people, onSaved, onSelect }: { rev
     {!reviewable && <ReviewVerdict result={item.review_result} onSaved={onSaved} />}
     {reviewable && answerChangedSinceReview(item) && <JudgedAnswer item={item} />}
     {(reviewable || editable) && <PreviousVerdicts reviewID={review.id} itemID={item.id} canEdit={editable} onCarried={onSaved} />}
+    {(reviewable || editable) && <WhyThisItem reviewID={review.id} itemID={item.id} />}
     {reviewable && <div data-sx="sx-002"><strong data-sx="sx-018">보안 담당자 검토</strong><div className="form-grid" data-sx="sx-028"><Field label="최종 적용 여부"><select className="select" value={reviewResult.final_applicability} onChange={e => setReviewResult(v => ({ ...v, final_applicability: e.target.value }))}><option value="">작성자 판단 유지</option><option value="Y">Y</option><option value="N">N</option><option value="N/A">N/A</option></select></Field><Field label="검토 결과" required><select className="select" value={reviewResult.result} onChange={e => setReviewResult(v => ({ ...v, result: e.target.value }))}><option value="">선택</option><option value="COMPLIANT">적합</option><option value="CONDITIONAL">조건부 적합</option><option value="INSUFFICIENT">미흡</option><option value="NON_COMPLIANT">부적합</option><option value="NA_ACCEPTED">N/A 인정</option><option value="RECHECK">재확인</option></select></Field><Field label="증적 적정성"><select className="select" value={reviewResult.evidence_adequacy} onChange={e => setReviewResult(v => ({ ...v, evidence_adequacy: e.target.value }))}><option value="">선택</option><option value="ADEQUATE">적정</option><option value="PARTIAL">일부 보완</option><option value="INADEQUATE">부적정</option></select></Field><Field label="검토 의견" className="span-2"><LongText value={reviewResult.opinion} onChange={v => setReviewResult(x => ({ ...x, opinion: v }))} /></Field><Field label="후속조치" className="span-2"><LongText value={reviewResult.follow_up} onChange={v => setReviewResult(x => ({ ...x, follow_up: v }))} /></Field><Field label="조치 기한" required={Boolean(reviewResult.follow_up.trim())} help="후속조치를 적으면 기한이 필요합니다. 기한이 있어야 담당자에게 알림이 가고 지연 여부를 판정할 수 있습니다."><input type="date" className="input" min={todayISO()} value={reviewResult.follow_up_due_date} onChange={e => setReviewResult(v => ({ ...v, follow_up_due_date: e.target.value }))} /></Field></div><div data-sx="sx-009"><Button variant="danger" onClick={() => setChangeOpen(true)}><MessageSquareWarning size={14} /> 보완 요청</Button><Button variant="primary" onClick={saveReview}><ShieldCheck size={14} /> 검토 저장</Button></div></div>}
     {conflict && <ConflictModal conflict={conflict} onClose={() => setConflict(undefined)} onReload={async () => { setConflict(undefined); dirty.current = false; setPending(false); await onSaved() }} onOverwrite={async () => { await save(draft, true); await onSaved() }} />}
     {changeOpen && <ChangeRequestModal reviewID={review.id} itemID={item.id} onClose={() => setChangeOpen(false)} onSaved={onSaved} />}{item.change_requests.filter(c => c.status === 'OPEN' && editable).map(c => <ChangeAnswer key={c.id} change={c} onSaved={onSaved} />)}</div>
@@ -476,6 +477,33 @@ function CarryOverEvidence({ reviewID, itemID, onCarried }: { reviewID: string; 
     <Button small disabled={busy} onClick={carry}><Copy size={13} /> {busy ? '가져오는 중…' : '이전 증적 가져오기'}</Button>
   </div>
 }
+
+
+// The rule engine decides what a service is asked; the person answering could
+// see that an item applied to them but never why. The answer is folded away
+// until it is wanted, because most of the time it is not.
+function WhyThisItem({ reviewID, itemID }: { reviewID: string; itemID: string }) {
+  const [open, setOpen] = useState(false)
+  const [why, setWhy] = useState<{ assigned_by: string; conditions?: Condition[]; override?: { reason: string; changed_by_name: string; changed_at: string } }>()
+  useEffect(() => { if (!open) return; let alive = true; get<typeof why>(`/api/v1/review-requests/${reviewID}/items/${itemID}/why`).then(out => { if (alive) setWhy(out) }).catch(() => undefined); return () => { alive = false } }, [open, reviewID, itemID])
+  return <div className="subtle" data-sx="sx-006">
+    <button type="button" className="link-button" aria-expanded={open} onClick={() => setOpen(v => !v)}><HelpCircle size={13} /> 이 항목이 배정된 이유</button>
+    {open && (!why ? <span> 불러오는 중…</span> : why.assigned_by === 'MANUAL'
+      ? <div>담당자가 직접 포함한 항목입니다. {why.override?.reason}{why.override?.changed_by_name ? ` (${why.override.changed_by_name}, ${why.override.changed_at})` : ''}</div>
+      : why.conditions?.length
+        ? <ul>{why.conditions.map((c, i) => <li key={i}>{c.matched ? '✓' : '✗'} {c.negated ? '아님: ' : ''}{whyFieldLabels[c.field] || c.field} {whyOperators[c.operator] || c.operator} {whyValue(c.value)}{!c.matched && <> — 현재 {whyValue(c.actual)}</>}</li>)}</ul>
+        : <div>이 분류의 서비스에는 조건 없이 항상 배정되는 항목입니다.</div>)}
+  </div>
+}
+type Condition = { field: string; operator: string; value: unknown; actual: unknown; matched: boolean; negated: boolean }
+const whyFieldLabels: Record<string, string> = {
+  service_type: '서비스 유형', change_type: '변경 유형', exposure: '노출 구분', business_criticality: '업무 중요도',
+  has_admin_page: '관리자 페이지 있음', processes_personal_data: '개인정보 처리', processes_credit_data: '신용정보 처리',
+  external_customer_service: '대외 고객 서비스', uses_cloud: '클라우드 사용', uses_docker: 'Docker 사용',
+  uses_kubernetes: 'Kubernetes 사용', external_integration: '외부 연계', internet_access: '인터넷 접점',
+}
+const whyOperators: Record<string, string> = { eq: '=', '=': '=', neq: '≠', '!=': '≠', in: '중 하나', contains: '포함', gt: '>', gte: '≥', lt: '<', lte: '≤', exists: '값 존재' }
+const whyValue = (v: unknown) => typeof v === 'boolean' ? (v ? '예' : '아니오') : Array.isArray(v) ? v.join(', ') : String(v ?? '')
 
 function PreviousVerdicts({ reviewID, itemID, canEdit, onCarried }: { reviewID: string; itemID: string; canEdit: boolean; onCarried: () => Promise<void> }) {
   const toast = useToast()

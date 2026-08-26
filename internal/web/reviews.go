@@ -904,6 +904,49 @@ func (s *Server) snapshotTemplateVersions(r *http.Request, reviewID string) ([]m
 	return out, nil
 }
 
+// itemAssignmentReason answers "why is this on my checklist". The rule engine
+// decides what a service is asked, and the answer was visible only to a
+// template administrator running the simulator against a hypothetical
+// service: the person filling in a hundred and thirty items could see that an
+// item applied to them but never why, and an item that looked irrelevant had
+// no explanation to argue with.
+func (s *Server) itemAssignmentReason(w http.ResponseWriter, r *http.Request) {
+	reviewID, itemID := r.PathValue("id"), r.PathValue("itemID")
+	sess := session(r)
+	if !s.canAccessReview(r.Context(), sess, reviewID) || !s.itemBelongsToReview(r.Context(), itemID, reviewID) {
+		problem(w, 404, "NOT_FOUND", "체크리스트 항목을 찾을 수 없습니다.", nil)
+		return
+	}
+	var in reviewInput
+	if err := s.Store.Pool.QueryRow(r.Context(), `SELECT service_type,change_type,exposure,has_admin_page,processes_personal_data,processes_credit_data,external_customer_service,uses_cloud,uses_docker,uses_kubernetes,external_integration,internet_access,business_criticality FROM review_requests WHERE id=$1`, reviewID).
+		Scan(&in.ServiceType, &in.ChangeType, &in.Exposure, &in.HasAdminPage, &in.ProcessesPersonalData, &in.ProcessesCreditData, &in.ExternalCustomerService, &in.UsesCloud, &in.UsesDocker, &in.UsesKubernetes, &in.ExternalIntegration, &in.InternetAccess, &in.BusinessCriticality); err != nil {
+		s.fault(w, r, "QUERY_FAILED", "서비스 특성을 불러오지 못했습니다.", err)
+		return
+	}
+	var category, sourceID string
+	var rule []byte
+	if err := s.Store.Pool.QueryRow(r.Context(), `SELECT si.category,COALESCE(si.source_item_id,''),COALESCE(i.applicability_rule,'{}'::jsonb)
+                FROM submission_items si LEFT JOIN checklist_items i ON i.id=si.source_item_id WHERE si.id=$1`, itemID).Scan(&category, &sourceID, &rule); err != nil {
+		s.fault(w, r, "QUERY_FAILED", "항목 정보를 불러오지 못했습니다.", err)
+		return
+	}
+	out := map[string]any{"category": category, "assigned_by": "RULE", "conditions": explainRule(rule, reviewFields(in))}
+	// An item somebody added by hand is not there because of a rule, and the
+	// reason they gave is the honest answer.
+	var reason, changedBy, changedAt string
+	if sourceID != "" {
+		_ = s.Store.Pool.QueryRow(r.Context(), `SELECT o.reason,COALESCE(u.display_name,''),to_char(display_date(o.created_at),'YYYY-MM-DD')
+                        FROM rule_overrides o LEFT JOIN users u ON u.id=o.changed_by
+                        WHERE o.review_request_id=$1 AND o.source_item_id=$2 AND o.action='INCLUDE'
+                        ORDER BY o.created_at DESC LIMIT 1`, reviewID, sourceID).Scan(&reason, &changedBy, &changedAt)
+	}
+	if reason != "" {
+		out["assigned_by"] = "MANUAL"
+		out["override"] = map[string]any{"reason": reason, "changed_by_name": changedBy, "changed_at": changedAt}
+	}
+	jsonResponse(w, 200, out)
+}
+
 // itemVerdictHistory answers "what did we decide about this last time".
 // A service comes back for review every year and the same checklist item comes
 // with it; the verdict, the opinion and the follow-up from the previous round

@@ -8087,3 +8087,87 @@ func TestAPasswordChangeAndItsSessionSweepAreOneChange(t *testing.T) {
 		t.Error("the session survived a successful reset")
 	}
 }
+
+// The rule engine decides what a service is asked, and the answer was visible
+// only to a template administrator running the simulator against a
+// hypothetical service. The person filling in a hundred and thirty items could
+// see that an item applied to them but never why -- and an item that looks
+// irrelevant with no explanation is one nobody can argue with.
+func TestAnItemSaysWhyItIsOnThisChecklist(t *testing.T) {
+	h := newHarness(t)
+	ctx := context.Background()
+	h.user("why-author", "REQUESTER", "TEMPLATE_ADMIN")
+	h.user("why-outsider", "REQUESTER")
+	author := h.login("why-author")
+	outsider := h.login("why-outsider")
+
+	reviewID := author.createReview("설명 서비스")
+	itemID := firstItemID(t, h, reviewID)
+	// The seeded checklist assigns on category alone, so a rule is put on the
+	// item's source to make this the ordinary case: an item that applies
+	// because of what the service is.
+	if _, err := h.db.Pool.Exec(ctx, `UPDATE checklist_items SET applicability_rule=$2::jsonb
+                WHERE id=(SELECT source_item_id FROM submission_items WHERE id=$1)`, itemID,
+		`{"all":[{"field":"processes_personal_data","operator":"eq","value":true},{"field":"exposure","operator":"eq","value":"EXTERNAL"}]}`); err != nil {
+		t.Fatal(err)
+	}
+
+	res := author.do(http.MethodGet, "/api/v1/review-requests/"+reviewID+"/items/"+itemID+"/why", nil)
+	if res.status != http.StatusOK {
+		t.Fatalf("asking why: %d %s", res.status, res.body)
+	}
+	out := res.json()
+	if out["assigned_by"] != "RULE" {
+		t.Errorf("the item says it was assigned by %v", out["assigned_by"])
+	}
+	conditions, _ := out["conditions"].([]any)
+	if len(conditions) != 2 {
+		t.Fatalf("the reason lists %d conditions, want 2: %s", len(conditions), res.body)
+	}
+	// The answer is about this service, not about the rule in the abstract:
+	// each line carries what the service actually says.
+	first := conditions[0].(map[string]any)
+	if first["field"] != "processes_personal_data" || first["actual"] == nil {
+		t.Errorf("the first condition does not say what this service answered: %v", first)
+	}
+	var matched int
+	for _, raw := range conditions {
+		if hit, _ := raw.(map[string]any)["matched"].(bool); hit {
+			matched++
+		}
+	}
+	if matched == 0 {
+		t.Errorf("no condition is reported as met, yet the item was assigned: %s", res.body)
+	}
+
+	// Somebody with no part in the review cannot read its characteristics
+	// through this door.
+	if res := outsider.do(http.MethodGet, "/api/v1/review-requests/"+reviewID+"/items/"+itemID+"/why", nil); res.status != http.StatusNotFound {
+		t.Errorf("an outsider read the assignment reason: %d %s", res.status, res.body)
+	}
+
+	// An item somebody added by hand is not there because of a rule, and the
+	// reason they typed is the honest answer.
+	var sourceID string
+	if err := h.db.Pool.QueryRow(ctx, `SELECT i.id FROM checklist_items i
+                JOIN checklist_versions v ON v.id=i.version_id
+                WHERE v.status='PUBLISHED' AND i.id NOT IN (SELECT source_item_id FROM submission_items si JOIN submissions sub ON sub.id=si.submission_id WHERE sub.review_request_id=$1 AND si.source_item_id IS NOT NULL) LIMIT 1`, reviewID).Scan(&sourceID); err != nil {
+		t.Fatal(err)
+	}
+	if res := author.do(http.MethodPost, "/api/v1/review-requests/"+reviewID+"/rule-overrides",
+		map[string]any{"action": "INCLUDE", "source_item_id": sourceID, "reason": "고객 요청으로 추가 점검합니다"}); res.status != http.StatusOK && res.status != http.StatusCreated {
+		t.Fatalf("including an item by hand: %d %s", res.status, res.body)
+	}
+	var addedID string
+	if err := h.db.Pool.QueryRow(ctx, `SELECT si.id FROM submission_items si JOIN submissions sub ON sub.id=si.submission_id WHERE sub.review_request_id=$1 AND si.source_item_id=$2`, reviewID, sourceID).Scan(&addedID); err != nil {
+		t.Fatal(err)
+	}
+	added := author.do(http.MethodGet, "/api/v1/review-requests/"+reviewID+"/items/"+addedID+"/why", nil).json()
+	if added["assigned_by"] != "MANUAL" {
+		t.Fatalf("a hand-added item says it was assigned by %v", added["assigned_by"])
+	}
+	override, _ := added["override"].(map[string]any)
+	if override == nil || override["reason"] != "고객 요청으로 추가 점검합니다" {
+		t.Errorf("the manual reason reads %v", added["override"])
+	}
+}
