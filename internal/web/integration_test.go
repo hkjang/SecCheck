@@ -6962,3 +6962,117 @@ func TestCancellingAReviewClearsItsOutstandingWork(t *testing.T) {
 		t.Errorf("cancelling deleted the correction record (%d rows left)", kept)
 	}
 }
+
+// A service comes back for review every year and the answers are carried into
+// the new checklist -- but the files never were. The evidence for a control
+// that has not changed is the same document it was last year, and the only way
+// to attach it again was to open the old review, download every file and
+// upload them all by hand under the same names.
+func TestEvidenceCanBeCarriedForwardFromLastYear(t *testing.T) {
+	h := newHarness(t)
+	ctx := context.Background()
+	authorID := h.user("carry-author", "REQUESTER")
+	h.user("carry-outsider", "REQUESTER")
+	author := h.login("carry-author")
+	outsider := h.login("carry-outsider")
+
+	last := author.createReview("이월 증적 서비스")
+	lastItem := firstItemID(t, h, last)
+	if res := author.upload("/api/v1/review-requests/"+last+"/items/"+lastItem+"/evidences", "방화벽정책.txt", "작년에 제출한 방화벽 정책"); res.status != http.StatusCreated {
+		t.Fatalf("attaching last year's evidence: %d %s", res.status, res.body)
+	}
+	if _, err := h.db.Pool.Exec(ctx, `UPDATE review_requests SET status='APPROVED',approved_at=now()-interval '300 days' WHERE id=$1`, last); err != nil {
+		t.Fatal(err)
+	}
+	var sourceID, sourceStored, sourceDigest string
+	if err := h.db.Pool.QueryRow(ctx, `SELECT id,stored_filename,sha256 FROM evidences WHERE submission_item_id=$1`, lastItem).Scan(&sourceID, &sourceStored, &sourceDigest); err != nil {
+		t.Fatal(err)
+	}
+
+	// This year's review of the same service, with the matching item code and
+	// no attachments of its own.
+	now := author.createReview("이월 증적 서비스")
+	var nowItem string
+	if err := h.db.Pool.QueryRow(ctx, `SELECT si.id FROM submissions sub JOIN submission_items si ON si.submission_id=sub.id WHERE sub.review_request_id=$1 AND si.item_code=(SELECT item_code FROM submission_items WHERE id=$2) LIMIT 1`, now, lastItem).Scan(&nowItem); err != nil {
+		t.Fatal(err)
+	}
+	path := "/api/v1/review-requests/" + now + "/items/" + nowItem + "/evidences/carry-over"
+
+	// Nobody outside the service can pull its documents into a review of their
+	// own, and an evidence identifier from an unrelated review is not a way in.
+	otherReview := outsider.createReview("남의 서비스")
+	otherItem := firstItemID(t, h, otherReview)
+	if res := outsider.do(http.MethodPost, "/api/v1/review-requests/"+otherReview+"/items/"+otherItem+"/evidences/carry-over",
+		map[string]any{"evidence_ids": []string{sourceID}}); res.status != http.StatusNotFound {
+		t.Fatalf("an outsider carried somebody else's evidence forward: %d %s", res.status, res.body)
+	}
+
+	res := author.do(http.MethodPost, path, map[string]any{"evidence_ids": []string{sourceID}})
+	if res.status != http.StatusCreated {
+		t.Fatalf("carrying evidence forward: %d %s", res.status, res.body)
+	}
+	copied, _ := res.json()["copied"].([]any)
+	if len(copied) != 1 {
+		t.Fatalf("the call reports %d copies: %s", len(copied), res.body)
+	}
+	entry := copied[0].(map[string]any)
+	if entry["original_filename"] != "방화벽정책.txt" || entry["sha256"] != sourceDigest {
+		t.Fatalf("the copy does not match the original: %v", entry)
+	}
+	newID := entry["id"].(string)
+	if newID == sourceID {
+		t.Fatal("the carried evidence reuses the original row")
+	}
+
+	// The copy is a copy: its own row, its own stored file, its own key
+	// binding -- and it still decrypts to the original bytes. Sharing the
+	// stored file would tie the new review's evidence to the old row's key and
+	// to the old review's retention.
+	var newStored, newOwner string
+	var newVersion int
+	if err := h.db.Pool.QueryRow(ctx, `SELECT stored_filename,key_owner_id,key_version FROM evidences WHERE id=$1`, newID).Scan(&newStored, &newOwner, &newVersion); err != nil {
+		t.Fatal(err)
+	}
+	if newStored == sourceStored {
+		t.Error("the carried evidence points at the original stored file")
+	}
+	download := author.do(http.MethodGet, "/api/v1/evidences/"+newID+"/download", nil)
+	if download.status != http.StatusOK {
+		t.Fatalf("downloading the carried evidence: %d %s", download.status, download.body)
+	}
+	if download.body != "작년에 제출한 방화벽 정책" {
+		t.Fatalf("the carried evidence reads %q", download.body)
+	}
+
+	// The previous-verdict panel is where the button lives, so the files it
+	// lists have to carry the identifiers the button posts back.
+	if _, err := h.db.Pool.Exec(ctx, `INSERT INTO review_results(id,submission_item_id,reviewer_id,result,opinion) VALUES($1,$2,$3,'COMPLIANT','작년 판정')`,
+		store.NewID(), lastItem, authorID); err != nil {
+		t.Fatal(err)
+	}
+	history := author.do(http.MethodGet, "/api/v1/review-requests/"+now+"/items/"+nowItem+"/verdict-history", nil)
+	rows, _ := history.json()["items"].([]any)
+	if len(rows) != 1 {
+		t.Fatalf("the history lists %d earlier verdicts: %s", len(rows), history.body)
+	}
+	files, _ := rows[0].(map[string]any)["evidence"].([]any)
+	if len(files) != 1 || files[0].(map[string]any)["id"] != sourceID {
+		t.Fatalf("the history does not name the carryable file: %v", files)
+	}
+
+	// A file that never passed the scanner does not get a second life under a
+	// new name.
+	if _, err := h.db.Pool.Exec(ctx, `UPDATE evidences SET scan_status='INFECTED' WHERE id=$1`, sourceID); err != nil {
+		t.Fatal(err)
+	}
+	res = author.do(http.MethodPost, path, map[string]any{"evidence_ids": []string{sourceID}})
+	if res.status != http.StatusCreated {
+		t.Fatalf("carrying an infected file: %d %s", res.status, res.body)
+	}
+	if copied, _ := res.json()["copied"].([]any); len(copied) != 0 {
+		t.Errorf("an infected file was carried forward: %s", res.body)
+	}
+	if skipped, _ := res.json()["skipped"].([]any); len(skipped) != 1 {
+		t.Errorf("the refusal was not reported: %s", res.body)
+	}
+}

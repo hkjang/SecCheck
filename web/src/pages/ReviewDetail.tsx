@@ -387,7 +387,7 @@ function ItemEditor({ review, item, reviewer, people, onSaved, onSelect }: { rev
     <div data-sx="sx-002"><strong data-sx="sx-018">증적 첨부</strong>{editable && <div className="form-grid" data-sx="sx-028"><Field label="파일" help={evidence.length > 1 ? `${evidence.length}개 선택됨 · 각각 별도 증적으로 저장됩니다` : limits?.max_size_mb ? `여러 개를 한 번에 선택할 수 있습니다 · 파일당 최대 ${limits.max_size_mb}MB` : '여러 개를 한 번에 선택할 수 있습니다'}><input type="file" multiple className="input" accept={(limits?.allowed_extensions || []).map(x => x.startsWith('.') ? x : `.${x}`).join(',') || undefined} onChange={(e: ChangeEvent<HTMLInputElement>) => setEvidence(Array.from(e.target.files || []))} /></Field><Field label="설명"><input className="input" value={evidenceDescription} onChange={e => setEvidenceDescription(e.target.value)} /></Field><div><Button disabled={!evidence.length || uploading} onClick={uploadFile}><Upload size={14} /> {uploading ? '업로드 중…' : evidence.length > 1 ? `${evidence.length}건 암호화 업로드` : '암호화 업로드'}</Button></div></div>}{item.evidences.map(e => <EvidenceRow key={e.id} evidence={e} editable={editable} onSaved={onSaved} />)}</div>
     {!reviewable && <ReviewVerdict result={item.review_result} onSaved={onSaved} />}
     {reviewable && answerChangedSinceReview(item) && <JudgedAnswer item={item} />}
-    {(reviewable || editable) && <PreviousVerdicts reviewID={review.id} itemID={item.id} />}
+    {(reviewable || editable) && <PreviousVerdicts reviewID={review.id} itemID={item.id} canEdit={editable} onCarried={onSaved} />}
     {reviewable && <div data-sx="sx-002"><strong data-sx="sx-018">보안 담당자 검토</strong><div className="form-grid" data-sx="sx-028"><Field label="최종 적용 여부"><select className="select" value={reviewResult.final_applicability} onChange={e => setReviewResult(v => ({ ...v, final_applicability: e.target.value }))}><option value="">작성자 판단 유지</option><option value="Y">Y</option><option value="N">N</option><option value="N/A">N/A</option></select></Field><Field label="검토 결과" required><select className="select" value={reviewResult.result} onChange={e => setReviewResult(v => ({ ...v, result: e.target.value }))}><option value="">선택</option><option value="COMPLIANT">적합</option><option value="CONDITIONAL">조건부 적합</option><option value="INSUFFICIENT">미흡</option><option value="NON_COMPLIANT">부적합</option><option value="NA_ACCEPTED">N/A 인정</option><option value="RECHECK">재확인</option></select></Field><Field label="증적 적정성"><select className="select" value={reviewResult.evidence_adequacy} onChange={e => setReviewResult(v => ({ ...v, evidence_adequacy: e.target.value }))}><option value="">선택</option><option value="ADEQUATE">적정</option><option value="PARTIAL">일부 보완</option><option value="INADEQUATE">부적정</option></select></Field><Field label="검토 의견" className="span-2"><LongText value={reviewResult.opinion} onChange={v => setReviewResult(x => ({ ...x, opinion: v }))} /></Field><Field label="후속조치" className="span-2"><LongText value={reviewResult.follow_up} onChange={v => setReviewResult(x => ({ ...x, follow_up: v }))} /></Field><Field label="조치 기한" required={Boolean(reviewResult.follow_up.trim())} help="후속조치를 적으면 기한이 필요합니다. 기한이 있어야 담당자에게 알림이 가고 지연 여부를 판정할 수 있습니다."><input type="date" className="input" min={todayISO()} value={reviewResult.follow_up_due_date} onChange={e => setReviewResult(v => ({ ...v, follow_up_due_date: e.target.value }))} /></Field></div><div data-sx="sx-009"><Button variant="danger" onClick={() => setChangeOpen(true)}><MessageSquareWarning size={14} /> 보완 요청</Button><Button variant="primary" onClick={saveReview}><ShieldCheck size={14} /> 검토 저장</Button></div></div>}
     {conflict && <ConflictModal conflict={conflict} onClose={() => setConflict(undefined)} onReload={async () => { setConflict(undefined); dirty.current = false; setPending(false); await onSaved() }} onOverwrite={async () => { await save(draft, true); await onSaved() }} />}
     {changeOpen && <ChangeRequestModal reviewID={review.id} itemID={item.id} onClose={() => setChangeOpen(false)} onSaved={onSaved} />}{item.change_requests.filter(c => c.status === 'OPEN' && editable).map(c => <ChangeAnswer key={c.id} change={c} onSaved={onSaved} />)}</div>
@@ -447,9 +447,23 @@ function JudgedAnswer({ item }: { item: ChecklistItem }) {
 // What was decided about this item the last time this service came through.
 // The record was always there; finding it meant opening last year's review and
 // scrolling to the same code, so in practice nobody did.
-function PreviousVerdicts({ reviewID, itemID }: { reviewID: string; itemID: string }) {
+// The panel that says what was decided last time is also the only place that
+// knows which files were attached last time, so the button that brings them
+// forward belongs here rather than next to the upload control.
+function PreviousVerdicts({ reviewID, itemID, canEdit, onCarried }: { reviewID: string; itemID: string; canEdit: boolean; onCarried: () => Promise<void> }) {
+  const toast = useToast()
   const [rows, setRows] = useState<Record<string, unknown>[]>()
+  const [busy, setBusy] = useState('')
   useEffect(() => { let alive = true; get<{ items: Record<string, unknown>[] }>(`/api/v1/review-requests/${reviewID}/items/${itemID}/verdict-history`).then(out => { if (alive) setRows(out.items) }).catch(() => undefined); return () => { alive = false } }, [reviewID, itemID])
+  const carry = async (row: Record<string, unknown>, key: string) => {
+    const files = (row.evidence || []) as { id: string }[]
+    setBusy(key)
+    try {
+      const out = await post<{ copied: unknown[]; skipped: { filename: string; reason: string }[] }>(`/api/v1/review-requests/${reviewID}/items/${itemID}/evidences/carry-over`, { evidence_ids: files.map(f => f.id) })
+      toast.push(out.skipped?.length ? `증적 ${out.copied.length}건을 가져왔습니다. ${out.skipped.length}건은 가져오지 못했습니다.` : `증적 ${out.copied.length}건을 가져왔습니다.`)
+      await onCarried()
+    } catch (e) { toast.push(errorMessage(e), 'error') } finally { setBusy('') }
+  }
   if (!rows?.length) return null
   return <div data-sx="sx-002"><strong data-sx="sx-018">이전 심의 판정 ({rows.length})</strong>
     {rows.map((row, i) => <div className="change-item" key={i}>
@@ -458,7 +472,8 @@ function PreviousVerdicts({ reviewID, itemID }: { reviewID: string; itemID: stri
       <span className="subtle"> {String(row.decided_on || '')}{row.reviewer_name ? ` · ${String(row.reviewer_name)}` : ''}</span>
       {row.opinion ? <p>{String(row.opinion)}</p> : null}
       {row.follow_up ? <div className="subtle">후속조치: {String(row.follow_up)}</div> : null}
-      {Array.isArray(row.evidence_names) && row.evidence_names.length > 0 ? <div className="subtle">그때 첨부한 증적: {(row.evidence_names as string[]).join(', ')}</div> : null}
+      {Array.isArray(row.evidence_names) && row.evidence_names.length > 0 ? <div className="subtle">그때 첨부한 증적: {(row.evidence_names as string[]).join(', ')}
+        {canEdit && Array.isArray(row.evidence) && (row.evidence as unknown[]).length > 0 ? <> <Button small disabled={busy === String(i)} onClick={() => carry(row, String(i))}><Copy size={13} /> {busy === String(i) ? '가져오는 중…' : `이 증적 ${(row.evidence as unknown[]).length}건 가져오기`}</Button></> : null}</div> : null}
     </div>)}
   </div>
 }

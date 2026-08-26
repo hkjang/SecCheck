@@ -64,6 +64,7 @@ var auditEventLabels = map[string]string{
 	"UPLOAD_EVIDENCE_VERSION":        "증적 새 버전 업로드",
 	"DOWNLOAD_EVIDENCE":              "증적 다운로드",
 	"DELETE_EVIDENCE":                "증적 삭제",
+	"CARRY_OVER_EVIDENCE":            "이전 심의 증적 가져오기",
 	"CREATE_TEMPLATE":                "템플릿 생성",
 	"UPDATE_TEMPLATE":                "템플릿 수정",
 	"CREATE_CHECKLIST_ITEM":          "체크리스트 항목 추가",

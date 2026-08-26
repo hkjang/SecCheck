@@ -152,6 +152,7 @@ func (s *Server) routes() {
 	s.handle("GET", "/api/v1/review-requests/{id}/rule-candidates", "심의", "자동 배정 결과와 미배정 후보 항목", []string{"TEMPLATE_ADMIN"}, false, s.listRuleCandidates)
 	s.handle("POST", "/api/v1/review-requests/{id}/rule-overrides", "심의", "자동 배정 결과 수동 조정. 사유가 감사로그에 기록됨", []string{"TEMPLATE_ADMIN"}, false, s.overrideRuleResult)
 	s.handle("POST", "/api/v1/review-requests/{id}/items/{itemID}/evidences", "증적", "증적 업로드. 확장자와 Magic/MIME 검증 후 암호화 저장", nil, false, s.uploadEvidence)
+	s.handle("POST", "/api/v1/review-requests/{id}/items/{itemID}/evidences/carry-over", "증적", "같은 서비스의 이전 심의에 첨부된 증적을 이 항목으로 가져오기", nil, false, s.carryOverEvidence)
 	s.handle("POST", "/api/v1/review-requests/{id}/items/{itemID}/comments", "심의", "항목 코멘트 작성", nil, false, s.addComment)
 	s.handle("GET", "/api/v1/evidences/{id}/download", "증적", "증적 복호화 다운로드. version=N으로 이전 버전 지정. 검사 미완료 파일은 거부", nil, false, s.downloadEvidence)
 	s.handle("GET", "/api/v1/evidences/{id}/versions", "증적", "증적 버전 이력. 교체 시각·업로더·해시", nil, false, s.listEvidenceVersions)

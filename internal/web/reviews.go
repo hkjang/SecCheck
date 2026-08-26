@@ -756,7 +756,10 @@ func (s *Server) snapshotTemplateVersions(r *http.Request, reviewID string) ([]m
 // said before, and only from reviews they could open themselves. The names of
 // the files that were attached come with it: answers are carried into a
 // re-review but evidence is not, so the person filling it in otherwise has to
-// remember what they attached a year ago.
+// remember what they attached a year ago. The files come with identifiers as
+// well as names, because remembering is not the hard part -- getting them out
+// of the old review and back in again is -- and the carry-over button on this
+// panel does exactly that.
 func (s *Server) itemVerdictHistory(w http.ResponseWriter, r *http.Request) {
 	id, itemID := r.PathValue("id"), r.PathValue("itemID")
 	sess := session(r)
@@ -777,7 +780,8 @@ func (s *Server) itemVerdictHistory(w http.ResponseWriter, r *http.Request) {
                 to_char(display_date(COALESCE(review_requests.approved_at,review_requests.updated_at)),'YYYY-MM-DD') AS decided_on,
                 rr.result,rr.opinion,rr.evidence_adequacy,COALESCE(rr.follow_up,''),
                 COALESCE(u.display_name,'') AS reviewer_name,
-                COALESCE((SELECT jsonb_agg(e.original_filename ORDER BY e.created_at) FROM evidences e WHERE e.submission_item_id=si.id AND e.deleted_at IS NULL),'[]') AS evidence_names
+                COALESCE((SELECT jsonb_agg(e.original_filename ORDER BY e.created_at) FROM evidences e WHERE e.submission_item_id=si.id AND e.deleted_at IS NULL),'[]') AS evidence_names,
+                COALESCE((SELECT jsonb_agg(jsonb_build_object('id',e.id,'original_filename',e.original_filename,'size_bytes',e.size_bytes,'scan_status',e.scan_status) ORDER BY e.created_at) FROM evidences e WHERE e.submission_item_id=si.id AND e.deleted_at IS NULL AND e.scan_status IN ('CLEAN','SKIPPED')),'[]') AS evidence
                 FROM review_results rr
                 JOIN submission_items si ON si.id=rr.submission_item_id
                 JOIN submissions sub ON sub.id=si.submission_id
@@ -793,7 +797,7 @@ func (s *Server) itemVerdictHistory(w http.ResponseWriter, r *http.Request) {
 		s.fault(w, r, "QUERY_FAILED", "이전 판정을 불러오지 못했습니다.", err)
 		return
 	}
-	items, err := scanDynamic(rows, []string{"review_id", "review_number", "decided_on", "result", "opinion", "evidence_adequacy", "follow_up", "reviewer_name", "evidence_names"})
+	items, err := scanDynamic(rows, []string{"review_id", "review_number", "decided_on", "result", "opinion", "evidence_adequacy", "follow_up", "reviewer_name", "evidence_names", "evidence"})
 	if err != nil {
 		s.fault(w, r, "QUERY_FAILED", "목록을 불러오지 못했습니다.", err)
 		return

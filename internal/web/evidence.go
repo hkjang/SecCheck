@@ -482,3 +482,164 @@ func (s *Server) itemBelongsToLatestSubmission(ctx context.Context, itemID, revi
 	_ = s.Store.Pool.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM submission_items si JOIN submissions sub ON sub.id=si.submission_id WHERE si.id=$1 AND sub.review_request_id=$2 AND sub.revision=(SELECT max(revision) FROM submissions WHERE review_request_id=$2))`, itemID, reviewID).Scan(&ok)
 	return ok
 }
+
+// carryOverEvidence brings the attachments of an earlier review forward.
+// A service comes back for review every year and the answers are carried into
+// the new checklist, but the files never were: the evidence for "we encrypt
+// the database" is the same document it was last year, and somebody had to
+// find the old review, download every attachment and upload them all again
+// under the same names. The previous verdict panel already listed what was
+// attached, which made the omission visible without doing anything about it.
+//
+// The copy is a real copy: the bytes are decrypted with the key they were
+// written under and re-encrypted under the copier's own key with the new
+// row's own binding, so the archive keeps the same one-file-one-key rule the
+// upload path establishes, and the digest is checked to prove the copy is
+// faithful.
+func (s *Server) carryOverEvidence(w http.ResponseWriter, r *http.Request) {
+	reviewID, itemID := r.PathValue("id"), r.PathValue("itemID")
+	sess := session(r)
+	if !s.canEditReview(r.Context(), sess, reviewID) {
+		problem(w, 403, "FORBIDDEN", "이 심의에 증적을 첨부할 수 없습니다.", nil)
+		return
+	}
+	if !s.itemBelongsToLatestSubmission(r.Context(), itemID, reviewID) {
+		problem(w, 404, "NOT_FOUND", "체크리스트 항목을 찾을 수 없습니다.", nil)
+		return
+	}
+	var in struct {
+		EvidenceIDs []string `json:"evidence_ids"`
+	}
+	if !decodeJSON(w, r, &in) {
+		return
+	}
+	if len(in.EvidenceIDs) == 0 {
+		problem(w, 422, "VALIDATION_FAILED", "가져올 증적을 선택하세요.", map[string]string{"evidence_ids": "필수 입력 항목입니다."})
+		return
+	}
+	if len(in.EvidenceIDs) > carryOverLimit {
+		problem(w, 422, "VALIDATION_FAILED", fmt.Sprintf("한 번에 %d건까지 가져올 수 있습니다.", carryOverLimit), nil)
+		return
+	}
+	// The same rule the previous-verdict panel is built on: the same item of
+	// the same service, in a review this person could open for themselves.
+	where, args := accessFilter(sess, 4)
+	if hasAnyRole(sess.User, "SECURITY_REVIEWER", "AUDITOR") {
+		where = "TRUE"
+		args = nil
+	}
+	rows, err := s.Store.Pool.Query(r.Context(), `SELECT e.id,e.original_filename,e.stored_filename,e.mime_type,e.size_bytes,e.sha256,e.key_owner_id,e.key_version,e.current_version,e.scan_status,e.description
+                FROM evidences e
+                JOIN submission_items si ON si.id=e.submission_item_id
+                JOIN submissions sub ON sub.id=si.submission_id
+                JOIN review_requests ON review_requests.id=sub.review_request_id
+                WHERE e.id=ANY($1) AND e.deleted_at IS NULL AND review_requests.id<>$2
+                  AND si.item_code=(SELECT item_code FROM submission_items WHERE id=$3)
+                  AND review_requests.service_name=(SELECT service_name FROM review_requests WHERE id=$2)
+                  AND `+where+`
+                ORDER BY e.created_at`, append([]any{in.EvidenceIDs, reviewID, itemID}, args...)...)
+	if err != nil {
+		s.fault(w, r, "QUERY_FAILED", "이전 증적을 불러오지 못했습니다.", err)
+		return
+	}
+	type source struct {
+		id, name, stored, mime, digest, owner, scan, description string
+		size                                                     int64
+		keyVersion, version                                      int
+	}
+	var sources []source
+	for rows.Next() {
+		var src source
+		if err = rows.Scan(&src.id, &src.name, &src.stored, &src.mime, &src.size, &src.digest, &src.owner, &src.keyVersion, &src.version, &src.scan, &src.description); err != nil {
+			continue
+		}
+		sources = append(sources, src)
+	}
+	rows.Close()
+	if len(sources) == 0 {
+		problem(w, 404, "NOT_FOUND", "가져올 수 있는 이전 증적이 없습니다. 같은 서비스의 같은 항목에 첨부된, 열람 권한이 있는 증적만 가져올 수 있습니다.", nil)
+		return
+	}
+
+	uid := sess.User.ID
+	key, keyVersion, err := s.activeUserKey(r.Context(), uid)
+	if err != nil {
+		s.fault(w, r, "KEY_UNAVAILABLE", "개인 암호화 키를 사용할 수 없습니다.", err)
+		return
+	}
+	copied := []map[string]any{}
+	skipped := []map[string]string{}
+	for _, src := range sources {
+		// Withheld for the same reason the download endpoint and the archive
+		// withhold them: a file that has not passed the scanner does not get a
+		// second life under a new name.
+		if src.scan != scanClean && src.scan != scanSkipped {
+			skipped = append(skipped, map[string]string{"filename": src.name, "reason": src.scan})
+			continue
+		}
+		id, stored := store.NewID(), store.NewID()+".enc"
+		size, digest, copyErr := s.copyEvidenceBytes(r.Context(), src.owner, src.keyVersion, src.stored, []byte(fmt.Sprintf("evidence:%s:%d", src.id, src.version)), stored, key, []byte("evidence:"+id+":1"))
+		if copyErr == nil && digest != src.digest {
+			copyErr = fmt.Errorf("digest %s does not match the original %s", digest, src.digest)
+		}
+		if copyErr != nil {
+			_ = os.Remove(s.evidencePath(stored))
+			s.Store.Log(r.Context(), "ERROR", requestID(r), "evidence", "이전 증적을 복사하지 못했습니다.", map[string]any{"evidence_id": src.id, "error": copyErr.Error()})
+			skipped = append(skipped, map[string]string{"filename": src.name, "reason": "READ_FAILED"})
+			continue
+		}
+		tx, txErr := s.Store.Pool.Begin(r.Context())
+		if txErr == nil {
+			_, txErr = tx.Exec(r.Context(), `INSERT INTO evidences(id,submission_item_id,original_filename,stored_filename,mime_type,size_bytes,sha256,uploaded_by,key_owner_id,key_version,description,scan_status) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$8,$9,$10,$11)`,
+				id, itemID, src.name, stored, src.mime, size, digest, uid, keyVersion, carriedDescription(src.description), src.scan)
+			if txErr == nil {
+				_, txErr = tx.Exec(r.Context(), `INSERT INTO evidence_versions(id,evidence_id,version,stored_filename,size_bytes,sha256,mime_type,key_owner_id,key_version,scan_status,uploaded_by,original_filename) VALUES($1,$2,1,$3,$4,$5,$6,$7,$8,$9,$7,$10)`,
+					store.NewID(), id, stored, size, digest, src.mime, uid, keyVersion, src.scan, src.name)
+			}
+			if txErr == nil {
+				txErr = tx.Commit(r.Context())
+			} else {
+				_ = tx.Rollback(r.Context())
+			}
+		}
+		if txErr != nil {
+			_ = os.Remove(s.evidencePath(stored))
+			s.Store.Log(r.Context(), "ERROR", requestID(r), "evidence", "가져온 증적을 저장하지 못했습니다.", map[string]any{"evidence_id": src.id, "error": txErr.Error()})
+			skipped = append(skipped, map[string]string{"filename": src.name, "reason": "SAVE_FAILED"})
+			continue
+		}
+		_ = s.Store.Audit(r.Context(), auditFrom(r, "CARRY_OVER_EVIDENCE", "EVIDENCE", id, map[string]any{"source_evidence_id": src.id}, map[string]any{"filename": src.name, "size": size, "sha256": digest, "submission_item_id": itemID}))
+		copied = append(copied, map[string]any{"id": id, "original_filename": src.name, "size_bytes": size, "sha256": digest, "scan_status": src.scan})
+	}
+	jsonResponse(w, 201, map[string]any{"copied": copied, "skipped": skipped})
+}
+
+// carryOverLimit keeps one press of the button to a sensible amount of work;
+// an item with more attachments than this is carried over in two passes.
+const carryOverLimit = 20
+
+func carriedDescription(original string) string {
+	note := "이전 심의에서 가져온 증적"
+	if strings.TrimSpace(original) == "" {
+		return note
+	}
+	return original + " (" + note + ")"
+}
+
+// copyEvidenceBytes streams one stored file from the key it was written under
+// to a new file under another, without ever holding the plaintext in memory or
+// leaving it on disk.
+func (s *Server) copyEvidenceBytes(ctx context.Context, owner string, ownerKeyVersion int, from string, fromAAD []byte, to string, toKey, toAAD []byte) (int64, string, error) {
+	sourceKey, err := s.userKey(ctx, owner, ownerKeyVersion)
+	if err != nil {
+		return 0, "", err
+	}
+	pr, pw := io.Pipe()
+	go func() {
+		_, _, readErr := s.readEvidenceStream(pw, from, sourceKey, fromAAD)
+		_ = pw.CloseWithError(readErr)
+	}()
+	size, digest, err := s.writeEvidenceStream(to, toKey, toAAD, pr)
+	_ = pr.CloseWithError(err)
+	return size, digest, err
+}
