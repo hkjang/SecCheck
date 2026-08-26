@@ -6698,3 +6698,95 @@ func TestDeadRulesAlreadyInProductionAreVisible(t *testing.T) {
 		t.Fatalf("the list reports %v dead rules after one was introduced", listed())
 	}
 }
+
+// A contributor's share of a long checklist is handed to them item by item,
+// across however many reviews they help with. The dashboard listed the
+// reviews they could reach but never the items with their name on them, so
+// the only way to find their own work was to open each review in turn and
+// switch the filter.
+func TestTheDashboardTellsAContributorWhereTheirItemsAre(t *testing.T) {
+	h := newHarness(t)
+	h.user("share-owner", "REQUESTER")
+	h.user("share-helper", "CONTRIBUTOR", "REQUESTER")
+	owner := h.login("share-owner")
+	helper := h.login("share-helper")
+	ctx := context.Background()
+	var helperID string
+	if err := h.db.Pool.QueryRow(ctx, `SELECT id FROM users WHERE username='share-helper'`).Scan(&helperID); err != nil {
+		t.Fatal(err)
+	}
+
+	assignedIn := func(service string, count int) (reviewID string, itemIDs []string) {
+		t.Helper()
+		reviewID = owner.createReview(service)
+		owner.do(http.MethodPost, "/api/v1/review-requests/"+reviewID+"/participants", map[string]string{"user_id": helperID})
+		items := []map[string]any{}
+		if err := json.Unmarshal([]byte(owner.do(http.MethodGet, "/api/v1/review-requests/"+reviewID+"/items", nil).body), &items); err != nil {
+			t.Fatal(err)
+		}
+		if len(items) < count {
+			t.Fatalf("%s has %d items, need %d", service, len(items), count)
+		}
+		for _, item := range items[:count] {
+			itemIDs = append(itemIDs, item["id"].(string))
+		}
+		if res := owner.do(http.MethodPost, "/api/v1/review-requests/"+reviewID+"/responses/bulk", map[string]any{"item_ids": itemIDs, "assign_only": true, "assigned_to": helperID}); res.status != http.StatusOK {
+			t.Fatalf("assigning in %s: %d %s", service, res.status, res.body)
+		}
+		return reviewID, itemIDs
+	}
+	busyID, _ := assignedIn("배분 서비스 가", 3)
+	doneID, doneItems := assignedIn("배분 서비스 나", 2)
+
+	mine := func(c *client) []map[string]any {
+		t.Helper()
+		res := c.do(http.MethodGet, "/api/v1/dashboard", nil)
+		if res.status != http.StatusOK {
+			t.Fatalf("dashboard: %d %s", res.status, res.body)
+		}
+		out := []map[string]any{}
+		raw, _ := json.Marshal(res.json()["my_items"])
+		if err := json.Unmarshal(raw, &out); err != nil {
+			t.Fatalf("my_items: %v (%s)", err, raw)
+		}
+		return out
+	}
+
+	rows := mine(helper)
+	if len(rows) != 2 {
+		t.Fatalf("the helper's dashboard lists %d reviews with their items, want 2: %v", len(rows), rows)
+	}
+	byID := map[string]map[string]any{}
+	for _, row := range rows {
+		byID[row["review_id"].(string)] = row
+	}
+	busy := byID[busyID]
+	if busy == nil {
+		t.Fatalf("the review with three assigned items is missing: %v", rows)
+	}
+	if busy["items"] != float64(3) || busy["unanswered"] != float64(3) {
+		t.Errorf("assigned %v items with %v unanswered, want 3 and 3", busy["items"], busy["unanswered"])
+	}
+	if busy["service_name"] != "배분 서비스 가" || busy["review_number"] == "" {
+		t.Errorf("the row does not name the review: %v", busy)
+	}
+
+	// Answering everything assigned in one review takes that review off the
+	// list: the point of the card is remaining work, not a standing inventory.
+	for _, itemID := range doneItems {
+		if res := helper.do(http.MethodPut, "/api/v1/review-requests/"+doneID+"/responses/"+itemID,
+			map[string]any{"applicability": "Y", "self_assessment": "COMPLIANT", "current_state": "적용 완료", "expected_updated_at": ""}); res.status != http.StatusOK {
+			t.Fatalf("answering an assigned item: %d %s", res.status, res.body)
+		}
+	}
+	rows = mine(helper)
+	if len(rows) != 1 || rows[0]["review_id"] != busyID {
+		t.Fatalf("after answering one review's share the card lists %v, want only the unfinished review", rows)
+	}
+
+	// The card is personal: the requester who did the assigning has no items
+	// of their own and must see an empty card, not everybody else's work.
+	if rows := mine(owner); len(rows) != 0 {
+		t.Errorf("the requester who assigned the items sees %d rows of their own: %v", len(rows), rows)
+	}
+}

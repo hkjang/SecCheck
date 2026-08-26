@@ -1,13 +1,14 @@
 import { useEffect, useState } from 'react'
 import { Link } from 'react-router-dom'
-import { AlertTriangle, ArrowRight, CalendarClock, ClipboardCheck, ClipboardList, Hourglass, Inbox, Plus, ShieldCheck } from 'lucide-react'
+import { AlertTriangle, ArrowRight, CalendarClock, ClipboardCheck, ClipboardList, Hourglass, Inbox, ListChecks, Plus, ShieldCheck } from 'lucide-react'
 import { get } from '../lib/api'
 import { DueChange, Page, QueueEntry, Review } from '../lib/types'
 import { Badge, Button, Empty, formatDate, LoadFailed, Loading, StatusBadge } from '../components/ui'
 import { useAuth } from '../main'
 
 type FollowUp = { id: string; review_id: string; item_id?: string; review_number: string; service_name: string; item_code: string; title: string; follow_up: string; due_date?: string; overdue: boolean; reported: boolean }
-type DashboardData = { status_counts: Record<string, number>; opening_soon: number; opening_soon_unfinished: number; open_change_requests: number; my_queue: QueueEntry[]; due_soon: DueChange[]; my_follow_ups?: FollowUp[]; security_analytics?: { unassigned?: number; long_pending?: number; long_pending_days?: number } }
+type MyItems = { review_id: string; review_number: string; service_name: string; status: string; items: number; unanswered: number; to_fix: number }
+type DashboardData = { status_counts: Record<string, number>; opening_soon: number; opening_soon_unfinished: number; open_change_requests: number; my_queue: QueueEntry[]; due_soon: DueChange[]; my_follow_ups?: FollowUp[]; my_items?: MyItems[]; security_analytics?: { unassigned?: number; long_pending?: number; long_pending_days?: number } }
 export default function Dashboard() {
   const { user } = useAuth()
   // Only a security lead sees these; for everybody else the server omits them.
@@ -25,6 +26,7 @@ export default function Dashboard() {
   const queue = data.my_queue || []
   const due = data.due_soon || []
   const actions = data.my_follow_ups || []
+  const mine = data.my_items || []
   const analytics = data.security_analytics
   return <div className="page"><div className="page-header"><div><h1 className="page-title">안녕하세요, {user.display_name}님</h1><p className="page-description">오늘 처리할 보안성 심의 업무를 확인하세요.</p></div><div className="header-actions">{user.roles.some(r => ['REQUESTER', 'SYSTEM_ADMIN'].includes(r)) && <Link to="/reviews/new"><Button variant="primary"><Plus size={15} /> 신규 심의 요청</Button></Link>}</div></div>
     {/* Every number here is a set of reviews, so every number opens that set:
@@ -41,6 +43,22 @@ export default function Dashboard() {
 
     <section className="card"><div className="card-header"><h2><Inbox size={17} /> 내 차례</h2><div className="header-actions"><Badge tone={queue.length ? 'blue' : ''}>{queue.length}건</Badge><Link className="table-link" to="/reviews?mine=1">전체 보기 <ArrowRight size={13} /></Link></div></div>
       <div className="card-body">{queue.length ? queue.map(q => <div className="queue-row" key={q.id}><Badge tone="blue">{q.action}</Badge><div className="grow"><Link className="table-link" to={`/reviews/${q.id}`}>{q.review_number}</Link> <strong>{q.service_name}</strong><span className="subtle">오픈 예정 {formatDate(q.planned_open_date)} · 최근 변경 {formatDate(q.updated_at, true)}</span></div><StatusBadge status={q.status} /></div>) : <Empty title="지금 처리할 심의가 없습니다." description="새로 배정되면 상단 알림과 이 목록에 함께 표시됩니다." />}</div></section>
+
+    {/* 내 차례 lists reviews; this lists the checklist items inside them that
+        somebody handed to me by name. Each row opens that review already
+        filtered to 내 담당 항목, which is the screen the reader wanted. */}
+    {mine.length > 0 && <section className="card">
+      <div className="card-header"><h2><ListChecks size={17} /> 내 담당 항목</h2><Badge tone="blue">{mine.reduce((n, m) => n + Number(m.unanswered) + Number(m.to_fix), 0)}건</Badge></div>
+      <div className="table-wrap"><table><caption className="sr-only">나에게 배정된 체크리스트 항목</caption>
+        <thead><tr><th scope="col">심의</th><th scope="col">배정</th><th scope="col">미작성</th><th scope="col">보완 필요</th><th scope="col">상태</th></tr></thead>
+        <tbody>{mine.map(m => <tr key={m.review_id}>
+          <td><Link className="table-link" to={`/reviews/${m.review_id}?filter=MINE`}>{m.review_number}</Link><div className="subtle">{m.service_name}</div></td>
+          <td>{m.items}건</td>
+          <td>{Number(m.unanswered) > 0 ? <Badge tone="amber">{m.unanswered}건</Badge> : <span className="subtle">없음</span>}</td>
+          <td>{Number(m.to_fix) > 0 ? <Badge tone="red">{m.to_fix}건</Badge> : <span className="subtle">없음</span>}</td>
+          <td><StatusBadge status={m.status} /></td>
+        </tr>)}</tbody></table></div>
+    </section>}
 
     {due.length > 0 && <section className="card"><div className="card-header"><h2><CalendarClock size={17} /> 보완 조치 기한</h2><Badge tone={due.some(d => d.overdue) ? 'red' : 'amber'}>{due.length}건</Badge></div>
       <div className="table-wrap"><table><caption className="sr-only">기한이 임박했거나 지난 보완 요청</caption><thead><tr><th scope="col">심의</th><th scope="col">항목</th><th scope="col">기한</th><th scope="col">상태</th></tr></thead><tbody>{due.map(d => <tr key={d.id}><td><Link className="table-link" to={`/reviews/${d.review_request_id}${d.item_id ? `?item=${d.item_id}` : ''}`}>{d.review_number}</Link><div className="subtle">{d.service_name}</div></td><td><strong>{d.item_code}</strong><div className="subtle">{d.title}</div></td><td>{formatDate(d.due_date)}</td><td><Badge tone={d.overdue ? 'red' : 'amber'}>{d.overdue ? '기한 초과' : '임박'}</Badge></td></tr>)}</tbody></table></div></section>}

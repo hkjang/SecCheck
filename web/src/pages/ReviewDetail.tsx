@@ -28,13 +28,17 @@ const answerChangedSinceReview = (item: ChecklistItem) => flagsOf(item).stale_ve
 // clears the mark, so what stays marked is what nobody looked at again.
 const carriedOver = (item: ChecklistItem) => flagsOf(item).carried
 
+// The filter names double as deep-link targets: the dashboard sends people
+// straight to '내 담당 항목' in the review that has their work.
+const itemFilters = ['ALL', 'MISSING', 'NA', 'EVIDENCE', 'CHANGE', 'MINE', 'STALE', 'CARRIED', 'COMMENT', 'FINDING', 'BLOCKED']
+
 export default function ReviewDetail() {
   const save = useDownload()
   const { id = '' } = useParams(); const { user } = useAuth(); const toast = useToast(); const navigate = useNavigate()
   // A notice about one item can now say which one, so arriving from the
   // notification centre opens that item instead of a list of a few hundred.
-  const [search] = useSearchParams(); const focusRequest = search.get('item') || ''
-  const [review, setReview] = useState<Review>(); const [items, setItems] = useState<ChecklistItem[]>(); const [selected, setSelected] = useState<string>(''); const [open, setOpen] = useState<Set<string>>(new Set()); const [query, setQuery] = useState(''); const [filter, setFilter] = useState('ALL'); const [validation, setValidation] = useState<Record<string, unknown>[] | null>(null); const [dialog, setDialog] = useState<'complete' | 'approval' | 'reject' | null>(null); const [ruleOpen, setRuleOpen] = useState(false); const [busy, setBusy] = useState(false); const [picked, setPicked] = useState<Set<string>>(new Set()); const [bulkOpen, setBulkOpen] = useState(false); const [historyOpen, setHistoryOpen] = useState(false); const [precheck, setPrecheck] = useState<{ ready: boolean; issues: Record<string, unknown>[] }>(); const [handover, setHandover] = useState(false)
+  const [search] = useSearchParams(); const focusRequest = search.get('item') || ''; const filterRequest = search.get('filter') || ''
+  const [review, setReview] = useState<Review>(); const [items, setItems] = useState<ChecklistItem[]>(); const [selected, setSelected] = useState<string>(''); const [open, setOpen] = useState<Set<string>>(new Set()); const [query, setQuery] = useState(''); const [filter, setFilter] = useState(itemFilters.includes(filterRequest) ? filterRequest : 'ALL'); const [validation, setValidation] = useState<Record<string, unknown>[] | null>(null); const [dialog, setDialog] = useState<'complete' | 'approval' | 'reject' | null>(null); const [ruleOpen, setRuleOpen] = useState(false); const [busy, setBusy] = useState(false); const [picked, setPicked] = useState<Set<string>>(new Set()); const [bulkOpen, setBulkOpen] = useState(false); const [historyOpen, setHistoryOpen] = useState(false); const [precheck, setPrecheck] = useState<{ ready: boolean; issues: Record<string, unknown>[] }>(); const [handover, setHandover] = useState(false)
   const reviewer = user.roles.includes('SECURITY_REVIEWER')
   // The submission rules live on the server and used to be reported only by
   // the 422 that came back from pressing 제출 -- which only the requester could

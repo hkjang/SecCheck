@@ -357,7 +357,7 @@ func (s *Server) dashboard(w http.ResponseWriter, r *http.Request) {
 		analytics["long_pending"] = longPending
 		analytics["long_pending_days"] = maintenance.StalledReviewDays
 	}
-	jsonResponse(w, 200, map[string]any{"status_counts": counts, "opening_soon": overdue, "opening_soon_unfinished": openingUnfinished, "open_change_requests": openChanges, "security_analytics": analytics, "my_queue": s.myQueue(r), "due_soon": s.dueChangeRequests(r), "my_follow_ups": s.myFollowUps(r)})
+	jsonResponse(w, 200, map[string]any{"status_counts": counts, "opening_soon": overdue, "opening_soon_unfinished": openingUnfinished, "open_change_requests": openChanges, "security_analytics": analytics, "my_queue": s.myQueue(r), "due_soon": s.dueChangeRequests(r), "my_follow_ups": s.myFollowUps(r), "my_items": s.myAssignedItems(r)})
 }
 
 // myQueue lists the reviews that are actually waiting on the signed-in person,
@@ -414,6 +414,38 @@ func (s *Server) myFollowUps(r *http.Request) []map[string]any {
 		return []map[string]any{}
 	}
 	return rows2
+}
+
+// myAssignedItems answers "where is the work that is mine". Assigning items to
+// the people who will fill them in is how a long checklist gets divided up,
+// and the person on the receiving end could see their share only by opening
+// each review and switching the filter -- there was no view across reviews at
+// all, so a contributor with items in three reviews had to remember which
+// three.
+func (s *Server) myAssignedItems(r *http.Request) []map[string]any {
+	rows, err := s.Store.Pool.Query(r.Context(), `SELECT review_requests.id AS review_id,review_requests.review_number,review_requests.service_name,review_requests.status,
+                count(*) AS items,
+                count(*) FILTER (WHERE COALESCE(resp.applicability,'')='') AS unanswered,
+                count(*) FILTER (WHERE EXISTS(SELECT 1 FROM change_requests cr WHERE cr.submission_item_id=si.id AND cr.status<>'VERIFIED')) AS to_fix
+                FROM responses resp
+                JOIN submission_items si ON si.id=resp.submission_item_id
+                JOIN submissions sub ON sub.id=si.submission_id
+                JOIN review_requests ON review_requests.id=sub.review_request_id
+                WHERE resp.assigned_to=$1
+                  AND sub.revision=(SELECT max(revision) FROM submissions WHERE review_request_id=review_requests.id)
+                  AND review_requests.status IN ('DRAFT','CHANGE_REQUESTED')
+                GROUP BY review_requests.id,review_requests.review_number,review_requests.service_name,review_requests.status
+                HAVING count(*) FILTER (WHERE COALESCE(resp.applicability,'')='') > 0
+                    OR count(*) FILTER (WHERE EXISTS(SELECT 1 FROM change_requests cr WHERE cr.submission_item_id=si.id AND cr.status<>'VERIFIED')) > 0
+                ORDER BY count(*) FILTER (WHERE COALESCE(resp.applicability,'')='') DESC,review_requests.review_number LIMIT 12`, session(r).User.ID)
+	if err != nil {
+		return []map[string]any{}
+	}
+	out, scanErr := scanDynamic(rows, []string{"review_id", "review_number", "service_name", "status", "items", "unanswered", "to_fix"})
+	if scanErr != nil {
+		return []map[string]any{}
+	}
+	return out
 }
 
 func (s *Server) dueChangeRequests(r *http.Request) []map[string]any {
