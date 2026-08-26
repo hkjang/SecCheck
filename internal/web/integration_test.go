@@ -8171,3 +8171,66 @@ func TestAnItemSaysWhyItIsOnThisChecklist(t *testing.T) {
 		t.Errorf("the manual reason reads %v", added["override"])
 	}
 }
+
+// The same requirement is judged on every service that gets it. A reviewer
+// deciding it again could see what their own service was told last year and
+// nothing about anybody else's, so two services could be held to different
+// standards on one control with nobody in a position to notice.
+func TestAReviewerSeesHowTheSameControlWasJudgedElsewhere(t *testing.T) {
+	h := newHarness(t)
+	ctx := context.Background()
+	h.user("across-author", "REQUESTER")
+	h.user("across-reviewer", "SECURITY_REVIEWER")
+	author := h.login("across-author")
+	reviewer := h.login("across-reviewer")
+	var reviewerID string
+	if err := h.db.Pool.QueryRow(ctx, `SELECT id FROM users WHERE username='across-reviewer'`).Scan(&reviewerID); err != nil {
+		t.Fatal(err)
+	}
+
+	judged := func(service, opinion string) (reviewID, itemID string) {
+		t.Helper()
+		reviewID = author.createReview(service)
+		itemID = firstItemID(t, h, reviewID)
+		if _, err := h.db.Pool.Exec(ctx, `UPDATE review_requests SET reviewer_id=$2,status='REVIEWING' WHERE id=$1`, reviewID, reviewerID); err != nil {
+			t.Fatal(err)
+		}
+		if res := reviewer.do(http.MethodPut, "/api/v1/review-requests/"+reviewID+"/review-results/"+itemID,
+			map[string]any{"result": "CONDITIONAL", "opinion": opinion, "follow_up": "분기별 재점검", "follow_up_due_date": "2030-09-30", "expected_updated_at": ""}); res.status != http.StatusOK {
+			t.Fatalf("judging %s: %d %s", service, res.status, res.body)
+		}
+		return reviewID, itemID
+	}
+	otherService, _ := judged("옆 팀 서비스", "옆 팀에는 조건부로 통과시켰습니다")
+	mine, myItem := judged("우리 서비스", "우리 판정")
+
+	history := func(c *client) map[string]any {
+		t.Helper()
+		res := c.do(http.MethodGet, "/api/v1/review-requests/"+mine+"/items/"+myItem+"/verdict-history", nil)
+		if res.status != http.StatusOK {
+			t.Fatalf("verdict history: %d %s", res.status, res.body)
+		}
+		return res.json()
+	}
+	across, _ := history(reviewer)["across_services"].([]any)
+	if len(across) != 1 {
+		t.Fatalf("the reviewer sees %d verdicts from other services, want 1: %v", len(across), across)
+	}
+	entry := across[0].(map[string]any)
+	if entry["review_id"] != otherService || entry["service_name"] != "옆 팀 서비스" {
+		t.Errorf("the other service's verdict reads %v", entry)
+	}
+	if entry["opinion"] != "옆 팀에는 조건부로 통과시켰습니다" || entry["result"] != "CONDITIONAL" {
+		t.Errorf("the verdict does not carry what was decided: %v", entry)
+	}
+	// This service's own history stays what it was: the two lists answer
+	// different questions.
+	if items, _ := history(reviewer)["items"].([]any); len(items) != 0 {
+		t.Errorf("the same-service history picked up another service's verdict: %v", items)
+	}
+
+	// The requester of the service is not shown how other teams were judged.
+	if across, _ := history(author)["across_services"].([]any); len(across) != 0 {
+		t.Errorf("the requester was shown %d other services' verdicts", len(across))
+	}
+}

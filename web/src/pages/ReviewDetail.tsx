@@ -509,7 +509,8 @@ function PreviousVerdicts({ reviewID, itemID, canEdit, onCarried }: { reviewID: 
   const toast = useToast()
   const [rows, setRows] = useState<Record<string, unknown>[]>()
   const [busy, setBusy] = useState('')
-  useEffect(() => { let alive = true; get<{ items: Record<string, unknown>[] }>(`/api/v1/review-requests/${reviewID}/items/${itemID}/verdict-history`).then(out => { if (alive) setRows(out.items) }).catch(() => undefined); return () => { alive = false } }, [reviewID, itemID])
+  const [across, setAcross] = useState<Record<string, unknown>[]>([])
+  useEffect(() => { let alive = true; get<{ items: Record<string, unknown>[]; across_services?: Record<string, unknown>[] }>(`/api/v1/review-requests/${reviewID}/items/${itemID}/verdict-history`).then(out => { if (alive) { setRows(out.items); setAcross(out.across_services || []) } }).catch(() => undefined); return () => { alive = false } }, [reviewID, itemID])
   const carry = async (row: Record<string, unknown>, key: string) => {
     const files = (row.evidence || []) as { id: string }[]
     setBusy(key)
@@ -519,7 +520,19 @@ function PreviousVerdicts({ reviewID, itemID, canEdit, onCarried }: { reviewID: 
       await onCarried()
     } catch (e) { toast.push(errorMessage(e), 'error') } finally { setBusy('') }
   }
-  if (!rows?.length) return null
+  // The same requirement is judged on every service that gets it, and holding
+  // two services to different standards on one control is exactly what nobody
+  // can notice from inside a single review.
+  const others = across.length ? <div data-sx="sx-002"><strong data-sx="sx-018">다른 서비스의 판정 ({across.length})</strong>
+    {across.map((row, i) => <div className="change-item" key={`x-${i}`}>
+      <Link className="table-link" to={`/reviews/${String(row.review_id)}`}>{String(row.review_number)}</Link> <strong>{String(row.service_name)}</strong>
+      <Badge tone={['INSUFFICIENT', 'NON_COMPLIANT'].includes(String(row.result)) ? 'red' : String(row.result) === 'CONDITIONAL' ? 'amber' : 'green'}>{resultText[String(row.result)] || String(row.result)}</Badge>
+      <span className="subtle"> {String(row.decided_on || '')}{row.reviewer_name ? ` · ${String(row.reviewer_name)}` : ''}</span>
+      {row.opinion ? <p>{String(row.opinion)}</p> : null}
+      {row.follow_up ? <div className="subtle">후속조치: {String(row.follow_up)}</div> : null}
+    </div>)}
+  </div> : null
+  if (!rows?.length) return others
   return <div data-sx="sx-002"><strong data-sx="sx-018">이전 심의 판정 ({rows.length})</strong>
     {rows.map((row, i) => <div className="change-item" key={i}>
       <Link className="table-link" to={`/reviews/${String(row.review_id)}`}>{String(row.review_number)}</Link>
@@ -530,6 +543,7 @@ function PreviousVerdicts({ reviewID, itemID, canEdit, onCarried }: { reviewID: 
       {Array.isArray(row.evidence_names) && row.evidence_names.length > 0 ? <div className="subtle">그때 첨부한 증적: {(row.evidence_names as string[]).join(', ')}
         {canEdit && Array.isArray(row.evidence) && (row.evidence as unknown[]).length > 0 ? <> <Button small disabled={busy === String(i)} onClick={() => carry(row, String(i))}><Copy size={13} /> {busy === String(i) ? '가져오는 중…' : `이 증적 ${(row.evidence as unknown[]).length}건 가져오기`}</Button></> : null}</div> : null}
     </div>)}
+    {others}
   </div>
 }
 

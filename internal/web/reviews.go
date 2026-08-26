@@ -1001,7 +1001,41 @@ func (s *Server) itemVerdictHistory(w http.ResponseWriter, r *http.Request) {
 		s.fault(w, r, "QUERY_FAILED", "목록을 불러오지 못했습니다.", err)
 		return
 	}
-	jsonResponse(w, 200, map[string]any{"items": items, "total": len(items)})
+	jsonResponse(w, 200, map[string]any{"items": items, "total": len(items), "across_services": s.verdictsAcrossServices(r, id, itemID)})
+}
+
+// verdictsAcrossServices answers "how do we usually judge this control". The
+// same requirement is judged on every service that gets it, and a reviewer
+// deciding it again had no way to see what the team decided elsewhere: two
+// services could be held to different standards on the same control without
+// anybody noticing. Only the people who can already open every review are
+// shown other services' verdicts.
+func (s *Server) verdictsAcrossServices(r *http.Request, reviewID, itemID string) []map[string]any {
+	sess := session(r)
+	if !hasAnyRole(sess.User, "SECURITY_REVIEWER", "AUDITOR") {
+		return []map[string]any{}
+	}
+	rows, err := s.Store.Pool.Query(r.Context(), `SELECT review_requests.id AS review_id,review_requests.review_number,review_requests.service_name,
+                to_char(display_date(COALESCE(review_requests.approved_at,review_requests.updated_at)),'YYYY-MM-DD') AS decided_on,
+                rr.result,rr.opinion,COALESCE(rr.follow_up,''),COALESCE(u.display_name,'') AS reviewer_name
+                FROM review_results rr
+                JOIN submission_items si ON si.id=rr.submission_item_id
+                JOIN submissions sub ON sub.id=si.submission_id
+                JOIN review_requests ON review_requests.id=sub.review_request_id
+                LEFT JOIN users u ON u.id=rr.reviewer_id
+                WHERE review_requests.id<>$1
+                  AND si.item_code=(SELECT item_code FROM submission_items WHERE id=$2)
+                  AND review_requests.service_name<>(SELECT service_name FROM review_requests WHERE id=$1)
+                  AND COALESCE(rr.result,'')<>''
+                ORDER BY COALESCE(review_requests.approved_at,review_requests.updated_at) DESC LIMIT 5`, reviewID, itemID)
+	if err != nil {
+		return []map[string]any{}
+	}
+	out, scanErr := scanDynamic(rows, []string{"review_id", "review_number", "service_name", "decided_on", "result", "opinion", "follow_up", "reviewer_name"})
+	if scanErr != nil {
+		return []map[string]any{}
+	}
+	return out
 }
 
 // reviewHistory assembles what happened to one review from the audit log.
