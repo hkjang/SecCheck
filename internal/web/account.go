@@ -249,6 +249,15 @@ func (s *Server) bulkSaveResponses(w http.ResponseWriter, r *http.Request) {
 		problem(w, 422, "VALIDATION_FAILED", fmt.Sprintf("입력이 너무 깁니다. %d자 이내로 작성하세요.", longTextLimit), map[string]string{field: fmt.Sprintf("%d자를 넘습니다.", longTextLimit)})
 		return
 	}
+	// The rule that an item may only be handed to somebody who can open the
+	// review was enforced when assigning one item and when assigning a batch,
+	// and not here -- so a bulk answer that happened to carry an assignee
+	// walked straight past it, putting a name from the directory on work that
+	// person cannot reach.
+	if in.AssignedTo != "" && !s.canAccessReviewAs(r.Context(), in.AssignedTo, reviewID) {
+		problem(w, 422, "NOT_A_PARTICIPANT", "이 심의에 참여하지 않는 사용자에게는 배정할 수 없습니다.", map[string]string{"assigned_to": "참여자가 아닙니다."})
+		return
+	}
 	// Without overwrite, entries that already carry an answer are left alone so
 	// a bulk action cannot silently discard someone's work.
 	conflict := `ON CONFLICT(submission_item_id) DO NOTHING`

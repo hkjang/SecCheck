@@ -8625,3 +8625,53 @@ func TestAPasswordThatIsGuessedFirstIsRefused(t *testing.T) {
 		t.Errorf("a new account was created with a guessed password: %d %s", res.status, res.body)
 	}
 }
+
+// An item may only be handed to somebody who can open the review. That was
+// enforced when assigning one item, and when assigning a batch, and not when a
+// bulk answer happened to carry an assignee -- so the same directory name that
+// the other two paths refuse could be written onto a hundred items at once.
+func TestABulkAnswerCannotAssignSomebodyOutsideTheReview(t *testing.T) {
+	h := newHarness(t)
+	ctx := context.Background()
+	h.user("bulk-owner", "REQUESTER")
+	helperID := h.user("bulk-helper", "CONTRIBUTOR", "REQUESTER")
+	outsiderID := h.user("bulk-outsider", "REQUESTER")
+	owner := h.login("bulk-owner")
+
+	reviewID := owner.createReview("일괄 배정 서비스")
+	owner.do(http.MethodPost, "/api/v1/review-requests/"+reviewID+"/participants", map[string]string{"user_id": helperID})
+	items := []map[string]any{}
+	if err := json.Unmarshal([]byte(owner.do(http.MethodGet, "/api/v1/review-requests/"+reviewID+"/items", nil).body), &items); err != nil {
+		t.Fatal(err)
+	}
+	ids := []string{items[0]["id"].(string), items[1]["id"].(string)}
+
+	// The answer and the assignment arrive together, which is the shape the
+	// check was missing.
+	res := owner.do(http.MethodPost, "/api/v1/review-requests/"+reviewID+"/responses/bulk",
+		map[string]any{"item_ids": ids, "applicability": "N/A", "na_reason": "해당 없음", "self_assessment": "N/A", "assigned_to": outsiderID})
+	if res.status != http.StatusUnprocessableEntity || res.errorCode() != "NOT_A_PARTICIPANT" {
+		t.Fatalf("a bulk answer assigned an outsider: %d %s", res.status, res.body)
+	}
+	// Nothing was written: a refused call must not leave half the batch behind.
+	var answered int
+	if err := h.db.Pool.QueryRow(ctx, `SELECT count(*) FROM responses WHERE submission_item_id = ANY($1)`, ids).Scan(&answered); err != nil {
+		t.Fatal(err)
+	}
+	if answered != 0 {
+		t.Errorf("the refused bulk answer still wrote %d rows", answered)
+	}
+
+	// Somebody on the review is accepted, and the answer lands with them.
+	if res := owner.do(http.MethodPost, "/api/v1/review-requests/"+reviewID+"/responses/bulk",
+		map[string]any{"item_ids": ids, "applicability": "N/A", "na_reason": "해당 없음", "self_assessment": "N/A", "assigned_to": helperID}); res.status != http.StatusOK {
+		t.Fatalf("a bulk answer assigned to a participant: %d %s", res.status, res.body)
+	}
+	var assigned int
+	if err := h.db.Pool.QueryRow(ctx, `SELECT count(*) FROM responses WHERE assigned_to=$1`, helperID).Scan(&assigned); err != nil {
+		t.Fatal(err)
+	}
+	if assigned != len(ids) {
+		t.Errorf("%d of %d items were assigned to the participant", assigned, len(ids))
+	}
+}
