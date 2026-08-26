@@ -289,7 +289,14 @@ func publicUser(u store.User) map[string]any {
 
 func (s *Server) dashboard(w http.ResponseWriter, r *http.Request) {
 	sess := session(r)
-	admin := hasAnyRole(sess.User, "SYSTEM_ADMIN", "SECURITY_REVIEWER", "AUDITOR")
+	// Who sees every review here is decided by the same rule as the review
+	// list, because every number on this page opens that list. A system
+	// administrator who is not also a reviewer used to be counted as reading
+	// everything: the cards said 진행 중 42, the list behind them held their
+	// own reviews only, and the rows in 보완 조치 기한 and 내 후속조치 linked
+	// to reviews that answered 404. Oversight of the whole estate is what the
+	// report is for; the dashboard is the reader's own desk and queue.
+	admin := hasAnyRole(sess.User, "SECURITY_REVIEWER", "AUDITOR")
 	where, args := accessFilter(sess, 1)
 	if admin {
 		where = "TRUE"
@@ -396,7 +403,7 @@ func (s *Server) myQueue(r *http.Request) []map[string]any {
 func (s *Server) myFollowUps(r *http.Request) []map[string]any {
 	sess := session(r)
 	where, args := accessFilter(sess, 1)
-	if hasAnyRole(sess.User, "SECURITY_REVIEWER", "SYSTEM_ADMIN", "AUDITOR") {
+	if hasAnyRole(sess.User, "SECURITY_REVIEWER", "AUDITOR") {
 		where = "TRUE"
 		args = nil
 	}
@@ -460,7 +467,7 @@ func (s *Server) myAssignedItems(r *http.Request) []map[string]any {
 func (s *Server) dueChangeRequests(r *http.Request) []map[string]any {
 	sess := session(r)
 	where, args := accessFilter(sess, 1)
-	if hasAnyRole(sess.User, "SECURITY_REVIEWER", "SYSTEM_ADMIN", "AUDITOR") {
+	if hasAnyRole(sess.User, "SECURITY_REVIEWER", "AUDITOR") {
 		where = "TRUE"
 		args = nil
 	}

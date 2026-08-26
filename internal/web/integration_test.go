@@ -7799,3 +7799,78 @@ func TestAnApprovalRequestCanBeWithdrawn(t *testing.T) {
 		t.Errorf("an approved review was withdrawn: %d %s", res.status, res.body)
 	}
 }
+
+// Every number on the dashboard opens the review list, so the two have to
+// agree about who may see what. A system administrator who is not also a
+// reviewer was counted as reading everything: the cards showed the whole
+// estate, the list behind them held their own reviews only, and the rows in
+// 보완 조치 기한 linked to reviews that answered 404.
+func TestTheDashboardCountsOnlyWhatItsListsCanOpen(t *testing.T) {
+	h := newHarness(t)
+	ctx := context.Background()
+	h.user("scope-author", "REQUESTER")
+	h.user("scope-admin", "SYSTEM_ADMIN")
+	h.user("scope-reviewer", "SECURITY_REVIEWER")
+	author := h.login("scope-author")
+	admin := h.login("scope-admin")
+	reviewer := h.login("scope-reviewer")
+	var reviewerID string
+	if err := h.db.Pool.QueryRow(ctx, `SELECT id FROM users WHERE username='scope-reviewer'`).Scan(&reviewerID); err != nil {
+		t.Fatal(err)
+	}
+
+	reviewID := author.createReview("남의 서비스")
+	itemID := firstItemID(t, h, reviewID)
+	if _, err := h.db.Pool.Exec(ctx, `UPDATE review_requests SET reviewer_id=$2,status='REVIEWING' WHERE id=$1`, reviewID, reviewerID); err != nil {
+		t.Fatal(err)
+	}
+	if res := reviewer.do(http.MethodPost, "/api/v1/review-requests/"+reviewID+"/change-requests",
+		map[string]any{"item_id": itemID, "reason": "보완하세요", "due_date": "2030-06-30"}); res.status != http.StatusCreated {
+		t.Fatalf("requesting a correction: %d %s", res.status, res.body)
+	}
+	if _, err := h.db.Pool.Exec(ctx, `UPDATE change_requests SET due_date=display_today()-1 WHERE review_request_id=$1`, reviewID); err != nil {
+		t.Fatal(err)
+	}
+
+	board := func(c *client) map[string]any { return c.do(http.MethodGet, "/api/v1/dashboard", nil).json() }
+	listed := func(c *client) int {
+		t.Helper()
+		res := c.do(http.MethodGet, "/api/v1/review-requests?limit=50", nil)
+		if res.status != http.StatusOK {
+			t.Fatalf("review list: %d %s", res.status, res.body)
+		}
+		items, _ := res.json()["items"].([]any)
+		return len(items)
+	}
+
+	// The administrator's own desk is empty, and the dashboard says so rather
+	// than counting somebody else's review.
+	adminBoard := board(admin)
+	counts, _ := adminBoard["status_counts"].(map[string]any)
+	if len(counts) != 0 {
+		t.Errorf("the administrator's dashboard counts %v, and their list holds %d", counts, listed(admin))
+	}
+	if adminBoard["open_change_requests"] != float64(0) {
+		t.Errorf("the administrator is shown %v outstanding corrections they cannot open", adminBoard["open_change_requests"])
+	}
+	if due, _ := adminBoard["due_soon"].([]any); len(due) != 0 {
+		t.Errorf("보완 조치 기한 offered the administrator %d rows that link to a 404", len(due))
+	}
+	// And the review really is out of reach, which is what makes the rows dead
+	// links rather than a harmless extra.
+	if res := admin.do(http.MethodGet, "/api/v1/review-requests/"+reviewID, nil); res.status != http.StatusNotFound {
+		t.Fatalf("the administrator could open the review after all: %d", res.status)
+	}
+
+	// The reviewer, who can open everything the list shows, still sees it all.
+	reviewerBoard := board(reviewer)
+	if counts, _ := reviewerBoard["status_counts"].(map[string]any); len(counts) == 0 {
+		t.Error("the reviewer's dashboard counts nothing")
+	}
+	if due, _ := reviewerBoard["due_soon"].([]any); len(due) != 1 {
+		t.Errorf("the reviewer sees %d overdue corrections, want 1", len(due))
+	}
+	if listed(reviewer) == 0 {
+		t.Error("the reviewer's list is empty while their dashboard counts the review")
+	}
+}

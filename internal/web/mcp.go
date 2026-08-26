@@ -261,7 +261,7 @@ func (s *Server) mcpReviewReport(r *http.Request, args map[string]any) (any, err
 
 func (s *Server) mcpDashboard(r *http.Request, sess auth.Session) (any, error) {
 	where, args := accessFilter(sess, 1)
-	if hasAnyRole(sess.User, "SYSTEM_ADMIN", "SECURITY_REVIEWER", "AUDITOR") {
+	if hasAnyRole(sess.User, "SECURITY_REVIEWER", "AUDITOR") {
 		where = "TRUE"
 		args = nil
 	}
