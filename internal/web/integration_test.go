@@ -3424,12 +3424,15 @@ func TestTheSimulatorNamesRulesThatCanNeverMatch(t *testing.T) {
 		t.Fatalf("adding the second item: %d %s", broken.status, broken.body)
 	}
 	brokenID, _ := broken.json()["id"].(string)
-	// Written directly, the way it could have been before the check existed.
-	if _, err := h.db.Pool.Exec(ctx, `UPDATE checklist_items SET applicability_rule='{"field":"exposuer","operator":"eq","value":"EXTERNAL"}'::jsonb WHERE id=$1`, brokenID); err != nil {
-		t.Fatal(err)
-	}
 	if res := admin.do(http.MethodPost, fmt.Sprintf("/api/v1/templates/%s/versions/%s/publish", templateID, versionID), nil); res.status >= 300 {
 		t.Fatalf("publishing the version: %d %s", res.status, res.body)
+	}
+	// Written directly into a published version: publishing now refuses a rule
+	// the engine cannot read, so what the simulator still has to surface is a
+	// checklist that was published before that check existed, or edited in the
+	// database since.
+	if _, err := h.db.Pool.Exec(ctx, `UPDATE checklist_items SET applicability_rule='{"field":"exposuer","operator":"eq","value":"EXTERNAL"}'::jsonb WHERE id=$1`, brokenID); err != nil {
+		t.Fatal(err)
 	}
 
 	result := admin.do(http.MethodPost, "/api/v1/templates/rule-simulation", map[string]any{
@@ -6551,5 +6554,70 @@ func TestAnApiKeyCannotLiveForever(t *testing.T) {
 			t.Fatalf("with the limit lifted a key still expires at %s", expiryOf(res))
 		}
 		time.Sleep(time.Second)
+	}
+}
+
+// An applicability rule the engine cannot read is not a rule that matches
+// nothing on purpose: it is a requirement that quietly leaves every checklist
+// from then on. The simulator could show it, one service at a time, if anybody
+// thought to look.
+func TestAChecklistWithADeadRuleCannotBePublished(t *testing.T) {
+	h := newHarness(t)
+	admin := h.login(adminOf(h))
+	ctx := context.Background()
+
+	created := admin.do(http.MethodPost, "/api/v1/templates", map[string]any{"name": "규칙 검사 템플릿", "category": "DEVELOPMENT", "description": "", "version": "V1"})
+	if created.status != http.StatusCreated {
+		t.Fatalf("create template: %d %s", created.status, created.body)
+	}
+	templateID := created.json()["id"].(string)
+	var versionID string
+	if err := h.db.Pool.QueryRow(ctx, `SELECT id FROM checklist_versions WHERE template_id=$1`, templateID).Scan(&versionID); err != nil {
+		t.Fatal(err)
+	}
+	add := func(code string, rule any) {
+		t.Helper()
+		body := map[string]any{"item_code": code, "title": code, "question": "질문", "category": "DEVELOPMENT", "severity": "MEDIUM", "answer_type": "YNNA", "sort_order": 1}
+		if rule != nil {
+			body["applicability_rule"] = rule
+		}
+		if res := admin.do(http.MethodPost, fmt.Sprintf("/api/v1/templates/%s/versions/%s/items", templateID, versionID), body); res.status != http.StatusCreated {
+			t.Fatalf("add %s: %d %s", code, res.status, res.body)
+		}
+	}
+	add("RULE-OK", map[string]any{"field": "uses_cloud", "operator": "eq", "value": true})
+
+	// A rule naming a characteristic the engine does not know can never match,
+	// so publishing is refused and the refusal names the item.
+	if _, err := h.db.Pool.Exec(ctx, `INSERT INTO checklist_items(id,version_id,item_code,category,title,question,severity,required,answer_type,evidence_required,applicability_rule,sort_order)
+                VALUES($1,$2,'RULE-DEAD','DEVELOPMENT','죽은 규칙','질문','MEDIUM',true,'YNNA',false,'{"field":"uses_quantum_computer","operator":"eq","value":true}'::jsonb,2)`, store.NewID(), versionID); err != nil {
+		t.Fatal(err)
+	}
+	res := admin.do(http.MethodPost, fmt.Sprintf("/api/v1/templates/%s/versions/%s/publish", templateID, versionID), nil)
+	if res.status != http.StatusUnprocessableEntity {
+		t.Fatalf("publishing with a dead rule: %d %s", res.status, res.body)
+	}
+	failure := res.json()["error"].(map[string]any)
+	if failure["code"] != "INVALID_RULE" {
+		t.Fatalf("the refusal is reported as %v", failure["code"])
+	}
+	named := failure["details"].([]any)
+	if len(named) != 1 || named[0].(map[string]any)["item_code"] != "RULE-DEAD" {
+		t.Fatalf("the refusal names %v", named)
+	}
+	var status string
+	if err := h.db.Pool.QueryRow(ctx, `SELECT status FROM checklist_versions WHERE id=$1`, versionID).Scan(&status); err != nil {
+		t.Fatal(err)
+	}
+	if status != "DRAFT" {
+		t.Fatalf("after the refusal the version is %s", status)
+	}
+
+	// Fixing the rule lets it through, and the good rule was never in the way.
+	if _, err := h.db.Pool.Exec(ctx, `UPDATE checklist_items SET applicability_rule='{"field":"uses_docker","operator":"eq","value":true}'::jsonb WHERE version_id=$1 AND item_code='RULE-DEAD'`, versionID); err != nil {
+		t.Fatal(err)
+	}
+	if res := admin.do(http.MethodPost, fmt.Sprintf("/api/v1/templates/%s/versions/%s/publish", templateID, versionID), nil); res.status >= 300 {
+		t.Fatalf("publishing after the fix: %d %s", res.status, res.body)
 	}
 }

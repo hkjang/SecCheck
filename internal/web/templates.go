@@ -581,6 +581,20 @@ func (s *Server) publishVersion(w http.ResponseWriter, r *http.Request) {
 		problem(w, 422, "EMPTY_VERSION", "항목이 없는 버전은 게시할 수 없습니다.", nil)
 		return
 	}
+	// An applicability rule the engine cannot read is not a rule that matches
+	// nothing by choice: it is a requirement that quietly leaves the
+	// checklist. The simulator could show it, but only for one service at a
+	// time and only if somebody thought to look, so a mistyped rule went into
+	// production and the item was never assigned to anything again.
+	broken, err := s.itemsWithBrokenRules(r.Context(), vid)
+	if err != nil {
+		s.fault(w, r, "QUERY_FAILED", "적용 규칙을 확인하지 못했습니다.", err)
+		return
+	}
+	if len(broken) > 0 {
+		problem(w, 422, "INVALID_RULE", "적용 규칙에 오류가 있는 항목이 있어 게시할 수 없습니다. 이대로 게시하면 해당 항목은 어떤 심의에도 배정되지 않습니다.", broken)
+		return
+	}
 	tag, err := s.Store.Pool.Exec(r.Context(), `UPDATE checklist_versions SET status='PUBLISHED',published_by=$3,published_at=now() WHERE id=$1 AND template_id=$2 AND status='DRAFT'`, vid, r.PathValue("id"), session(r).User.ID)
 	if err != nil || tag.RowsAffected() == 0 {
 		problem(w, 409, "STATE_CONFLICT", "초안 버전만 게시할 수 있습니다.", nil)
@@ -588,6 +602,38 @@ func (s *Server) publishVersion(w http.ResponseWriter, r *http.Request) {
 	}
 	_ = s.Store.Audit(r.Context(), auditFrom(r, "PUBLISH_TEMPLATE", "CHECKLIST_VERSION", vid, nil, map[string]any{"items": count}))
 	jsonResponse(w, 200, map[string]string{"status": "PUBLISHED"})
+}
+
+// itemsWithBrokenRules names the items whose applicability rule the engine
+// would refuse, with the reason, so the refusal to publish is something an
+// editor can act on rather than a wall.
+func (s *Server) itemsWithBrokenRules(ctx context.Context, versionID string) ([]map[string]any, error) {
+	rows, err := s.Store.Pool.Query(ctx, `SELECT item_code,title,COALESCE(applicability_rule,'{}'::jsonb) FROM checklist_items WHERE version_id=$1 ORDER BY sort_order`, versionID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	vocabulary := ruleVocabulary()
+	out := []map[string]any{}
+	for rows.Next() {
+		var code, title string
+		var rule []byte
+		if err = rows.Scan(&code, &title, &rule); err != nil {
+			return nil, err
+		}
+		if len(rule) == 0 || string(rule) == "{}" || string(rule) == "null" {
+			continue
+		}
+		var node any
+		if json.Unmarshal(rule, &node) != nil {
+			out = append(out, map[string]any{"item_code": code, "title": title, "reason": "적용 규칙을 읽을 수 없습니다"})
+			continue
+		}
+		if ruleErr := validateRule(node, vocabulary); ruleErr != nil {
+			out = append(out, map[string]any{"item_code": code, "title": title, "reason": ruleErr.Error()})
+		}
+	}
+	return out, rows.Err()
 }
 
 // retireVersion withdraws a published checklist. Retiring the only published
