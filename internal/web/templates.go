@@ -604,7 +604,7 @@ func (s *Server) publishVersion(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if len(broken) > 0 {
-		problem(w, 422, "INVALID_RULE", "적용 규칙에 오류가 있는 항목이 있어 게시할 수 없습니다. 이대로 게시하면 해당 항목은 어떤 심의에도 배정되지 않습니다.", broken)
+		problem(w, 422, "INVALID_RULE", "그대로 게시하면 심의에서 쓸 수 없는 항목이 있습니다. 적용 규칙에 오류가 있는 항목은 어떤 심의에도 배정되지 않고, 선택지가 없는 선택형 항목은 배정돼도 답할 수 없어 제출이 막힙니다.", broken)
 		return
 	}
 	tag, err := s.Store.Pool.Exec(r.Context(), `UPDATE checklist_versions SET status='PUBLISHED',published_by=$3,published_at=now() WHERE id=$1 AND template_id=$2 AND status='DRAFT'`, vid, r.PathValue("id"), session(r).User.ID)
@@ -619,7 +619,7 @@ func (s *Server) publishVersion(w http.ResponseWriter, r *http.Request) {
 // brokenRuleCounts is the same check as ruleCheck for every template at once,
 // in one query rather than one per row.
 func (s *Server) brokenRuleCounts(ctx context.Context) (map[string]int, error) {
-	rows, err := s.Store.Pool.Query(ctx, `SELECT t.id,COALESCE(i.applicability_rule,'{}'::jsonb)
+	rows, err := s.Store.Pool.Query(ctx, `SELECT t.id,COALESCE(i.applicability_rule,'{}'::jsonb),i.answer_type,COALESCE(i.options_json,'[]'::jsonb)
                 FROM checklist_templates t
                 JOIN checklist_versions v ON v.id=(SELECT v2.id FROM checklist_versions v2 WHERE v2.template_id=t.id AND v2.status='PUBLISHED' ORDER BY v2.published_at DESC NULLS LAST,v2.created_at DESC LIMIT 1)
                 JOIN checklist_items i ON i.version_id=v.id`)
@@ -630,10 +630,14 @@ func (s *Server) brokenRuleCounts(ctx context.Context) (map[string]int, error) {
 	vocabulary := ruleVocabulary()
 	out := map[string]int{}
 	for rows.Next() {
-		var id string
-		var rule []byte
-		if err = rows.Scan(&id, &rule); err != nil {
+		var id, answerType string
+		var rule, options []byte
+		if err = rows.Scan(&id, &rule, &answerType, &options); err != nil {
 			return nil, err
+		}
+		if unanswerableReason(answerType, options) != "" {
+			out[id]++
+			continue
 		}
 		if len(rule) == 0 || string(rule) == "{}" || string(rule) == "null" {
 			continue
@@ -672,8 +676,22 @@ func (s *Server) ruleCheck(w http.ResponseWriter, r *http.Request) {
 // itemsWithBrokenRules names the items whose applicability rule the engine
 // would refuse, with the reason, so the refusal to publish is something an
 // editor can act on rather than a wall.
+// unanswerableReason names an answer type the item cannot actually offer. The
+// select types are the ones that depend on data beyond the type itself: with
+// no options the author is shown an empty control and the submission guard
+// refuses the item for having no answer, which is a demand nobody can meet.
+func unanswerableReason(answerType string, options []byte) string {
+	if !contains([]string{"SINGLE_SELECT", "MULTI_SELECT"}, answerType) {
+		return ""
+	}
+	if len(optionValues(options)) == 0 {
+		return "선택형 답변인데 선택지가 없어 답할 수 없습니다"
+	}
+	return ""
+}
+
 func (s *Server) itemsWithBrokenRules(ctx context.Context, versionID string) ([]map[string]any, error) {
-	rows, err := s.Store.Pool.Query(ctx, `SELECT item_code,title,COALESCE(applicability_rule,'{}'::jsonb) FROM checklist_items WHERE version_id=$1 ORDER BY sort_order`, versionID)
+	rows, err := s.Store.Pool.Query(ctx, `SELECT item_code,title,COALESCE(applicability_rule,'{}'::jsonb),answer_type,COALESCE(options_json,'[]'::jsonb) FROM checklist_items WHERE version_id=$1 ORDER BY sort_order`, versionID)
 	if err != nil {
 		return nil, err
 	}
@@ -681,10 +699,18 @@ func (s *Server) itemsWithBrokenRules(ctx context.Context, versionID string) ([]
 	vocabulary := ruleVocabulary()
 	out := []map[string]any{}
 	for rows.Next() {
-		var code, title string
-		var rule []byte
-		if err = rows.Scan(&code, &title, &rule); err != nil {
+		var code, title, answerType string
+		var rule, options []byte
+		if err = rows.Scan(&code, &title, &rule, &answerType, &options); err != nil {
 			return nil, err
+		}
+		// An item whose answer is a choice, with nothing to choose from, is
+		// assigned and then cannot be answered: the dropdown is empty and the
+		// submission is refused for the missing answer, so the review can
+		// never be sent. It belongs beside the broken rules -- both are items
+		// that look fine in the editor and stop a review dead.
+		if reason := unanswerableReason(answerType, options); reason != "" {
+			out = append(out, map[string]any{"item_code": code, "title": title, "reason": reason})
 		}
 		if len(rule) == 0 || string(rule) == "{}" || string(rule) == "null" {
 			continue

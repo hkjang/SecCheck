@@ -8403,3 +8403,74 @@ func TestAnOptionalItemNobodyAnsweredDoesNotDemandEvidence(t *testing.T) {
 		t.Errorf("the refusal does not name the item that now needs evidence: %v", issues)
 	}
 }
+
+// A choice with nothing to choose from is an item that cannot be answered:
+// the author is shown an empty control, the submission is refused for the
+// missing answer, and the review can never be sent. It looks perfectly fine
+// in the template editor, which is where it has to be caught.
+func TestASelectItemWithNoOptionsCannotBePublished(t *testing.T) {
+	h := newHarness(t)
+	ctx := context.Background()
+	h.user("choice-admin", "TEMPLATE_ADMIN", "SECURITY_REVIEWER")
+	admin := h.login("choice-admin")
+
+	created := admin.do(http.MethodPost, "/api/v1/templates", map[string]any{"name": "선택지 없는 템플릿", "category": "DEVELOPMENT", "version": "V1"})
+	if created.status != http.StatusCreated {
+		t.Fatalf("creating a template: %d %s", created.status, created.body)
+	}
+	templateID := created.json()["id"].(string)
+	var versionID string
+	if err := h.db.Pool.QueryRow(ctx, `SELECT id FROM checklist_versions WHERE template_id=$1`, templateID).Scan(&versionID); err != nil {
+		t.Fatal(err)
+	}
+	item := admin.do(http.MethodPost, "/api/v1/templates/"+templateID+"/versions/"+versionID+"/items",
+		map[string]any{"item_code": "SEL-1", "category": "DEVELOPMENT", "title": "암호화 방식", "question": "어떤 방식을 쓰십니까?", "severity": "MEDIUM", "answer_type": "SINGLE_SELECT", "required": true})
+	if item.status != http.StatusCreated && item.status != http.StatusOK {
+		t.Fatalf("adding an item: %d %s", item.status, item.body)
+	}
+
+	res := admin.do(http.MethodPost, "/api/v1/templates/"+templateID+"/versions/"+versionID+"/publish", map[string]any{})
+	if res.status != http.StatusUnprocessableEntity || res.errorCode() != "INVALID_RULE" {
+		t.Fatalf("publishing a choice with nothing to choose: %d %s", res.status, res.body)
+	}
+	if !strings.Contains(res.body, "선택지가 없어") {
+		t.Errorf("the refusal does not say what is wrong: %s", res.body)
+	}
+
+	// The same item, given its options, publishes.
+	if _, err := h.db.Pool.Exec(ctx, `UPDATE checklist_items SET options_json='["AES-256","RSA-2048"]'::jsonb WHERE version_id=$1`, versionID); err != nil {
+		t.Fatal(err)
+	}
+	if res := admin.do(http.MethodPost, "/api/v1/templates/"+templateID+"/versions/"+versionID+"/publish", map[string]any{}); res.status != http.StatusOK {
+		t.Fatalf("publishing once the options exist: %d %s", res.status, res.body)
+	}
+
+	// One published before this rule existed -- or edited in the database --
+	// is findable, the same way a dead rule is.
+	if _, err := h.db.Pool.Exec(ctx, `UPDATE checklist_items SET options_json='[]'::jsonb WHERE version_id=$1`, versionID); err != nil {
+		t.Fatal(err)
+	}
+	check := admin.do(http.MethodGet, "/api/v1/templates/"+templateID+"/rule-check", nil)
+	if check.status != http.StatusOK {
+		t.Fatalf("rule check: %d %s", check.status, check.body)
+	}
+	items, _ := check.json()["items"].([]any)
+	if len(items) != 1 {
+		t.Fatalf("the check reports %d unusable items, want 1: %s", len(items), check.body)
+	}
+	if entry := items[0].(map[string]any); entry["item_code"] != "SEL-1" || !strings.Contains(fmt.Sprint(entry["reason"]), "선택지") {
+		t.Errorf("the unusable item reads %v", entry)
+	}
+	// And the template list carries the same count, so it is visible without
+	// opening every template.
+	list := admin.do(http.MethodGet, "/api/v1/templates?limit=50", nil)
+	var found float64
+	for _, raw := range list.json()["items"].([]any) {
+		if entry := raw.(map[string]any); entry["id"] == templateID {
+			found, _ = entry["broken_rules"].(float64)
+		}
+	}
+	if found != 1 {
+		t.Errorf("the template list reports %v unusable items", found)
+	}
+}
