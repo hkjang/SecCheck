@@ -99,12 +99,12 @@ function FollowUpTable({ rows, total, includeDone, onToggleScope, onChanged }: {
   }
   return <section className="card">
     <div className="card-header"><h2>미조치 항목</h2><Badge>{total > rows.length ? `${rows.length} / ${total}` : rows.length}</Badge>
-      <div className="header-actions"><button type="button" className={`chip ${includeDone ? 'on' : ''}`} aria-pressed={includeDone} onClick={onToggleScope}>이행 완료 포함</button></div></div>
+      <div className="header-actions"><button type="button" className={`chip ${includeDone ? 'on' : ''}`} aria-pressed={includeDone} onClick={onToggleScope} title="이행이 끝난 조치와, 심의가 취소되어 더 이상 쫓지 않는 조치까지 함께 봅니다.">이행 완료 포함</button></div></div>
     {total > rows.length && <div className="card-body"><p className="subtle">전체 {total.toLocaleString('ko-KR')}건 중 {rows.length.toLocaleString('ko-KR')}건만 표시합니다. 전체 목록은 Excel 내보내기로 확인하세요.</p></div>}
     {rows.length ? <div className="table-wrap"><table><caption className="sr-only">미조치 항목</caption>
       <thead><tr><th scope="col">심의</th><th scope="col">항목</th><th scope="col">판정</th><th scope="col">조치 사항</th><th scope="col">상태</th><th scope="col"><span className="sr-only">작업</span></th></tr></thead>
       <tbody>{rows.map(row => <tr key={String(row.id)}>
-        <td>{row.review_id ? <Link className="table-link" to={`/reviews/${row.review_id}${row.item_id ? `?item=${row.item_id}` : ''}`}>{String(row.review_number)}</Link> : String(row.review_number)}<div className="subtle">{String(row.service_name)}{row.department ? ` · ${row.department}` : ''}</div></td>
+        <td>{row.review_id ? <Link className="table-link" to={`/reviews/${row.review_id}${row.item_id ? `?item=${row.item_id}` : ''}`}>{String(row.review_number)}</Link> : String(row.review_number)}<div className="subtle">{String(row.service_name)}{row.department ? ` · ${row.department}` : ''}</div>{row.review_status === 'CANCELLED' && <Badge>심의 취소됨</Badge>}</td>
         <td>{String(row.item_code)}<div className="subtle">{String(row.title)}</div></td>
         <td>{resultLabel[String(row.result)] || String(row.result)}</td>
         <td>{String(row.follow_up)}<div className="subtle">{String(row.decided_on)} 판정{row.due_on ? ` · 기한 ${row.due_on}` : ''}</div></td>

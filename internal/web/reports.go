@@ -179,6 +179,16 @@ func (s *Server) buildReport(r *http.Request, scope reportScope) (reportData, er
 	if !scope.includeDone {
 		done = " AND rr.follow_up_done_at IS NULL"
 	}
+	// An action promised on a review that was later cancelled is not
+	// outstanding work: the service is not being built, the sweep stopped
+	// chasing it and the dashboard stopped counting it. The register was the
+	// last screen still showing it as 미조치 -- overstating the remediation
+	// backlog with rows nobody could ever close. Under 전체 보기 it stays
+	// visible, marked with the status of the review it came from, because the
+	// record of what was promised does not disappear with the service.
+	if !scope.includeDone {
+		done += " AND r.status<>'CANCELLED'"
+	}
 	// Whether this reader may close an entry is part of the row: the register
 	// gathers actions from every review, and only the reviewer who owns one --
 	// or anyone, once that reviewer can no longer act -- may sign it off. A
@@ -190,7 +200,7 @@ func (s *Server) buildReport(r *http.Request, scope reportScope) (reportData, er
 		canClose = fmt.Sprintf(`(r.reviewer_id=$%d OR NOT (COALESCE(r.reviewer_id,'')<>'' AND %s)) AND ($%d::bool OR r.requester_id<>$%d)`,
 			viewer, stillHolds("r.reviewer_id", "SECURITY_REVIEWER"), self, viewer)
 	}
-	if data.FollowUps, err = s.reportRows(ctx, `SELECT rr.id,`+canClose+` AS can_close,r.id AS review_id,r.review_number,r.service_name,r.department,si.id AS item_id,si.item_code,si.title,rr.result,rr.follow_up,
+	if data.FollowUps, err = s.reportRows(ctx, `SELECT rr.id,`+canClose+` AS can_close,r.id AS review_id,r.review_number,r.service_name,r.department,r.status AS review_status,si.id AS item_id,si.item_code,si.title,rr.result,rr.follow_up,
                 to_char(display_date(COALESCE(r.approved_at,r.updated_at)),'YYYY-MM-DD') AS decided_on,
                 to_char(rr.follow_up_due_date,'YYYY-MM-DD') AS due_on,
                 (rr.follow_up_done_at IS NULL AND rr.follow_up_due_date IS NOT NULL AND rr.follow_up_due_date < display_today()) AS overdue,
@@ -206,7 +216,7 @@ func (s *Server) buildReport(r *http.Request, scope reportScope) (reportData, er
                 LEFT JOIN users ru ON ru.id=rr.follow_up_reported_by
                 WHERE `+scope.where+` AND btrim(rr.follow_up)<>''`+done+`
                 ORDER BY rr.follow_up_done_at NULLS FIRST,rr.follow_up_due_date NULLS LAST,COALESCE(r.approved_at,r.updated_at) DESC,r.review_number,si.item_code LIMIT `+intString(scope.followUpLimit),
-		followArgs, "id", "can_close", "review_id", "review_number", "service_name", "department", "item_id", "item_code", "title", "result", "follow_up", "decided_on", "due_on", "overdue", "reported_on", "reported_by", "done_on", "done_by", "follow_up_note"); err != nil {
+		followArgs, "id", "can_close", "review_id", "review_number", "service_name", "department", "review_status", "item_id", "item_code", "title", "result", "follow_up", "decided_on", "due_on", "overdue", "reported_on", "reported_by", "done_on", "done_by", "follow_up_note"); err != nil {
 		return data, err
 	}
 	// The register is capped, so the count is fetched too: a screen that shows
@@ -290,8 +300,8 @@ func (s *Server) writeReportWorkbook(w http.ResponseWriter, r *http.Request, dat
 		{"반복 미흡 항목", []any{"항목코드", "보안요건", "분류", "발생 건수"}, []string{"item_code", "title", "category", "count"}, data.Recurring},
 		{"반복 지적 서비스", []any{"서비스", "부서", "항목코드", "보안요건", "지적 횟수", "마지막 판정일"}, []string{"service_name", "department", "item_code", "title", "times", "last_decided_on"}, data.Repeated},
 		{"경과 기간", []any{"경과", "진행 중 건수"}, []string{"bucket", "count"}, data.Aging},
-		{"미조치 항목", []any{"심의번호", "서비스", "부서", "항목코드", "보안요건", "판정", "조치 사항", "판정일", "조치 기한", "기한 초과", "보고일", "보고자", "확인일", "확인자", "이행 결과"},
-			[]string{"review_number", "service_name", "department", "item_code", "title", "result", "follow_up", "decided_on", "due_on", "overdue", "reported_on", "reported_by", "done_on", "done_by", "follow_up_note"}, data.FollowUps},
+		{"미조치 항목", []any{"심의번호", "서비스", "부서", "심의 상태", "항목코드", "보안요건", "판정", "조치 사항", "판정일", "조치 기한", "기한 초과", "보고일", "보고자", "확인일", "확인자", "이행 결과"},
+			[]string{"review_number", "service_name", "department", "review_status", "item_code", "title", "result", "follow_up", "decided_on", "due_on", "overdue", "reported_on", "reported_by", "done_on", "done_by", "follow_up_note"}, data.FollowUps},
 	}
 	for _, sheet := range sheets {
 		if _, err := f.NewSheet(sheet.name); err != nil {

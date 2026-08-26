@@ -7210,3 +7210,92 @@ func TestAReviewWhoseOwnerHasGoneCountsAsUnassigned(t *testing.T) {
 		t.Error("a review with an active reviewer is listed as unowned")
 	}
 }
+
+// The register is the list of remediation still owed. An action promised on a
+// review that was later cancelled is not owed by anybody -- the sweep stopped
+// chasing it and the dashboard stopped counting it -- but the register went on
+// showing it as 미조치, and as 기한 초과 once its date passed, with no way to
+// close a row on a review that cannot be reopened.
+func TestTheRegisterDropsActionsFromCancelledReviews(t *testing.T) {
+	h := newHarness(t)
+	ctx := context.Background()
+	h.user("register-owner", "REQUESTER")
+	h.user("register-lead", "SECURITY_REVIEWER")
+	owner := h.login("register-owner")
+	lead := h.login("register-lead")
+	var leadID string
+	if err := h.db.Pool.QueryRow(ctx, `SELECT id FROM users WHERE username='register-lead'`).Scan(&leadID); err != nil {
+		t.Fatal(err)
+	}
+
+	promise := func(service string) (reviewID, itemID string) {
+		t.Helper()
+		reviewID = owner.createReview(service)
+		itemID = firstItemID(t, h, reviewID)
+		if _, err := h.db.Pool.Exec(ctx, `UPDATE review_requests SET reviewer_id=$2,status='REVIEWING' WHERE id=$1`, reviewID, leadID); err != nil {
+			t.Fatal(err)
+		}
+		if res := lead.do(http.MethodPut, "/api/v1/review-requests/"+reviewID+"/review-results/"+itemID,
+			map[string]any{"result": "CONDITIONAL", "opinion": "조건부", "follow_up": "로그 보관 기간 연장", "follow_up_due_date": "2030-03-31", "expected_updated_at": ""}); res.status != http.StatusOK {
+			t.Fatalf("recording the promise: %d %s", res.status, res.body)
+		}
+		return reviewID, itemID
+	}
+	live, _ := promise("존속 서비스")
+	dropped, _ := promise("취소될 서비스")
+
+	register := func(includeDone bool) ([]any, float64) {
+		t.Helper()
+		path := "/api/v1/reports/reviews"
+		if includeDone {
+			path += "?include_done=1"
+		}
+		res := lead.do(http.MethodGet, path, nil)
+		if res.status != http.StatusOK {
+			t.Fatalf("report: %d %s", res.status, res.body)
+		}
+		rows, _ := res.json()["follow_ups"].([]any)
+		total, _ := res.json()["follow_ups_total"].(float64)
+		return rows, total
+	}
+	if rows, total := register(false); len(rows) != 2 || total != 2 {
+		t.Fatalf("before the cancellation the register holds %d rows (total %v), want 2", len(rows), total)
+	}
+
+	// The review goes back to the author and they drop the service.
+	if res := lead.do(http.MethodPost, "/api/v1/review-requests/"+dropped+"/change-requests",
+		map[string]any{"item_id": firstItemID(t, h, dropped), "reason": "보완 후 재제출", "due_date": "2030-03-31"}); res.status != http.StatusCreated {
+		t.Fatalf("sending it back: %d %s", res.status, res.body)
+	}
+	if res := owner.do(http.MethodPost, "/api/v1/review-requests/"+dropped+"/cancel", nil); res.status != http.StatusOK {
+		t.Fatalf("cancelling: %d %s", res.status, res.body)
+	}
+
+	rows, total := register(false)
+	if len(rows) != 1 || total != 1 {
+		t.Fatalf("after the cancellation the register holds %d rows (total %v), want only the live one", len(rows), total)
+	}
+	if rows[0].(map[string]any)["review_id"] != live {
+		t.Errorf("the register kept the wrong review: %v", rows[0])
+	}
+
+	// 전체 보기 still has it, marked with the state of the review it came from:
+	// the promise was made and the record of it does not disappear with the
+	// service.
+	all, _ := register(true)
+	if len(all) != 2 {
+		t.Fatalf("전체 보기 holds %d rows, want both", len(all))
+	}
+	var cancelled map[string]any
+	for _, raw := range all {
+		if row := raw.(map[string]any); row["review_id"] == dropped {
+			cancelled = row
+		}
+	}
+	if cancelled == nil {
+		t.Fatal("the cancelled review's promise is missing from 전체 보기")
+	}
+	if cancelled["review_status"] != "CANCELLED" {
+		t.Errorf("the row does not say the review was cancelled: %v", cancelled["review_status"])
+	}
+}
