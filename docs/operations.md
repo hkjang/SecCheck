@@ -327,6 +327,7 @@ docker compose exec seccheck /app/seccheck selftest --username admin --password 
 | v1.0.42~43 | 유지보수 스윕이 매시 증적 20건을 되읽어 검증합니다. I/O가 조금 늘고, 실패 시 `증적 무결성 확인 실패` 알림이 발생합니다 |
 | v1.0.44 | **`seccheck_scan_failures`의 의미가 바뀝니다.** 격리·검사 중 파일을 제외하고 `ERROR`만 셉니다. 기존 알람 임계값을 다시 보십시오 |
 | v1.0.45 | `seccheck_evidence_version_bytes`가 파기된 버전을 제외합니다. 용량 추이 그래프가 한 번 내려갑니다 |
+| v1.0.131 | 마이그레이션 **031** 추가(`submission_items.item_code` 인덱스). 심의 항목이 많은 설치에서는 첫 시작 시 인덱스 생성에 시간이 걸릴 수 있습니다 |
 | v1.0.120 | **검토자·승인자 지정 시 역할을 검증합니다.** 역할이 없는 계정이나 비활성 계정을 담당자로 넣던 연계 스크립트는 422를 받습니다(응답 `details`에 `reviewer_id`·`approver_id` 사유) |
 | v1.0.119 | **심의를 검토·판정한 사람은 같은 심의를 최종 승인할 수 없습니다**(`SELF_APPROVAL_FORBIDDEN`). 검토자와 승인자를 같은 사람으로 지정해 운영해 왔다면 그 심의는 다른 승인자에게 열리며, 1인 운영이라면 서비스 설정의 `본인 심의 처리 허용`을 켜십시오 |
 | v1.0.118 | **대시보드 집계 범위가 심의 목록과 같아집니다.** `SECURITY_REVIEWER`·`AUDITOR` 없이 `SYSTEM_ADMIN`만 가진 계정의 대시보드는 전체가 아니라 본인 업무를 보여 줍니다. 관리자에게 전체 현황이 필요하면 해당 계정에 `SECURITY_REVIEWER` 또는 `AUDITOR`를 부여하거나 리포트 화면을 사용하십시오 |
@@ -380,6 +381,7 @@ docker compose exec seccheck /app/seccheck selftest --username admin --password 
 | 028 | 임시 비밀번호 표시(`users.must_change_password`) |
 | 029 | 정기 점검 실행 기록(`maintenance_state`) |
 | 030 | 판정 당시의 답변 스냅숏(`review_results.judged_answer`) |
+| 031 | 항목 코드 조회 인덱스(`submission_items.item_code`). 이전 판정 조회가 전체 스캔으로 떨어지지 않도록 |
 
 ## 업그레이드와 롤백
 
