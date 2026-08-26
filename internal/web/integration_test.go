@@ -7299,3 +7299,71 @@ func TestTheRegisterDropsActionsFromCancelledReviews(t *testing.T) {
 		t.Errorf("the row does not say the review was cancelled: %v", cancelled["review_status"])
 	}
 }
+
+// The search box offers 심의, 체크리스트 항목, 증적 -- and could not see the
+// largest body of text in the service: what the team actually wrote. "Which
+// services said they use this library" and "who answered N/A, and why" had no
+// answer here, even though every word of it was sitting in the database.
+func TestSearchFindsWhatTheTeamWroteInTheAnswers(t *testing.T) {
+	h := newHarness(t)
+	ctx := context.Background()
+	h.user("find-author", "REQUESTER")
+	h.user("find-stranger", "REQUESTER")
+	author := h.login("find-author")
+	stranger := h.login("find-stranger")
+
+	reviewID := author.createReview("검색 대상 서비스")
+	itemID := firstItemID(t, h, reviewID)
+	if res := author.do(http.MethodPut, "/api/v1/review-requests/"+reviewID+"/responses/"+itemID,
+		map[string]any{"applicability": "Y", "self_assessment": "COMPLIANT", "current_state": "인증 모듈은 소랑라이브러리 3.2를 사용합니다", "expected_updated_at": ""}); res.status != http.StatusOK {
+		t.Fatalf("writing the answer: %d %s", res.status, res.body)
+	}
+
+	hits := func(c *client, term string) []map[string]any {
+		t.Helper()
+		res := c.do(http.MethodGet, "/api/v1/search?q="+url.QueryEscape(term), nil)
+		if res.status != http.StatusOK {
+			t.Fatalf("search: %d %s", res.status, res.body)
+		}
+		out := []map[string]any{}
+		raw, _ := json.Marshal(res.json()["items"])
+		if err := json.Unmarshal(raw, &out); err != nil {
+			t.Fatalf("items: %v (%s)", err, raw)
+		}
+		return out
+	}
+
+	found := hits(author, "소랑라이브러리")
+	if len(found) != 1 {
+		t.Fatalf("searching for a word only the answer contains returned %d hits: %v", len(found), found)
+	}
+	// A hit on text the reader cannot see on the result line reads as a
+	// mistake, so the line says where it matched and quotes it.
+	if found[0]["matched"] != "답변" {
+		t.Errorf("the hit is labelled %v, want 답변", found[0]["matched"])
+	}
+	if excerpt, _ := found[0]["excerpt"].(string); !strings.Contains(excerpt, "소랑라이브러리 3.2") {
+		t.Errorf("the hit does not quote the matching text: %q", excerpt)
+	}
+	// Finding the item and then making the reader look for it again is half a
+	// search; the result opens the item itself.
+	if found[0]["item_id"] != itemID {
+		t.Errorf("the hit points at item %v, want %s", found[0]["item_id"], itemID)
+	}
+
+	// An answer is as private as the review that holds it.
+	if other := hits(stranger, "소랑라이브러리"); len(other) != 0 {
+		t.Errorf("somebody outside the review read its answers through the search: %v", other)
+	}
+
+	// A word from the checklist itself is still labelled as an item hit rather
+	// than as an answer.
+	var title string
+	if err := h.db.Pool.QueryRow(ctx, `SELECT title FROM submission_items WHERE id=$1`, itemID).Scan(&title); err != nil {
+		t.Fatal(err)
+	}
+	byTitle := hits(author, title)
+	if len(byTitle) == 0 || byTitle[0]["matched"] != "항목" {
+		t.Errorf("searching the checklist text returned %v", byTitle)
+	}
+}

@@ -517,12 +517,35 @@ func (s *Server) search(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	itemWhere := strings.ReplaceAll(where, "review_requests.", "r.")
-	rows, err = s.Store.Pool.Query(r.Context(), `SELECT DISTINCT r.id AS review_id,r.review_number,si.item_code,si.title,si.category FROM submission_items si JOIN submissions s ON s.id=si.submission_id JOIN review_requests r ON r.id=s.review_request_id LEFT JOIN review_results rr ON rr.submission_item_id=si.id WHERE `+itemWhere+` AND (si.item_code ILIKE $1 OR si.title ILIKE $1 OR si.question ILIKE $1 OR si.template_name ILIKE $1 OR rr.opinion ILIKE $1) LIMIT 21`, args...)
+	// What the team wrote is the largest body of text in the service and the
+	// only part of a review that says what was actually done, and it was the
+	// one part the search could not see: "which services said they use this
+	// library" and "who answered N/A, and why" had no answer here. The hit is
+	// labelled and quoted, because a result that matches on text the reader
+	// cannot see reads as a mistake.
+	rows, err = s.Store.Pool.Query(r.Context(), `SELECT DISTINCT r.id AS review_id,r.review_number,si.id AS item_id,si.item_code,si.title,si.category,
+                CASE WHEN si.item_code ILIKE $1 OR si.title ILIKE $1 OR si.question ILIKE $1 OR si.template_name ILIKE $1 THEN '항목'
+                     WHEN COALESCE(rr.opinion,'') ILIKE $1 THEN '검토 의견'
+                     ELSE '답변' END AS matched,
+                left(regexp_replace(CASE
+                     WHEN si.item_code ILIKE $1 OR si.title ILIKE $1 OR si.question ILIKE $1 OR si.template_name ILIKE $1 THEN ''
+                     WHEN COALESCE(rr.opinion,'') ILIKE $1 THEN rr.opinion
+                     WHEN COALESCE(resp.current_state,'') ILIKE $1 THEN resp.current_state
+                     WHEN COALESCE(resp.action_plan,'') ILIKE $1 THEN resp.action_plan
+                     WHEN COALESCE(resp.na_reason,'') ILIKE $1 THEN resp.na_reason
+                     ELSE '' END, '\s+', ' ', 'g'), 160) AS excerpt
+                FROM submission_items si
+                JOIN submissions s ON s.id=si.submission_id
+                JOIN review_requests r ON r.id=s.review_request_id
+                LEFT JOIN review_results rr ON rr.submission_item_id=si.id
+                LEFT JOIN responses resp ON resp.submission_item_id=si.id
+                WHERE `+itemWhere+` AND (si.item_code ILIKE $1 OR si.title ILIKE $1 OR si.question ILIKE $1 OR si.template_name ILIKE $1 OR rr.opinion ILIKE $1
+                        OR resp.current_state ILIKE $1 OR resp.action_plan ILIKE $1 OR resp.na_reason ILIKE $1) LIMIT 21`, args...)
 	if err != nil {
 		s.fault(w, r, "SEARCH_FAILED", "검색하지 못했습니다.", err)
 		return
 	}
-	items, err := scanDynamic(rows, []string{"review_id", "review_number", "item_code", "title", "category"})
+	items, err := scanDynamic(rows, []string{"review_id", "review_number", "item_id", "item_code", "title", "category", "matched", "excerpt"})
 	if err != nil {
 		s.fault(w, r, "SEARCH_FAILED", "검색하지 못했습니다.", err)
 		return
