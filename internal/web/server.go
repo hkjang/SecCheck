@@ -200,6 +200,7 @@ func (s *Server) routes() {
 	s.handle("POST", "/api/v1/admin/users", "관리", "로컬 사용자 생성", []string{"SYSTEM_ADMIN"}, false, s.createUser)
 	s.handle("PUT", "/api/v1/admin/users/{id}/roles", "관리", "사용자 역할 변경", []string{"SYSTEM_ADMIN"}, false, s.updateUserRoles)
 	s.handle("GET", "/api/v1/admin/users/{id}/open-work", "관리", "이 계정이 아직 맡고 있는 심의와 후속조치 수. 비활성화 전 인계 확인용", []string{"SYSTEM_ADMIN"}, false, s.userOpenWork)
+	s.handle("POST", "/api/v1/admin/users/{id}/handover", "관리", "이 계정이 맡고 있는 심의·항목·보완 요청을 다른 사람에게 일괄 인계", []string{"SYSTEM_ADMIN"}, false, s.handoverUserWork)
 	s.handle("POST", "/api/v1/admin/users/{id}/active", "관리", "계정 활성화 또는 비활성화", []string{"SYSTEM_ADMIN"}, false, s.setUserActive)
 	s.handle("POST", "/api/v1/admin/users/{id}/unlock", "관리", "로그인 실패로 잠긴 계정 해제", []string{"SYSTEM_ADMIN"}, false, s.unlockUser)
 	s.handle("POST", "/api/v1/admin/users/{id}/password", "관리", "로컬 계정 임시 비밀번호 재설정", []string{"SYSTEM_ADMIN"}, false, s.resetUserPassword)

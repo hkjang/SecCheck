@@ -1,8 +1,8 @@
 import { useEffect, useState } from 'react'
-import { KeyRound, LockOpen, Plus, Search, Shield, Smartphone, UserCheck, UserX } from 'lucide-react'
+import { ArrowRightLeft, KeyRound, LockOpen, Plus, Search, Shield, Smartphone, UserCheck, UserX } from 'lucide-react'
 import { errorMessage, forgetDirectory, get, post, put } from '../lib/api'
 import { User } from '../lib/types'
-import { Badge, Button, Empty, Field, Loading, Modal, formatDate, useToast } from '../components/ui'
+import { Badge, Button, Empty, Field, Loading, Modal, PeopleField, formatDate, useToast } from '../components/ui'
 
 const roleNames: Record<string, string> = { SYSTEM_ADMIN: '시스템 관리자', TEMPLATE_ADMIN: '체크리스트 관리자', SECURITY_REVIEWER: '보안 담당자', REQUESTER: '심의 요청자', CONTRIBUTOR: '공동 작성자', APPROVER: '승인자', AUDITOR: '감사자' }
 // The service locks a privileged account that has not signed in for
@@ -12,7 +12,7 @@ const privileged = ['SYSTEM_ADMIN', 'TEMPLATE_ADMIN', 'SECURITY_REVIEWER', 'APPR
 const daysSince = (at?: string | null) => at ? Math.floor((Date.now() - new Date(at).getTime()) / 86400000) : null
 
 export default function UsersPage() {
-  const toast = useToast(); const [users, setUsers] = useState<User[]>(); const [create, setCreate] = useState(false); const [edit, setEdit] = useState<User>(); const [reset, setReset] = useState<User>(); const [query, setQuery] = useState(''); const [only, setOnly] = useState(''); const [limit, setLimit] = useState(100); const [page, setPage] = useState<{ total: number; locked: number; temporary_passwords?: number; has_more: boolean }>({ total: 0, locked: 0, has_more: false })
+  const toast = useToast(); const [users, setUsers] = useState<User[]>(); const [create, setCreate] = useState(false); const [edit, setEdit] = useState<User>(); const [handover, setHandover] = useState<User>(); const [reset, setReset] = useState<User>(); const [query, setQuery] = useState(''); const [only, setOnly] = useState(''); const [limit, setLimit] = useState(100); const [page, setPage] = useState<{ total: number; locked: number; temporary_passwords?: number; has_more: boolean }>({ total: 0, locked: 0, has_more: false })
   // The server filters and pages now: an installation that syncs a staff
   // directory has thousands of accounts, and a filter that only sees the page
   // it downloaded answers the wrong question.
@@ -44,8 +44,8 @@ export default function UsersPage() {
   const resetTotp = async (user: User) => { if (!confirm(`${user.display_name} 계정의 일회용 코드를 초기화할까요? 해당 사용자의 모든 세션이 종료됩니다.`)) return; try { await post(`/api/v1/admin/users/${user.id}/totp/reset`); toast.push('일회용 코드를 초기화했습니다.'); load() } catch (e) { toast.push(errorMessage(e), 'error') } }
   return <div className="page"><div className="page-header"><div><h1 className="page-title">사용자 및 역할</h1><p className="page-description">RBAC 역할을 조합하고 비활성 계정의 세션을 즉시 종료하며, 로그인 실패로 잠긴 계정을 해제하거나 임시 비밀번호를 발급합니다.</p></div><Button variant="primary" onClick={() => setCreate(true)}><Plus size={15} /> 로컬 사용자</Button></div>
     <div className="toolbar"><div className="search-box"><Search /><input className="input" placeholder="이름, 아이디, 이메일, 부서 검색" value={query} onChange={e => setQuery(e.target.value)} /></div><select className="select" value={only} onChange={e => setOnly(e.target.value)}><option value="">전체 계정</option><option value="LOCKED">로그인 잠김{lockedCount ? ` (${lockedCount})` : ''}</option><option value="INACTIVE">비활성</option><option value="LOCAL">로컬 계정</option><option value="OIDC">SSO 계정</option><option value="STALE">{lockDays}일 이상 미접속</option><option value="TEMPORARY">임시 비밀번호 미변경{page.temporary_passwords ? ` (${page.temporary_passwords})` : ''}</option></select><span className="subtle">{shown.length} / {(users || []).length}명</span></div>
-    <div className="card">{!users ? <Loading /> : shown.length ? <div className="table-wrap"><table><thead><tr><th>사용자</th><th>부서</th><th>인증</th><th>역할</th><th>마지막 접속</th><th>상태</th><th></th></tr></thead><tbody>{shown.map(u => <tr key={u.id}><td><strong>{u.display_name}</strong><div className="subtle">{u.username} · {u.email}</div></td><td>{u.department || '-'}</td><td><Badge tone={u.auth_source === 'oidc' ? 'blue' : ''}>{u.auth_source.toUpperCase()}</Badge></td><td>{u.roles.map(r => <Badge key={r} tone={r === 'SYSTEM_ADMIN' ? 'red' : 'purple'}>{roleNames[r] || r}</Badge>)}</td><td><LastSeen user={u} lockDays={lockDays} /></td><td><Badge tone={u.active ? 'green' : 'red'}>{u.active ? '활성' : '비활성'}</Badge>{u.totp_enabled && <Badge tone="purple">MFA</Badge>}{u.must_change_password && <Badge tone="amber" >임시 비밀번호</Badge>}{u.locked_until && <><Badge tone="red">로그인 잠김</Badge><div className="subtle">{formatDate(u.locked_until, true)}까지</div></>}</td><td><div data-sx="sx-007"><Button small onClick={() => setEdit(u)}><Shield size={13} /> 역할</Button>{u.locked_until && <Button small onClick={() => unlock(u)}><LockOpen size={13} /> 잠금 해제</Button>}{u.auth_source === 'local' && <Button small onClick={() => setReset(u)}><KeyRound size={13} /> 비밀번호</Button>}{u.auth_source === 'local' && u.totp_enabled && <Button small onClick={() => resetTotp(u)}><Smartphone size={13} /> 코드 초기화</Button>}<Button small variant={u.active ? 'danger' : ''} onClick={() => active(u)}>{u.active ? <UserX size={13} /> : <UserCheck size={13} />}</Button></div></td></tr>)}</tbody></table></div> : <Empty title="조건에 맞는 사용자가 없습니다." />}
-      {page.has_more && <div className="card-body"><Button small onClick={() => setLimit(limit + 100)}>더 보기 ({shown.length.toLocaleString('ko-KR')} / {page.total.toLocaleString('ko-KR')})</Button></div>}</div>{create && <CreateUser onClose={() => setCreate(false)} onSaved={load} />}{edit && <RoleModal user={edit} onClose={() => setEdit(undefined)} onSaved={load} />}{reset && <ResetPasswordModal user={reset} onClose={() => setReset(undefined)} onSaved={load} />}</div>
+    <div className="card">{!users ? <Loading /> : shown.length ? <div className="table-wrap"><table><thead><tr><th>사용자</th><th>부서</th><th>인증</th><th>역할</th><th>마지막 접속</th><th>상태</th><th></th></tr></thead><tbody>{shown.map(u => <tr key={u.id}><td><strong>{u.display_name}</strong><div className="subtle">{u.username} · {u.email}</div></td><td>{u.department || '-'}</td><td><Badge tone={u.auth_source === 'oidc' ? 'blue' : ''}>{u.auth_source.toUpperCase()}</Badge></td><td>{u.roles.map(r => <Badge key={r} tone={r === 'SYSTEM_ADMIN' ? 'red' : 'purple'}>{roleNames[r] || r}</Badge>)}</td><td><LastSeen user={u} lockDays={lockDays} /></td><td><Badge tone={u.active ? 'green' : 'red'}>{u.active ? '활성' : '비활성'}</Badge>{u.totp_enabled && <Badge tone="purple">MFA</Badge>}{u.must_change_password && <Badge tone="amber" >임시 비밀번호</Badge>}{u.locked_until && <><Badge tone="red">로그인 잠김</Badge><div className="subtle">{formatDate(u.locked_until, true)}까지</div></>}</td><td><div data-sx="sx-007"><Button small onClick={() => setEdit(u)}><Shield size={13} /> 역할</Button>{u.locked_until && <Button small onClick={() => unlock(u)}><LockOpen size={13} /> 잠금 해제</Button>}{u.auth_source === 'local' && <Button small onClick={() => setReset(u)}><KeyRound size={13} /> 비밀번호</Button>}{u.auth_source === 'local' && u.totp_enabled && <Button small onClick={() => resetTotp(u)}><Smartphone size={13} /> 코드 초기화</Button>}<Button small onClick={() => setHandover(u)}><ArrowRightLeft size={13} /> 업무 인계</Button><Button small variant={u.active ? 'danger' : ''} onClick={() => active(u)}>{u.active ? <UserX size={13} /> : <UserCheck size={13} />}</Button></div></td></tr>)}</tbody></table></div> : <Empty title="조건에 맞는 사용자가 없습니다." />}
+      {page.has_more && <div className="card-body"><Button small onClick={() => setLimit(limit + 100)}>더 보기 ({shown.length.toLocaleString('ko-KR')} / {page.total.toLocaleString('ko-KR')})</Button></div>}</div>{handover && <HandoverModal user={handover} onClose={() => setHandover(undefined)} onDone={load} />}{create && <CreateUser onClose={() => setCreate(false)} onSaved={load} />}{edit && <RoleModal user={edit} onClose={() => setEdit(undefined)} onSaved={load} />}{reset && <ResetPasswordModal user={reset} onClose={() => setReset(undefined)} onSaved={load} />}</div>
 }
 
 function ResetPasswordModal({ user, onClose, onSaved }: { user: User; onClose: () => void; onSaved: () => void }) {
@@ -77,4 +77,43 @@ function LastSeen({ user, lockDays }: { user: User; lockDays: number }) {
     <div>{formatDate(user.last_login_at!)}</div>
     <span className={tone ? `badge ${tone}` : 'subtle'}>{days === 0 ? '오늘' : `${days}일 전`}{tone === 'red' && atRisk ? ' · 잠금 대상' : ''}</span>
   </>
+}
+
+
+// Handing over one review at a time was the only way to empty a leaver's desk,
+// and the open-work summary that appears when closing an account made the size
+// of that job visible without making it any smaller.
+function HandoverModal({ user, onClose, onDone }: { user: User; onClose: () => void; onDone: () => void }) {
+  const toast = useToast()
+  const [people, setPeople] = useState<{ id: string; display_name: string; department?: string }[]>([])
+  const [to, setTo] = useState('')
+  const [work, setWork] = useState<Record<string, number>>()
+  const [busy, setBusy] = useState(false)
+  const [result, setResult] = useState<{ moved: Record<string, number>; skipped: { review_number: string; role: string; reason: string }[]; total: number }>()
+  useEffect(() => {
+    get<{ items: { id: string; display_name: string; department?: string }[] }>('/api/v1/users/directory').then(page => setPeople(page.items.filter(p => p.id !== user.id))).catch(() => undefined)
+    get<Record<string, number>>(`/api/v1/admin/users/${user.id}/open-work`).then(setWork).catch(() => undefined)
+  }, [user.id])
+  const submit = async () => {
+    setBusy(true)
+    try {
+      setResult(await post(`/api/v1/admin/users/${user.id}/handover`, { to_user_id: to }))
+      onDone()
+    } catch (e) { toast.push(errorMessage(e), 'error') } finally { setBusy(false) }
+  }
+  const roleName: Record<string, string> = { requester: '요청자', reviewer: '검토자', approver: '승인자' }
+  return <Modal title={`${user.display_name} 업무 인계`} onClose={onClose}
+    footer={result ? <Button variant="primary" onClick={onClose}>닫기</Button> : <><Button onClick={onClose}>취소</Button><Button variant="primary" disabled={!to || busy} onClick={submit}>인계</Button></>}>
+    {result
+      ? <div className="guide-block">
+        <p>심의 {Number(result.moved.requester) + Number(result.moved.reviewer) + Number(result.moved.approver)}건(요청 {result.moved.requester} · 검토 {result.moved.reviewer} · 승인 {result.moved.approver}), 담당 항목 {result.moved.items}건, 보완 요청 {result.moved.change_requests}건을 넘겼습니다.</p>
+        {result.skipped.length > 0 && <><p className="subtle">넘기지 못한 건은 심의 화면에서 직접 처리하세요.</p>
+          <ul>{result.skipped.map((x, i) => <li key={i}><strong>{x.review_number}</strong> {roleName[x.role] || x.role} — {x.reason}</li>)}</ul></>}
+      </div>
+      : <>
+        <div className="guide-block">이 계정이 아직 맡고 있는 심의의 담당을 한 번에 넘깁니다. 요청자·검토자·승인자 자리와, 이 사람에게 배정된 항목·보완 요청이 대상입니다. 넘겨받는 사람이 그 자리에 설 수 없는 심의(권한이 없거나 본인 심의를 본인이 검토하게 되는 경우)는 이유와 함께 남겨 둡니다.
+          {work && Number(work.total) > 0 ? <div>현재 요청자 {work.requester}건 · 검토자 {work.reviewer}건 · 승인자 {work.approver}건 · 미이행 후속조치 {work.follow_ups}건</div> : null}</div>
+        <Field label="넘겨받을 사람" required><PeopleField value={to} people={people} onChange={setTo} emptyLabel="선택하세요" withDepartment /></Field>
+      </>}
+  </Modal>
 }

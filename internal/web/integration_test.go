@@ -7367,3 +7367,114 @@ func TestSearchFindsWhatTheTeamWroteInTheAnswers(t *testing.T) {
 		t.Errorf("searching the checklist text returned %v", byTitle)
 	}
 }
+
+// Closing an account already told the administrator what the person still
+// held -- twelve reviews, four follow-ups -- and then left them to open all
+// twelve and hand each one over by hand. The handover does the whole desk at
+// once, under exactly the rules a single handover applies.
+func TestAWholeDeskCanBeHandedOverAtOnce(t *testing.T) {
+	h := newHarness(t)
+	ctx := context.Background()
+	leaverID := h.user("desk-leaver", "REQUESTER", "SECURITY_REVIEWER")
+	successorID := h.user("desk-successor", "REQUESTER", "SECURITY_REVIEWER")
+	plainID := h.user("desk-plain", "REQUESTER")
+	h.user("desk-admin", "SYSTEM_ADMIN")
+	leaver := h.login("desk-leaver")
+	admin := h.login("desk-admin")
+
+	// Two reviews they filed, one they are judging, and an item assigned to
+	// them inside their own review.
+	filed := leaver.createReview("떠나는 사람의 서비스 1")
+	alsoFiled := leaver.createReview("떠나는 사람의 서비스 2")
+	judging := h.login("desk-plain").createReview("남의 서비스")
+	if _, err := h.db.Pool.Exec(ctx, `UPDATE review_requests SET reviewer_id=$2,status='REVIEWING' WHERE id=$1`, judging, leaverID); err != nil {
+		t.Fatal(err)
+	}
+	itemID := firstItemID(t, h, filed)
+	if res := leaver.do(http.MethodPost, "/api/v1/review-requests/"+filed+"/responses/bulk",
+		map[string]any{"item_ids": []string{itemID}, "assign_only": true, "assigned_to": leaverID}); res.status != http.StatusOK {
+		t.Fatalf("assigning an item to themselves: %d %s", res.status, res.body)
+	}
+
+	// A review the successor cannot take over: they filed it, so making them
+	// its reviewer would be self-review.
+	ofTheirOwn := h.login("desk-successor").createReview("후임자 본인 서비스")
+	if _, err := h.db.Pool.Exec(ctx, `UPDATE review_requests SET reviewer_id=$2,status='REVIEWING' WHERE id=$1`, ofTheirOwn, leaverID); err != nil {
+		t.Fatal(err)
+	}
+
+	res := admin.do(http.MethodPost, "/api/v1/admin/users/"+leaverID+"/handover", map[string]any{"to_user_id": successorID})
+	if res.status != http.StatusOK {
+		t.Fatalf("handover: %d %s", res.status, res.body)
+	}
+	moved, _ := res.json()["moved"].(map[string]any)
+	if moved["requester"] != float64(2) {
+		t.Errorf("moved %v reviews they had filed, want 2", moved["requester"])
+	}
+	if moved["reviewer"] != float64(1) {
+		t.Errorf("moved %v reviews they were judging, want 1", moved["reviewer"])
+	}
+	if moved["items"] != float64(1) {
+		t.Errorf("moved %v assigned items, want 1", moved["items"])
+	}
+	// The review the successor filed themselves stays where it is, and says
+	// why rather than failing silently.
+	skipped, _ := res.json()["skipped"].([]any)
+	if len(skipped) != 1 {
+		t.Fatalf("the refusals read %v", skipped)
+	}
+	if entry := skipped[0].(map[string]any); entry["role"] != "reviewer" || !strings.Contains(entry["reason"].(string), "요청자") {
+		t.Errorf("the refusal does not explain itself: %v", entry)
+	}
+
+	owners := func(reviewID string) (requester, reviewer string) {
+		t.Helper()
+		if err := h.db.Pool.QueryRow(ctx, `SELECT requester_id,COALESCE(reviewer_id,'') FROM review_requests WHERE id=$1`, reviewID).Scan(&requester, &reviewer); err != nil {
+			t.Fatal(err)
+		}
+		return requester, reviewer
+	}
+	if requester, _ := owners(filed); requester != successorID {
+		t.Error("the filed review still belongs to the leaver")
+	}
+	if _, reviewer := owners(judging); reviewer != successorID {
+		t.Error("the review under judgement still names the leaver")
+	}
+	if _, reviewer := owners(ofTheirOwn); reviewer != leaverID {
+		t.Error("a review was handed to the person who filed it")
+	}
+	var assignee string
+	if err := h.db.Pool.QueryRow(ctx, `SELECT COALESCE(assigned_to,'') FROM responses WHERE submission_item_id=$1`, itemID).Scan(&assignee); err != nil {
+		t.Fatal(err)
+	}
+	if assignee != successorID {
+		t.Errorf("the assigned item still names the leaver: %s", assignee)
+	}
+
+	// One notice for one handover, and each review's own history records the
+	// change where the review is read.
+	var notices int
+	if err := h.db.Pool.QueryRow(ctx, `SELECT count(*) FROM notifications WHERE recipient_id=$1 AND event_type='REVIEW_TRANSFERRED'`, successorID).Scan(&notices); err != nil {
+		t.Fatal(err)
+	}
+	if notices != 1 {
+		t.Errorf("the successor received %d notices for one handover, want 1", notices)
+	}
+	var recorded int
+	if err := h.db.Pool.QueryRow(ctx, `SELECT count(*) FROM audit_logs WHERE event_type IN ('TRANSFER_REQUESTER','REASSIGN_REVIEWER') AND target_id = ANY($1)`, []string{filed, alsoFiled, judging}).Scan(&recorded); err != nil {
+		t.Fatal(err)
+	}
+	if recorded != 3 {
+		t.Errorf("%d of the three moves reached the reviews' own history", recorded)
+	}
+
+	// A successor who cannot hold the role at all is refused per review, not
+	// halfway through.
+	back := admin.do(http.MethodPost, "/api/v1/admin/users/"+successorID+"/handover", map[string]any{"to_user_id": plainID})
+	if back.status != http.StatusOK {
+		t.Fatalf("second handover: %d %s", back.status, back.body)
+	}
+	if moved, _ := back.json()["moved"].(map[string]any); moved["reviewer"] != float64(0) {
+		t.Errorf("a review was handed to somebody without the reviewer role: %v", moved)
+	}
+}

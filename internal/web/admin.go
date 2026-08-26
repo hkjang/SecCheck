@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -1035,4 +1036,193 @@ func (s *Server) retryFailedJobs(w http.ResponseWriter, r *http.Request) {
 	_, _ = s.Store.Pool.Exec(r.Context(), `UPDATE evidences SET scan_status='PENDING' WHERE scan_status='ERROR' AND deleted_at IS NULL`)
 	_ = s.Store.Audit(r.Context(), auditFrom(r, "RETRY_JOB", "JOB", "all-failed", nil, map[string]any{"requeued": tag.RowsAffected()}))
 	jsonResponse(w, 200, map[string]any{"requeued": tag.RowsAffected()})
+}
+
+// handoverUserWork moves everything a departing account still holds to another
+// person in one go. The open-work summary already told the administrator what
+// was in the way before closing an account -- twelve reviews, four
+// follow-ups -- and then left them to open all twelve and hand each one over
+// by itself. The rules are the ones each individual handover applies, checked
+// per review: a review whose new owner would end up judging their own work is
+// left where it is and named, rather than moved into a state the workflow
+// refuses.
+func (s *Server) handoverUserWork(w http.ResponseWriter, r *http.Request) {
+	from := r.PathValue("id")
+	var in struct {
+		ToUserID string `json:"to_user_id"`
+	}
+	if !decodeJSON(w, r, &in) {
+		return
+	}
+	to := strings.TrimSpace(in.ToUserID)
+	if to == "" {
+		problem(w, 422, "VALIDATION_FAILED", "넘겨받을 사람을 선택하세요.", map[string]string{"to_user_id": "필수 입력 항목입니다."})
+		return
+	}
+	if to == from {
+		problem(w, 422, "VALIDATION_FAILED", "같은 계정으로는 인계할 수 없습니다.", map[string]string{"to_user_id": "본인입니다."})
+		return
+	}
+	var active bool
+	var name string
+	if err := s.Store.Pool.QueryRow(r.Context(), `SELECT active,display_name FROM users WHERE id=$1`, to).Scan(&active, &name); err != nil {
+		problem(w, 404, "NOT_FOUND", "인계 대상 계정을 찾을 수 없습니다.", nil)
+		return
+	}
+	if !active {
+		problem(w, 422, "VALIDATION_FAILED", "비활성 계정에는 인계할 수 없습니다.", map[string]string{"to_user_id": "비활성 계정입니다."})
+		return
+	}
+	roles, err := s.Store.UserRoles(r.Context(), to)
+	if err != nil {
+		s.fault(w, r, "QUERY_FAILED", "인계 대상 권한을 확인하지 못했습니다.", err)
+		return
+	}
+	var workflow struct {
+		AllowSelfReview bool `json:"allow_self_review"`
+	}
+	_, _ = s.Store.Setting(r.Context(), "workflow", &workflow)
+
+	rows, err := s.Store.Pool.Query(r.Context(), `SELECT id,review_number,status,requester_id,COALESCE(reviewer_id,''),COALESCE(approver_id,'')
+                FROM review_requests
+                WHERE status NOT IN ('APPROVED','CLOSED','CANCELLED','REJECTED')
+                  AND (requester_id=$1 OR reviewer_id=$1 OR approver_id=$1)
+                ORDER BY review_number`, from)
+	if err != nil {
+		s.fault(w, r, "QUERY_FAILED", "인계할 심의를 불러오지 못했습니다.", err)
+		return
+	}
+	type held struct{ id, number, status, requester, reviewer, approver string }
+	var open []held
+	for rows.Next() {
+		var item held
+		if rows.Scan(&item.id, &item.number, &item.status, &item.requester, &item.reviewer, &item.approver) == nil {
+			open = append(open, item)
+		}
+	}
+	rows.Close()
+
+	moved := map[string]int{"requester": 0, "reviewer": 0, "approver": 0, "items": 0, "change_requests": 0}
+	skipped := []map[string]string{}
+	refuse := func(number, role, reason string) {
+		skipped = append(skipped, map[string]string{"review_number": number, "role": role, "reason": reason})
+	}
+	for _, item := range open {
+		// Each column is decided on its own: one review can hand over its
+		// requester and keep its reviewer, which is what happens when the
+		// departing person held both and the new owner may only hold one.
+		if item.requester == from {
+			switch {
+			case !slices.Contains(roles, "REQUESTER"):
+				refuse(item.number, "requester", "요청자 권한이 없습니다.")
+			case !workflow.AllowSelfReview && (to == item.reviewer || to == item.approver):
+				refuse(item.number, "requester", "이 심의의 검토자 또는 승인자입니다.")
+			default:
+				if s.moveReviewOwner(r, item.id, "requester_id", from, to, "TRANSFER_REQUESTER") {
+					moved["requester"]++
+				} else {
+					refuse(item.number, "requester", "변경하지 못했습니다.")
+				}
+			}
+		}
+		if item.reviewer == from {
+			switch {
+			case !slices.Contains(roles, "SECURITY_REVIEWER"):
+				refuse(item.number, "reviewer", "보안 검토 권한이 없습니다.")
+			case !workflow.AllowSelfReview && to == item.requester:
+				refuse(item.number, "reviewer", "이 심의의 요청자입니다.")
+			default:
+				if s.moveReviewOwner(r, item.id, "reviewer_id", from, to, "REASSIGN_REVIEWER") {
+					moved["reviewer"]++
+				} else {
+					refuse(item.number, "reviewer", "변경하지 못했습니다.")
+				}
+			}
+		}
+		if item.approver == from {
+			switch {
+			case !slices.Contains(roles, "APPROVER"):
+				refuse(item.number, "approver", "승인 권한이 없습니다.")
+			case !workflow.AllowSelfReview && to == item.requester:
+				refuse(item.number, "approver", "이 심의의 요청자입니다.")
+			default:
+				if s.moveReviewOwner(r, item.id, "approver_id", from, to, "REASSIGN_APPROVER") {
+					moved["approver"]++
+				} else {
+					refuse(item.number, "approver", "변경하지 못했습니다.")
+				}
+			}
+		}
+	}
+
+	// Item assignments and corrections follow only into reviews the new owner
+	// can actually open, which is the same rule the assignment screens apply.
+	// Anything else would put their name on work they cannot reach.
+	moved["items"] = s.moveAssignments(r, `UPDATE responses SET assigned_to=$2,updated_at=now() WHERE assigned_to=$1 AND submission_item_id IN (
+                SELECT si.id FROM submission_items si JOIN submissions sub ON sub.id=si.submission_id
+                WHERE sub.review_request_id = ANY($3))`, from, to, s.reachableReviews(r, to, from))
+	moved["change_requests"] = s.moveAssignments(r, `UPDATE change_requests SET assignee_id=$2,updated_at=now() WHERE assignee_id=$1 AND status<>'VERIFIED' AND review_request_id = ANY($3)`, from, to, s.reachableReviews(r, to, from))
+
+	total := 0
+	for _, n := range moved {
+		total += n
+	}
+	_ = s.Store.Audit(r.Context(), auditFrom(r, "HANDOVER_WORK", "USER", from, map[string]any{"user_id": from}, map[string]any{"to_user_id": to, "moved": moved, "skipped": skipped}))
+	if total > 0 {
+		// One notice for one handover: a person who has just inherited a
+		// dozen reviews does not need a dozen mails to find that out.
+		s.addTargetedNotification(r.Context(), to, "REVIEW_TRANSFERRED", "업무 인계",
+			fmt.Sprintf("담당자 변경으로 심의 %d건(요청 %d · 검토 %d · 승인 %d)과 항목 %d건, 보완 요청 %d건을 넘겨받았습니다.",
+				moved["requester"]+moved["reviewer"]+moved["approver"], moved["requester"], moved["reviewer"], moved["approver"], moved["items"], moved["change_requests"]),
+			"USER", to)
+	}
+	jsonResponse(w, 200, map[string]any{"moved": moved, "skipped": skipped, "total": total})
+}
+
+// moveReviewOwner swaps one owner column and records it in that review's own
+// history, so the change is visible where the review is read rather than only
+// in the administrative log.
+func (s *Server) moveReviewOwner(r *http.Request, reviewID, column, from, to, event string) bool {
+	tag, err := s.Store.Pool.Exec(r.Context(), `UPDATE review_requests SET `+column+`=$2,updated_at=now() WHERE id=$1 AND `+column+`=$3`, reviewID, to, from)
+	if err != nil || tag.RowsAffected() == 0 {
+		return false
+	}
+	_ = s.Store.Audit(r.Context(), auditFrom(r, event, "REVIEW_REQUEST", reviewID, map[string]string{column: from}, map[string]string{column: to}))
+	return true
+}
+
+// reachableReviews lists the open reviews the new owner can open, which is
+// where their name may appear on an item.
+func (s *Server) reachableReviews(r *http.Request, to, from string) []string {
+	rows, err := s.Store.Pool.Query(r.Context(), `SELECT r.id FROM review_requests r
+                WHERE r.status NOT IN ('APPROVED','CLOSED','CANCELLED','REJECTED')
+                  AND (r.requester_id=$1 OR r.builder_id=$1 OR r.developer_id=$1 OR r.operator_id=$1 OR r.reviewer_id=$1 OR r.approver_id=$1
+                       OR EXISTS(SELECT 1 FROM review_participants rp WHERE rp.review_request_id=r.id AND rp.user_id=$1 AND rp.participant_role<>'VIEWER'))
+                  AND (EXISTS(SELECT 1 FROM change_requests c WHERE c.review_request_id=r.id AND c.assignee_id=$2)
+                       OR EXISTS(SELECT 1 FROM submission_items si JOIN submissions sub ON sub.id=si.submission_id JOIN responses resp ON resp.submission_item_id=si.id
+                                 WHERE sub.review_request_id=r.id AND resp.assigned_to=$2))`, to, from)
+	if err != nil {
+		return nil
+	}
+	defer rows.Close()
+	var out []string
+	for rows.Next() {
+		var id string
+		if rows.Scan(&id) == nil {
+			out = append(out, id)
+		}
+	}
+	return out
+}
+
+func (s *Server) moveAssignments(r *http.Request, query, from, to string, reviews []string) int {
+	if len(reviews) == 0 {
+		return 0
+	}
+	tag, err := s.Store.Pool.Exec(r.Context(), query, from, to, reviews)
+	if err != nil {
+		s.Store.Log(r.Context(), "ERROR", requestID(r), "admin", "인계 대상 배정을 옮기지 못했습니다.", map[string]any{"error": err.Error()})
+		return 0
+	}
+	return int(tag.RowsAffected())
 }

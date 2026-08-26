@@ -23,6 +23,8 @@ var auditEventLabels = map[string]string{
 	"QUARANTINE_EVIDENCE":            "증적 악성코드 격리",
 	"REASSIGN_APPROVER":              "최종 승인자 변경",
 	"TRANSFER_REQUESTER":             "심의 요청자 인계",
+	"REASSIGN_REVIEWER":              "보안 담당자 변경",
+	"HANDOVER_WORK":                  "담당 업무 일괄 인계",
 	"SYNC_OIDC_ROLES":                "디렉터리 역할 동기화",
 	"TOTP_ENROLLMENT_STARTED":        "일회용 코드 등록 시작",
 	"TOTP_ENABLED":                   "일회용 코드 활성화",
