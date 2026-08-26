@@ -264,6 +264,10 @@ func (s *Server) createReviewRequest(w http.ResponseWriter, r *http.Request) {
 		problem(w, 422, "VALIDATION_FAILED", "필수 정보를 확인하세요.", e)
 		return
 	}
+	if problems := s.namedAssigneeProblems(r.Context(), session(r).User.ID, in.ReviewerID, in.ApproverID); len(problems) > 0 {
+		problem(w, 422, "VALIDATION_FAILED", "담당자를 확인하세요.", problems)
+		return
+	}
 	sess := session(r)
 	tx, err := s.Store.Pool.Begin(r.Context())
 	if err != nil {
@@ -635,6 +639,12 @@ func (s *Server) updateReviewRequest(w http.ResponseWriter, r *http.Request) {
 		problem(w, 403, "FORBIDDEN", "이 심의를 수정할 수 없습니다.", nil)
 		return
 	}
+	// Who the review is being handed to is checked before it is handed over,
+	// not discovered at the end of the workflow.
+	if problems := s.namedAssigneeProblems(r.Context(), currentRequester(r.Context(), s, id), in.ReviewerID, in.ApproverID); len(problems) > 0 {
+		problem(w, 422, "VALIDATION_FAILED", "담당자를 확인하세요.", problems)
+		return
+	}
 	tag, err := s.Store.Pool.Exec(r.Context(), `UPDATE review_requests SET description=COALESCE(NULLIF($2,''),description),reviewer_id=COALESCE(NULLIF($3,''),reviewer_id),approver_id=COALESCE(NULLIF($4,''),approver_id),planned_open_date=COALESCE(NULLIF($5,'')::date,planned_open_date),business_criticality=COALESCE(NULLIF($6,''),business_criticality),updated_at=now() WHERE id=$1 AND status IN ('DRAFT','CHANGE_REQUESTED')`, id, in.Description, in.ReviewerID, in.ApproverID, in.PlannedOpenDate, in.BusinessCriticality)
 	if err != nil || tag.RowsAffected() == 0 {
 		problem(w, 409, "STATE_CONFLICT", "현재 상태에서는 수정할 수 없습니다.", nil)
@@ -645,6 +655,59 @@ func (s *Server) updateReviewRequest(w http.ResponseWriter, r *http.Request) {
 		s.addTargetedNotification(r.Context(), in.ReviewerID, "REVIEW_ASSIGNED", "심의 담당자 배정", "배정된 심의를 확인하세요.", "REVIEW_REQUEST", id)
 	}
 	jsonResponse(w, 200, map[string]any{"id": id})
+}
+
+// namedAssigneeProblems checks the people a review is being handed to before
+// the review is handed to them. Nothing checked: an account with no
+// SECURITY_REVIEWER role could be named the reviewer and an account with no
+// APPROVER role the approver, which reads as assigned on every screen while
+// nobody can act -- the service then treats the review as unowned and puts it
+// back in the queue, and the person who typed the name is told nothing. The
+// same person in both seats is refused for the reason the approval step
+// exists, unless the installation has allowed one person to do both.
+func (s *Server) namedAssigneeProblems(ctx context.Context, requesterID, reviewerID, approverID string) map[string]string {
+	e := map[string]string{}
+	roles := map[string]string{"reviewer_id": "SECURITY_REVIEWER", "approver_id": "APPROVER"}
+	for field, id := range map[string]string{"reviewer_id": strings.TrimSpace(reviewerID), "approver_id": strings.TrimSpace(approverID)} {
+		if id == "" {
+			continue
+		}
+		var holds bool
+		if err := s.Store.Pool.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM users u JOIN user_roles ur ON ur.user_id=u.id WHERE u.id=$1 AND u.active AND ur.role_code=$2)`, id, roles[field]).Scan(&holds); err != nil {
+			e[field] = "확인하지 못했습니다."
+			continue
+		}
+		if !holds {
+			e[field] = map[string]string{"reviewer_id": "보안 검토 권한이 있는 활성 계정이 아닙니다.", "approver_id": "승인 권한이 있는 활성 계정이 아닙니다."}[field]
+		}
+	}
+	var workflow struct {
+		AllowSelfReview bool `json:"allow_self_review"`
+	}
+	_, _ = s.Store.Setting(ctx, "workflow", &workflow)
+	if workflow.AllowSelfReview {
+		return e
+	}
+	if reviewerID != "" && reviewerID == approverID {
+		e["approver_id"] = "검토자와 같은 사람은 승인자가 될 수 없습니다. 최종 승인은 검토에 두 번째 눈을 붙이는 단계입니다."
+	}
+	if requesterID != "" {
+		if reviewerID == requesterID {
+			e["reviewer_id"] = "본인이 신청한 심의는 본인이 검토할 수 없습니다."
+		}
+		if approverID == requesterID {
+			e["approver_id"] = "본인이 신청한 심의는 본인이 승인할 수 없습니다."
+		}
+	}
+	return e
+}
+
+// currentRequester reads who owns the review, so the assignment check can ask
+// whether a name being typed is that person.
+func currentRequester(ctx context.Context, s *Server, reviewID string) string {
+	var id string
+	_ = s.Store.Pool.QueryRow(ctx, `SELECT requester_id FROM review_requests WHERE id=$1`, reviewID).Scan(&id)
+	return id
 }
 
 // canEditRequester answers who may hand a review to somebody else: the owner

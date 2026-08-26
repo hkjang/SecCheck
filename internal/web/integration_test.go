@@ -7953,3 +7953,78 @@ func TestTheReviewerCannotApproveTheirOwnVerdicts(t *testing.T) {
 		t.Fatalf("with self review allowed, the reviewer still could not approve: %d %s", res.status, res.body)
 	}
 }
+
+// Naming somebody as reviewer or approver checked nothing. An account without
+// the role could be put in the seat: every screen then read as assigned while
+// nobody could act, the service treated the review as unowned and put it back
+// in the queue, and the person who typed the name was told nothing at all.
+func TestAReviewCanOnlyBeHandedToSomebodyWhoCanTakeIt(t *testing.T) {
+	h := newHarness(t)
+	ctx := context.Background()
+	authorID := h.user("named-author", "REQUESTER", "SECURITY_REVIEWER", "APPROVER")
+	plainID := h.user("named-plain", "REQUESTER")
+	reviewerID := h.user("named-reviewer", "SECURITY_REVIEWER")
+	approverID := h.user("named-approver", "APPROVER")
+	leftID := h.user("named-left", "SECURITY_REVIEWER")
+	author := h.login("named-author")
+
+	reviewID := author.createReview("배정 검증 서비스")
+	patch := func(body map[string]any) response {
+		t.Helper()
+		return author.do(http.MethodPatch, "/api/v1/review-requests/"+reviewID, body)
+	}
+	fieldError := func(res response, field string) string {
+		t.Helper()
+		details, _ := res.json()["error"].(map[string]any)["details"].(map[string]any)
+		value, _ := details[field].(string)
+		return value
+	}
+
+	// A person without the role cannot be given the seat.
+	res := patch(map[string]any{"reviewer_id": plainID})
+	if res.status != http.StatusUnprocessableEntity || fieldError(res, "reviewer_id") == "" {
+		t.Fatalf("naming a non-reviewer as reviewer: %d %s", res.status, res.body)
+	}
+	res = patch(map[string]any{"approver_id": plainID})
+	if res.status != http.StatusUnprocessableEntity || fieldError(res, "approver_id") == "" {
+		t.Fatalf("naming a non-approver as approver: %d %s", res.status, res.body)
+	}
+	// Nor can somebody whose account has been closed, which is the same
+	// situation a month later.
+	if _, err := h.db.Pool.Exec(ctx, `UPDATE users SET active=false WHERE id=$1`, leftID); err != nil {
+		t.Fatal(err)
+	}
+	if res := patch(map[string]any{"reviewer_id": leftID}); res.status != http.StatusUnprocessableEntity {
+		t.Errorf("naming a closed account as reviewer: %d %s", res.status, res.body)
+	}
+
+	// The requester is not a neutral judge of their own request, and the
+	// approval step is not a second look if the same person does both.
+	if res := patch(map[string]any{"reviewer_id": authorID}); res.status != http.StatusUnprocessableEntity {
+		t.Errorf("the requester named themselves as reviewer: %d %s", res.status, res.body)
+	}
+	if res := patch(map[string]any{"reviewer_id": reviewerID, "approver_id": reviewerID}); res.status != http.StatusUnprocessableEntity {
+		t.Errorf("the same person was named reviewer and approver: %d %s", res.status, res.body)
+	}
+
+	// The right pair is accepted and the seats are actually filled.
+	if res := patch(map[string]any{"reviewer_id": reviewerID, "approver_id": approverID}); res.status != http.StatusOK {
+		t.Fatalf("naming a reviewer and an approver: %d %s", res.status, res.body)
+	}
+	var reviewer, approver string
+	if err := h.db.Pool.QueryRow(ctx, `SELECT COALESCE(reviewer_id,''),COALESCE(approver_id,'') FROM review_requests WHERE id=$1`, reviewID).Scan(&reviewer, &approver); err != nil {
+		t.Fatal(err)
+	}
+	if reviewer != reviewerID || approver != approverID {
+		t.Errorf("the seats hold %q and %q", reviewer, approver)
+	}
+
+	// A one-person installation says so, and then the pair it needs is
+	// allowed -- the same escape hatch as self-review.
+	if res := h.login(adminOf(h)).do(http.MethodPut, "/api/v1/admin/settings/workflow", map[string]any{"allow_self_review": true, "approval_enabled": true}); res.status != http.StatusOK {
+		t.Fatalf("allowing self review: %d %s", res.status, res.body)
+	}
+	if res := patch(map[string]any{"reviewer_id": authorID, "approver_id": authorID}); res.status != http.StatusOK {
+		t.Errorf("with self review allowed the pair was still refused: %d %s", res.status, res.body)
+	}
+}
