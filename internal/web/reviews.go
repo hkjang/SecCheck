@@ -388,6 +388,69 @@ func ruleVocabulary() map[string]bool {
 
 var ruleOperators = map[string]bool{"": true, "eq": true, "=": true, "neq": true, "!=": true, "in": true, "contains": true, "gt": true, "gte": true, "lt": true, "lte": true, "exists": true}
 
+// ruleCondition is one condition of an applicability rule, judged against one
+// service. "이 항목의 적용 규칙 조건을 만족하지 않습니다" told a template
+// administrator that something did not match and left them to work out what:
+// with a dozen conditions and twenty service characteristics, that is a
+// puzzle the service can solve itself.
+type ruleCondition struct {
+	Field    string `json:"field"`
+	Operator string `json:"operator"`
+	Value    any    `json:"value"`
+	Actual   any    `json:"actual"`
+	Matched  bool   `json:"matched"`
+	Negated  bool   `json:"negated"`
+}
+
+// explainRule lists the conditions a rule is made of and says which of them
+// this service meets. Nested all/any/not are flattened: the shape decides the
+// outcome, which the caller already knows, and what the reader needs is which
+// line of the rule is the one that did not fit.
+func explainRule(raw []byte, fields map[string]any) []ruleCondition {
+	if len(raw) == 0 || string(raw) == "{}" || string(raw) == "null" {
+		return nil
+	}
+	var node any
+	if json.Unmarshal(raw, &node) != nil {
+		return nil
+	}
+	out := []ruleCondition{}
+	collectConditions(node, fields, false, &out)
+	return out
+}
+
+func collectConditions(node any, fields map[string]any, negated bool, out *[]ruleCondition) {
+	m, ok := node.(map[string]any)
+	if !ok || len(*out) >= 40 {
+		return
+	}
+	for _, key := range []string{"all", "any"} {
+		if group, ok := m[key].([]any); ok {
+			for _, child := range group {
+				collectConditions(child, fields, negated, out)
+			}
+			return
+		}
+	}
+	if not, ok := m["not"]; ok {
+		collectConditions(not, fields, !negated, out)
+		return
+	}
+	field, _ := m["field"].(string)
+	if field == "" {
+		return
+	}
+	op, _ := m["operator"].(string)
+	if op == "" {
+		op = "eq"
+	}
+	matched := evalLeaf(m, fields)
+	if negated {
+		matched = !matched
+	}
+	*out = append(*out, ruleCondition{Field: field, Operator: strings.ToLower(op), Value: m["value"], Actual: fields[field], Matched: matched, Negated: negated})
+}
+
 // validateRule reports the first thing in a rule that the engine could never
 // act on, in a form an administrator can correct.
 func validateRule(node any, known map[string]bool) error {
@@ -476,6 +539,13 @@ func evalNode(node any, fields map[string]any) bool {
 	if not, ok := m["not"]; ok {
 		return !evalNode(not, fields)
 	}
+	return evalLeaf(m, fields)
+}
+
+// evalLeaf decides one condition. It is split out so that explaining a rule
+// and applying it cannot drift: the explanation reports exactly what the
+// engine did with each condition rather than a second opinion about it.
+func evalLeaf(m map[string]any, fields map[string]any) bool {
 	field, _ := m["field"].(string)
 	op, _ := m["operator"].(string)
 	actual, exists := fields[field]

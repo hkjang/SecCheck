@@ -4,6 +4,7 @@ import (
 	"archive/zip"
 	"bytes"
 	"encoding/json"
+	"fmt"
 	"testing"
 )
 
@@ -146,5 +147,66 @@ func TestARuleCannotNameSomethingTheEngineWillNeverSee(t *testing.T) {
 	}
 	if err := checkedRule(map[string]any{}); err != nil {
 		t.Errorf("an empty rule was refused: %v", err)
+	}
+}
+
+// "항목의 적용 규칙 조건을 만족하지 않습니다" says that something did not fit
+// and leaves the reader to work out what. With a dozen conditions and twenty
+// service characteristics, that is a puzzle the service can solve itself.
+func TestARuleExplainsWhichConditionDidNotFit(t *testing.T) {
+	fields := map[string]any{
+		"service_type":            "WEB",
+		"exposure":                "INTERNAL",
+		"processes_personal_data": true,
+		"uses_cloud":              false,
+	}
+	rule := []byte(`{"all":[
+                {"field":"processes_personal_data","operator":"eq","value":true},
+                {"field":"exposure","operator":"eq","value":"EXTERNAL"},
+                {"not":{"field":"uses_cloud","operator":"eq","value":true}}
+        ]}`)
+	if evaluateRule(rule, fields) {
+		t.Fatal("the fixture is meant to be a rule this service does not satisfy")
+	}
+	conditions := explainRule(rule, fields)
+	if len(conditions) != 3 {
+		t.Fatalf("the rule was explained as %d conditions, want 3: %+v", len(conditions), conditions)
+	}
+	// The explanation is the engine's own reading, not a second opinion: every
+	// line says whether this service meets it.
+	if !conditions[0].Matched || conditions[0].Field != "processes_personal_data" {
+		t.Errorf("the condition this service does meet reads %+v", conditions[0])
+	}
+	if conditions[1].Matched || conditions[1].Field != "exposure" {
+		t.Errorf("the condition that failed reads %+v", conditions[1])
+	}
+	if fmt.Sprint(conditions[1].Actual) != "INTERNAL" || fmt.Sprint(conditions[1].Value) != "EXTERNAL" {
+		t.Errorf("the failing condition does not carry both sides: %+v", conditions[1])
+	}
+	// A negated condition is reported as satisfied when the service is on the
+	// right side of the negation, or the reader would read the tick backwards.
+	if !conditions[2].Negated || !conditions[2].Matched {
+		t.Errorf("the negated condition reads %+v", conditions[2])
+	}
+
+	// A rule with no conditions has nothing to explain, and one the engine
+	// cannot read explains nothing rather than inventing a reason.
+	if got := explainRule([]byte(`{}`), fields); len(got) != 0 {
+		t.Errorf("an empty rule was explained as %+v", got)
+	}
+	if got := explainRule([]byte(`{"all":`), fields); len(got) != 0 {
+		t.Errorf("an unreadable rule was explained as %+v", got)
+	}
+
+	// Every condition the engine acts on is one the explanation shows: a rule
+	// that matches is explained the same way, so "why is this item here" and
+	// "why is it not" are answered from one implementation.
+	matching := []byte(`{"any":[{"field":"exposure","operator":"in","value":["INTERNAL","EXTERNAL"]},{"field":"uses_cloud","operator":"eq","value":true}]}`)
+	if !evaluateRule(matching, fields) {
+		t.Fatal("the second fixture is meant to match")
+	}
+	got := explainRule(matching, fields)
+	if len(got) != 2 || !got[0].Matched || got[1].Matched {
+		t.Errorf("the matching rule was explained as %+v", got)
 	}
 }

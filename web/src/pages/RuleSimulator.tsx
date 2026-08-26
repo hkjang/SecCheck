@@ -3,7 +3,8 @@ import { FlaskConical, Play } from 'lucide-react'
 import { errorMessage, post } from '../lib/api'
 import { Badge, Button, Empty, Field, Loading, Toggle, useToast } from '../components/ui'
 
-type Outcome = { template: string; version: string; item_code: string; category: string; title: string; severity: string; applied: boolean; reason: string; rule_error?: string }
+type Condition = { field: string; operator: string; value: unknown; actual: unknown; matched: boolean; negated: boolean }
+type Outcome = { template: string; version: string; item_code: string; category: string; title: string; severity: string; applied: boolean; reason: string; rule_error?: string; conditions?: Condition[] }
 type Result = { applied: number; excluded: number; broken?: number; templates: { template: string; applied: number; total: number }[]; items: Outcome[] }
 
 const profileToggles: [string, string][] = [
@@ -11,6 +12,27 @@ const profileToggles: [string, string][] = [
   ['external_customer_service', '대외 고객 서비스'], ['uses_cloud', '클라우드 사용'], ['uses_docker', 'Docker 사용'],
   ['uses_kubernetes', 'Kubernetes 사용'], ['external_integration', '외부 연계'], ['internet_access', '인터넷 접점'],
 ]
+
+
+// The rule speaks in field names; the form the requester fills in speaks
+// Korean, and the reader is comparing the two.
+const fieldLabels: Record<string, string> = {
+  service_type: '서비스 유형', change_type: '변경 유형', exposure: '노출 구분', business_criticality: '업무 중요도',
+  has_admin_page: '관리자 페이지 있음', processes_personal_data: '개인정보 처리', processes_credit_data: '신용정보 처리',
+  external_customer_service: '대외 고객 서비스', uses_cloud: '클라우드 사용', uses_docker: 'Docker 사용',
+  uses_kubernetes: 'Kubernetes 사용', external_integration: '외부 연계', internet_access: '인터넷 접점',
+}
+const operatorText: Record<string, string> = { eq: '=', '=': '=', neq: '≠', '!=': '≠', in: '중 하나', contains: '포함', gt: '>', gte: '≥', lt: '<', lte: '≤', exists: '값 존재' }
+const conditionText = (v: unknown) => typeof v === 'boolean' ? (v ? '예' : '아니오') : Array.isArray(v) ? v.join(', ') : String(v ?? '')
+// A condition reads as "개인정보 처리 = 예 (현재 아니오)": what the rule asks
+// for, and what this service actually says.
+function Conditions({ list }: { list: Condition[] }) {
+  if (!list.length) return null
+  return <ul className="subtle" data-sx="sx-006">{list.map((c, i) => <li key={i}>
+    {c.matched ? '✓' : '✗'} {c.negated ? '아님: ' : ''}{fieldLabels[c.field] || c.field} {operatorText[c.operator] || c.operator} {conditionText(c.value)}
+    {!c.matched && <> — 현재 {conditionText(c.actual)}</>}
+  </li>)}</ul>
+}
 
 export default function RuleSimulator() {
   const toast = useToast()
@@ -58,7 +80,7 @@ export default function RuleSimulator() {
         <div className="table-wrap"><table><caption className="sr-only">템플릿별 배정 결과</caption><thead><tr><th scope="col">템플릿</th><th scope="col">배정 / 전체</th></tr></thead><tbody>{result.templates.map(t => <tr key={t.template}><td>{t.template}</td><td><Badge tone={t.applied ? 'green' : ''}>{t.applied} / {t.total}</Badge></td></tr>)}</tbody></table></div></section>
       <section className="card"><div className="card-header"><h2>항목별 결과</h2><Badge>{shown.length}개</Badge></div>
         {shown.length ? <div className="table-wrap"><table><caption className="sr-only">항목별 적용 여부</caption><thead><tr><th scope="col">항목코드</th><th scope="col">템플릿</th><th scope="col">보안요건</th><th scope="col">중요도</th><th scope="col">결과</th></tr></thead>
-          <tbody>{shown.map((item, i) => <tr key={`${item.template}-${item.item_code}-${i}`}><td><code>{item.item_code}</code></td><td className="subtle">{item.template} {item.version}</td><td>{item.title}</td><td>{item.severity}</td><td>{item.applied ? <Badge tone="green">배정</Badge> : <><Badge>제외</Badge><div className="subtle">{item.reason}</div></>}</td></tr>)}</tbody></table></div>
+          <tbody>{shown.map((item, i) => <tr key={`${item.template}-${item.item_code}-${i}`}><td><code>{item.item_code}</code></td><td className="subtle">{item.template} {item.version}</td><td>{item.title}</td><td>{item.severity}</td><td>{item.applied ? <><Badge tone="green">배정</Badge>{item.conditions?.length ? <Conditions list={item.conditions} /> : null}</> : <><Badge>제외</Badge><div className="subtle">{item.reason}</div>{item.conditions?.length ? <Conditions list={item.conditions.filter(c => !c.matched)} /> : null}</>}</td></tr>)}</tbody></table></div>
           : <Empty title="배정되는 항목이 없습니다." description="서비스 특성을 조정하거나 템플릿의 적용 규칙을 확인하세요." />}</section>
     </> : null}
   </div>

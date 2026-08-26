@@ -1266,14 +1266,15 @@ func (s *Server) simulateRules(w http.ResponseWriter, r *http.Request) {
 
 	fields := reviewFields(in)
 	type outcome struct {
-		Template string `json:"template"`
-		Version  string `json:"version"`
-		ItemCode string `json:"item_code"`
-		Category string `json:"category"`
-		Title    string `json:"title"`
-		Severity string `json:"severity"`
-		Applied  bool   `json:"applied"`
-		Reason   string `json:"reason"`
+		Template   string          `json:"template"`
+		Version    string          `json:"version"`
+		ItemCode   string          `json:"item_code"`
+		Category   string          `json:"category"`
+		Title      string          `json:"title"`
+		Severity   string          `json:"severity"`
+		Applied    bool            `json:"applied"`
+		Reason     string          `json:"reason"`
+		Conditions []ruleCondition `json:"conditions,omitempty"`
 		// A rule written before the vocabulary was checked can name something
 		// the engine never sees, in which case the item is not excluded by
 		// this profile -- it is excluded by every profile, for ever.
@@ -1305,9 +1306,12 @@ func (s *Server) simulateRules(w http.ResponseWriter, r *http.Request) {
 		case !categoryApplies(o.Category, in):
 			o.Reason = "서비스 특성상 해당 분류가 적용되지 않습니다"
 		case !evaluateRule(rule, fields):
+			// Which condition did not fit is the thing the reader came for.
+			o.Conditions = explainRule(rule, fields)
 			o.Reason = "항목의 적용 규칙 조건을 만족하지 않습니다"
 		default:
 			o.Applied = true
+			o.Conditions = explainRule(rule, fields)
 			o.Reason = "적용"
 		}
 		if o.Applied {
