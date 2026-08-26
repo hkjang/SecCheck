@@ -581,13 +581,28 @@ func (s *Server) search(w http.ResponseWriter, r *http.Request) {
 // see in a list has to be what they may open, or a queue offers work that
 // answers "심의를 찾을 수 없습니다" and a list hides work they are expected to
 // do. The two are kept in step by TestListsAndDetailAgreeOnWhatIsVisible.
+// approverJudgedItSQL is true when the review's named approver is also its
+// reviewer. That is not a signature anybody may give -- the approval step is
+// there to be a second look -- so, exactly like an approver who has lost the
+// role, they count as unable to act and the review becomes visible to the
+// other approvers instead of waiting for a signature nobody may give. The
+// one-person installation that allows self-review keeps its escape hatch.
+//
+// Only the two columns of the review itself are read here. The stricter rule
+// -- anybody who recorded a verdict may not sign the result off -- is applied
+// where the decision is made, because a visibility check that depended on the
+// verdict table would turn an unreadable table into "심의를 찾을 수 없습니다"
+// rather than an error.
+const approverJudgedItSQL = `(NOT COALESCE((SELECT (value_json->>'allow_self_review')::bool FROM settings WHERE key='workflow'),false)
+                AND review_requests.reviewer_id=review_requests.approver_id)`
+
 func accessFilter(sess auth.Session, start int) (string, []any) {
 	// The operator belongs here with the builder and the developer: the form
 	// asks for all three, an item may be assigned to any of them, and only
 	// these two could open what they were assigned.
 	return fmt.Sprintf(`(review_requests.requester_id=$%[1]d OR review_requests.builder_id=$%[1]d OR review_requests.developer_id=$%[1]d OR review_requests.operator_id=$%[1]d OR review_requests.reviewer_id=$%[1]d OR review_requests.approver_id=$%[1]d
                 OR EXISTS(SELECT 1 FROM review_participants rp WHERE rp.review_request_id=review_requests.id AND rp.user_id=$%[1]d)
-                OR ($%[2]d::bool AND review_requests.status='APPROVAL_PENDING' AND (review_requests.approver_id IS NULL OR NOT `+stillHolds("review_requests.approver_id", "APPROVER")+`)))`, start, start+1),
+                OR ($%[2]d::bool AND review_requests.status='APPROVAL_PENDING' AND (review_requests.approver_id IS NULL OR NOT `+stillHolds("review_requests.approver_id", "APPROVER")+` OR `+approverJudgedItSQL+`)))`, start, start+1),
 		[]any{sess.User.ID, hasAnyRole(sess.User, "APPROVER")}
 }
 

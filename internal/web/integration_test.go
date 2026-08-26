@@ -7874,3 +7874,82 @@ func TestTheDashboardCountsOnlyWhatItsListsCanOpen(t *testing.T) {
 		t.Error("the reviewer's list is empty while their dashboard counts the review")
 	}
 }
+
+// The approval step exists to put a second pair of eyes on a completed review.
+// The rule that stops a requester approving their own request said nothing
+// about the reviewer, so one account could judge every item and then sign the
+// result off -- the approval step doing nothing while looking as though it had
+// done something.
+func TestTheReviewerCannotApproveTheirOwnVerdicts(t *testing.T) {
+	h := newHarness(t)
+	ctx := context.Background()
+	h.user("eyes-author", "REQUESTER")
+	h.user("eyes-judge", "SECURITY_REVIEWER", "APPROVER")
+	h.user("eyes-signer", "APPROVER")
+	author := h.login("eyes-author")
+	judge := h.login("eyes-judge")
+	signer := h.login("eyes-signer")
+	var judgeID string
+	if err := h.db.Pool.QueryRow(ctx, `SELECT id FROM users WHERE username='eyes-judge'`).Scan(&judgeID); err != nil {
+		t.Fatal(err)
+	}
+
+	reviewID := author.createReview("두 번째 눈 서비스")
+	itemID := firstItemID(t, h, reviewID)
+	if _, err := h.db.Pool.Exec(ctx, `UPDATE review_requests SET reviewer_id=$2,approver_id=$2,status='REVIEWING' WHERE id=$1`, reviewID, judgeID); err != nil {
+		t.Fatal(err)
+	}
+	if res := judge.do(http.MethodPut, "/api/v1/review-requests/"+reviewID+"/review-results/"+itemID,
+		map[string]any{"result": "COMPLIANT", "opinion": "제가 판정했습니다", "expected_updated_at": ""}); res.status != http.StatusOK {
+		t.Fatalf("recording a verdict: %d %s", res.status, res.body)
+	}
+	if _, err := h.db.Pool.Exec(ctx, `UPDATE review_requests SET status='APPROVAL_PENDING',final_result='APPROVED',final_opinion='통과' WHERE id=$1`, reviewID); err != nil {
+		t.Fatal(err)
+	}
+
+	// The button is not offered to the person who judged it...
+	detail := judge.do(http.MethodGet, "/api/v1/review-requests/"+reviewID, nil).json()
+	if detail["can_approve"] != false {
+		t.Errorf("the reviewer is offered the approval button on their own verdicts: %v", detail["can_approve"])
+	}
+	// ...and the server refuses if they ask anyway.
+	res := judge.do(http.MethodPost, "/api/v1/review-requests/"+reviewID+"/approve", map[string]any{"comment": "제가 승인합니다"})
+	if res.status != http.StatusForbidden || res.errorCode() != "SELF_APPROVAL_FORBIDDEN" {
+		t.Fatalf("the reviewer approved their own verdicts: %d %s", res.status, res.body)
+	}
+	var status string
+	if err := h.db.Pool.QueryRow(ctx, `SELECT status FROM review_requests WHERE id=$1`, reviewID).Scan(&status); err != nil {
+		t.Fatal(err)
+	}
+	if status != "APPROVAL_PENDING" {
+		t.Fatalf("the refused approval still moved the review to %s", status)
+	}
+
+	// The review does not get stuck: with the named approver unable to act,
+	// another approver may step in, which is the rule for any approver who
+	// cannot act on a review.
+	other := signer.do(http.MethodGet, "/api/v1/review-requests/"+reviewID, nil).json()
+	if other["approver_can_act"] != false {
+		t.Errorf("the screen still says the named approver can act: %v", other["approver_can_act"])
+	}
+	if other["can_approve"] != true {
+		t.Fatalf("no other approver may sign it either, so it is stuck: %v", other["can_approve"])
+	}
+	if res := signer.do(http.MethodPost, "/api/v1/review-requests/"+reviewID+"/approve", map[string]any{"comment": "제3자 결재"}); res.status != http.StatusOK {
+		t.Fatalf("another approver signing it off: %d %s", res.status, res.body)
+	}
+
+	// A one-person installation says so deliberately, and then the same
+	// account may do both -- the same escape hatch as self-review.
+	// The signature moved the seat to whoever gave it, which is the rule for
+	// any stand-in; put it back to test the one-person case.
+	if _, err := h.db.Pool.Exec(ctx, `UPDATE review_requests SET status='APPROVAL_PENDING',approver_id=$2 WHERE id=$1`, reviewID, judgeID); err != nil {
+		t.Fatal(err)
+	}
+	if res := h.login(adminOf(h)).do(http.MethodPut, "/api/v1/admin/settings/workflow", map[string]any{"allow_self_review": true, "approval_enabled": true}); res.status != http.StatusOK {
+		t.Fatalf("allowing self review: %d %s", res.status, res.body)
+	}
+	if res := judge.do(http.MethodPost, "/api/v1/review-requests/"+reviewID+"/approve", map[string]any{"comment": "1인 운영"}); res.status != http.StatusOK {
+		t.Fatalf("with self review allowed, the reviewer still could not approve: %d %s", res.status, res.body)
+	}
+}

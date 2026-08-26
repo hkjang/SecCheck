@@ -587,9 +587,17 @@ func (s *Server) getReviewRequest(w http.ResponseWriter, r *http.Request) {
 	// your own request is refused whatever the role says.
 	approverID, _ := out["approver_id"].(string)
 	status, _ := out["status"].(string)
+	// A named approver who judged the review themselves counts as unable to
+	// act, so it goes to the other approvers rather than waiting for a
+	// signature nobody may give.
+	if approverCanAct && approverID != "" && s.ownVerdictBlocked(r.Context(), r.PathValue("id"), approverID) {
+		approverCanAct = false
+		out["approver_can_act"] = false
+	}
 	out["can_approve"] = status == "APPROVAL_PENDING" && hasAnyRole(session(r).User, "APPROVER") &&
 		(approverID == session(r).User.ID || !approverCanAct) &&
-		!s.selfReviewBlocked(r.Context(), r.PathValue("id"), session(r).User.ID)
+		!s.selfReviewBlocked(r.Context(), r.PathValue("id"), session(r).User.ID) &&
+		!s.ownVerdictBlocked(r.Context(), r.PathValue("id"), session(r).User.ID)
 	versions, err := s.snapshotTemplateVersions(r, r.PathValue("id"))
 	if err != nil {
 		s.fault(w, r, "QUERY_FAILED", "템플릿 버전을 확인하지 못했습니다.", err)
@@ -2328,6 +2336,35 @@ func (s *Server) closeReview(w http.ResponseWriter, r *http.Request) {
 	jsonResponse(w, 200, map[string]string{"status": "CLOSED"})
 }
 
+// ownVerdictBlocked reports whether this person is being asked to sign off
+// their own judgement. The approval step exists to put a second pair of eyes
+// on a completed review, and the rule that stops a requester approving their
+// own request said nothing about the reviewer: the same account could judge
+// every item and then approve the result, which is the approval step doing
+// nothing while looking as though it had done something. An installation
+// small enough that one person must do both can allow it with the same
+// setting that allows self-review.
+func (s *Server) ownVerdictBlocked(ctx context.Context, reviewID, userID string) bool {
+	var workflow struct {
+		AllowSelfReview bool `json:"allow_self_review"`
+	}
+	_, _ = s.Store.Setting(ctx, "workflow", &workflow)
+	if workflow.AllowSelfReview {
+		return false
+	}
+	var judged bool
+	if err := s.Store.Pool.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM review_requests r WHERE r.id=$1 AND r.reviewer_id=$2)
+                OR EXISTS(SELECT 1 FROM review_results rr
+                        JOIN submission_items si ON si.id=rr.submission_item_id
+                        JOIN submissions sub ON sub.id=si.submission_id
+                        WHERE sub.review_request_id=$1 AND rr.reviewer_id=$2)`, reviewID, userID).Scan(&judged); err != nil {
+		// A check that could not run has not passed: the review keeps waiting
+		// rather than being signed off by the person who judged it.
+		return true
+	}
+	return judged
+}
+
 // selfReviewBlocked reports whether this person may decide this review. The
 // person who asked for a review is not a neutral judge of it, which is the
 // premise the whole process rests on; an installation small enough that the
@@ -2372,6 +2409,12 @@ func (s *Server) decideApproval(w http.ResponseWriter, r *http.Request, decision
 		problem(w, 403, "SELF_REVIEW_FORBIDDEN", "본인이 신청한 심의는 본인이 승인할 수 없습니다. 다른 승인자를 지정하거나, 1인 운영이라면 서비스 설정에서 본인 심의 처리 허용을 켜십시오.", nil)
 		return
 	}
+	// Judging a review and then approving it is one pair of eyes wearing two
+	// hats, and the approval step exists to be a second look.
+	if s.ownVerdictBlocked(r.Context(), id, sess.User.ID) {
+		problem(w, 403, "SELF_APPROVAL_FORBIDDEN", "본인이 검토·판정한 심의는 본인이 최종 승인할 수 없습니다. 다른 승인자가 결재하거나, 1인 운영이라면 서비스 설정에서 본인 심의 처리 허용을 켜십시오.", nil)
+		return
+	}
 	// The approvals row is the decision itself -- who, what and why. Writing
 	// it after the status had committed, with the error discarded, allowed a
 	// review to read APPROVED with no record of anyone approving it.
@@ -2381,7 +2424,7 @@ func (s *Server) decideApproval(w http.ResponseWriter, r *http.Request, decision
 		return
 	}
 	defer tx.Rollback(r.Context())
-	tag, err := tx.Exec(r.Context(), `UPDATE review_requests SET status=$2,approver_id=CASE WHEN approver_id IS NULL OR NOT `+stillHolds("approver_id", "APPROVER")+` THEN $3 ELSE approver_id END,final_result=CASE WHEN $2='REJECTED' THEN 'REJECTED' ELSE final_result END,approved_at=CASE WHEN $2='APPROVED' THEN now() ELSE approved_at END,updated_at=now() WHERE id=$1 AND status='APPROVAL_PENDING' AND (approver_id=$3 OR ((approver_id IS NULL OR NOT `+stillHolds("approver_id", "APPROVER")+`) AND $4))`, id, decision, sess.User.ID, anyApprover)
+	tag, err := tx.Exec(r.Context(), `UPDATE review_requests SET status=$2,approver_id=CASE WHEN approver_id IS NULL OR NOT `+stillHolds("approver_id", "APPROVER")+` OR `+approverJudgedItSQL+` THEN $3 ELSE approver_id END,final_result=CASE WHEN $2='REJECTED' THEN 'REJECTED' ELSE final_result END,approved_at=CASE WHEN $2='APPROVED' THEN now() ELSE approved_at END,updated_at=now() WHERE id=$1 AND status='APPROVAL_PENDING' AND (approver_id=$3 OR ((approver_id IS NULL OR NOT `+stillHolds("approver_id", "APPROVER")+` OR `+approverJudgedItSQL+`) AND $4))`, id, decision, sess.User.ID, anyApprover)
 	if err != nil || tag.RowsAffected() == 0 {
 		problem(w, 409, "STATE_CONFLICT", "승인 처리할 수 없습니다.", nil)
 		return
@@ -2727,7 +2770,7 @@ func (s *Server) canAccessReview(ctx context.Context, sess auth.Session, id stri
 	_ = s.Store.Pool.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM review_requests r WHERE r.id=$1 AND (
                 r.requester_id=$2 OR r.builder_id=$2 OR r.developer_id=$2 OR r.operator_id=$2 OR r.reviewer_id=$2 OR r.approver_id=$2
                 OR EXISTS(SELECT 1 FROM review_participants p WHERE p.review_request_id=r.id AND p.user_id=$2)
-                OR ($3::bool AND r.status='APPROVAL_PENDING' AND (r.approver_id IS NULL OR NOT `+stillHolds("r.approver_id", "APPROVER")+`))))`,
+                OR ($3::bool AND r.status='APPROVAL_PENDING' AND (r.approver_id IS NULL OR NOT `+stillHolds("r.approver_id", "APPROVER")+` OR `+strings.ReplaceAll(approverJudgedItSQL, "review_requests.", "r.")+`))))`,
 		id, sess.User.ID, hasAnyRole(sess.User, "APPROVER")).Scan(&ok)
 	return ok
 }

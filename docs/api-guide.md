@@ -103,6 +103,7 @@ Authorization: Bearer sck_a1b2c3d4_xxxxxxxxxxxxxxxxxxxxxxxxxxxx
 | `API_SCOPE_FORBIDDEN` | API 키의 scope로는 허용되지 않는 작업입니다 |
 | `FORBIDDEN` | 권한이 없거나 대상 심의에 참여하지 않습니다 |
 | `SELF_REVIEW_FORBIDDEN` | 본인이 신청한 심의는 본인이 검토·승인할 수 없습니다 |
+| `SELF_APPROVAL_FORBIDDEN` | 본인이 검토·판정한 심의는 본인이 최종 승인할 수 없습니다 |
 | `EXTERNAL_ACCOUNT` | 외부(OIDC) 계정에는 적용할 수 없는 작업입니다 |
 | `SELF_LOCKOUT` / `LAST_ADMIN_PROTECTION` | 자기 계정 비활성화·관리자 역할 제거는 막습니다 |
 | `CURRENT_SESSION` | 지금 사용 중인 세션은 종료 대상에서 제외됩니다 |
