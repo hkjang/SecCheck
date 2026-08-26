@@ -6621,3 +6621,80 @@ func TestAChecklistWithADeadRuleCannotBePublished(t *testing.T) {
 		t.Fatalf("publishing after the fix: %d %s", res.status, res.body)
 	}
 }
+
+// Publishing now refuses a rule the engine cannot read, but a checklist
+// published before that check -- or edited in the database since -- still
+// carries one, and an item that is never assigned to anything is invisible
+// precisely because nothing shows it.
+func TestDeadRulesAlreadyInProductionAreVisible(t *testing.T) {
+	h := newHarness(t)
+	admin := h.login(adminOf(h))
+	ctx := context.Background()
+
+	created := admin.do(http.MethodPost, "/api/v1/templates", map[string]any{"name": "규칙 점검 대상", "category": "DEVELOPMENT", "description": "", "version": "V1"})
+	if created.status != http.StatusCreated {
+		t.Fatalf("create template: %d %s", created.status, created.body)
+	}
+	templateID := created.json()["id"].(string)
+	var versionID string
+	if err := h.db.Pool.QueryRow(ctx, `SELECT id FROM checklist_versions WHERE template_id=$1`, templateID).Scan(&versionID); err != nil {
+		t.Fatal(err)
+	}
+	for _, code := range []string{"LIVE-1", "LIVE-2"} {
+		if res := admin.do(http.MethodPost, fmt.Sprintf("/api/v1/templates/%s/versions/%s/items", templateID, versionID),
+			map[string]any{"item_code": code, "title": code, "question": "질문", "category": "DEVELOPMENT", "severity": "MEDIUM", "answer_type": "YNNA", "sort_order": 1}); res.status != http.StatusCreated {
+			t.Fatalf("add %s: %d %s", code, res.status, res.body)
+		}
+	}
+	if res := admin.do(http.MethodPost, fmt.Sprintf("/api/v1/templates/%s/versions/%s/publish", templateID, versionID), nil); res.status >= 300 {
+		t.Fatalf("publish: %d %s", res.status, res.body)
+	}
+
+	check := func() (float64, []any) {
+		t.Helper()
+		res := admin.do(http.MethodGet, "/api/v1/templates/"+templateID+"/rule-check", nil)
+		if res.status != http.StatusOK {
+			t.Fatalf("rule check: %d %s", res.status, res.body)
+		}
+		items, _ := res.json()["items"].([]any)
+		return res.json()["total"].(float64), items
+	}
+	listed := func() float64 {
+		t.Helper()
+		res := admin.do(http.MethodGet, "/api/v1/templates?limit=200", nil)
+		if res.status != http.StatusOK {
+			t.Fatalf("template list: %d %s", res.status, res.body)
+		}
+		for _, raw := range res.json()["items"].([]any) {
+			row := raw.(map[string]any)
+			if row["id"] == templateID {
+				count, _ := row["broken_rules"].(float64)
+				return count
+			}
+		}
+		t.Fatal("the template is missing from the list")
+		return 0
+	}
+
+	if total, _ := check(); total != 0 {
+		t.Fatalf("a freshly published checklist reports %v dead rules", total)
+	}
+	if listed() != 0 {
+		t.Fatalf("the list reports %v dead rules for a clean template", listed())
+	}
+
+	// The kind of row a database edit or an older release could leave behind.
+	if _, err := h.db.Pool.Exec(ctx, `UPDATE checklist_items SET applicability_rule='{"field":"uses_teleporter","operator":"eq","value":true}'::jsonb WHERE version_id=$1 AND item_code='LIVE-2'`, versionID); err != nil {
+		t.Fatal(err)
+	}
+	total, items := check()
+	if total != 1 || len(items) != 1 {
+		t.Fatalf("the check reports %v dead rules", total)
+	}
+	if entry := items[0].(map[string]any); entry["item_code"] != "LIVE-2" || entry["reason"] == "" {
+		t.Fatalf("the check describes it as %v", entry)
+	}
+	if listed() != 1 {
+		t.Fatalf("the list reports %v dead rules after one was introduced", listed())
+	}
+}

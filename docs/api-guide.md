@@ -67,6 +67,7 @@ Authorization: Bearer sck_a1b2c3d4_xxxxxxxxxxxxxxxxxxxxxxxxxxxx
 | `GET` | `/security-controls` | 통합 Security Control 목록 및 영향 통계 | 전체 |
 | `GET` | `/security-controls/{id}/impact` | 특정 Control 변경 시 영향 받는 템플릿/심의 조회 | 전체 |
 | `GET` | `/templates` | 체크리스트 템플릿 목록 및 게시 버전 조회 | 전체 |
+| `GET` | `/templates/{id}/rule-check` | 게시된 체크리스트에서 규칙 오류로 배정되지 않는 항목 | `TEMPLATE_ADMIN`, `SECURITY_REVIEWER` |
 
 ---
 

@@ -179,6 +179,7 @@ func (s *Server) routes() {
 	s.handle("DELETE", "/api/v1/templates/{id}/versions/{versionID}/items/{itemID}", "템플릿", "초안 항목 삭제", []string{"TEMPLATE_ADMIN"}, false, s.deleteTemplateItem)
 	s.handle("POST", "/api/v1/templates/{id}/versions/{versionID}/publish", "템플릿", "버전 게시. 게시 후에는 수정 불가", []string{"TEMPLATE_ADMIN"}, false, s.publishVersion)
 	s.handle("POST", "/api/v1/templates/{id}/versions/{versionID}/retire", "템플릿", "버전 사용 중지", []string{"TEMPLATE_ADMIN"}, false, s.retireVersion)
+	s.handle("GET", "/api/v1/templates/{id}/rule-check", "템플릿", "게시된 체크리스트에서 규칙 오류로 배정되지 않는 항목", []string{"TEMPLATE_ADMIN", "SECURITY_REVIEWER"}, false, s.ruleCheck)
 	s.handle("GET", "/api/v1/templates/{id}/versions/{versionID}/diff", "템플릿", "이전 버전과의 항목 차이", nil, false, s.versionDiff)
 	s.handle("GET", "/api/v1/templates/{id}/versions/{versionID}/changes", "템플릿", "버전 변경 이력", nil, false, s.versionChanges)
 	s.handle("POST", "/api/v1/templates/rule-simulation", "템플릿", "서비스 특성별 자동 배정 시뮬레이션. 심의를 만들지 않음", []string{"TEMPLATE_ADMIN", "SECURITY_REVIEWER", "REQUESTER"}, false, s.simulateRules)

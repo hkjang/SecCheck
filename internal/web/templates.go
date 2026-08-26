@@ -59,6 +59,18 @@ func (s *Server) listTemplates(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	items, err := scanDynamic(rows, []string{"id", "name", "category", "description", "active", "created_at", "updated_at", "versions", "published_version", "published_items"})
+	if err == nil {
+		// A rule the engine cannot read means the item is never assigned to
+		// anything, which is the one kind of gap a checklist cannot show by
+		// itself. Counted here so the list can say it without the reader
+		// running a simulation per template.
+		if counts, countErr := s.brokenRuleCounts(r.Context()); countErr == nil {
+			for _, item := range items {
+				id, _ := item["id"].(string)
+				item["broken_rules"] = counts[id]
+			}
+		}
+	}
 	if err != nil {
 		s.fault(w, r, "QUERY_FAILED", "템플릿을 불러오지 못했습니다.", err)
 		return
@@ -602,6 +614,59 @@ func (s *Server) publishVersion(w http.ResponseWriter, r *http.Request) {
 	}
 	_ = s.Store.Audit(r.Context(), auditFrom(r, "PUBLISH_TEMPLATE", "CHECKLIST_VERSION", vid, nil, map[string]any{"items": count}))
 	jsonResponse(w, 200, map[string]string{"status": "PUBLISHED"})
+}
+
+// brokenRuleCounts is the same check as ruleCheck for every template at once,
+// in one query rather than one per row.
+func (s *Server) brokenRuleCounts(ctx context.Context) (map[string]int, error) {
+	rows, err := s.Store.Pool.Query(ctx, `SELECT t.id,COALESCE(i.applicability_rule,'{}'::jsonb)
+                FROM checklist_templates t
+                JOIN checklist_versions v ON v.id=(SELECT v2.id FROM checklist_versions v2 WHERE v2.template_id=t.id AND v2.status='PUBLISHED' ORDER BY v2.published_at DESC NULLS LAST,v2.created_at DESC LIMIT 1)
+                JOIN checklist_items i ON i.version_id=v.id`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	vocabulary := ruleVocabulary()
+	out := map[string]int{}
+	for rows.Next() {
+		var id string
+		var rule []byte
+		if err = rows.Scan(&id, &rule); err != nil {
+			return nil, err
+		}
+		if len(rule) == 0 || string(rule) == "{}" || string(rule) == "null" {
+			continue
+		}
+		var node any
+		if json.Unmarshal(rule, &node) != nil || validateRule(node, vocabulary) != nil {
+			out[id]++
+		}
+	}
+	return out, rows.Err()
+}
+
+// ruleCheck reports the items of a template's published checklist whose
+// applicability rule the engine cannot read. Publishing refuses such a rule
+// now, but a checklist published before that check -- or edited in the
+// database since -- can still carry one, and an item that is never assigned to
+// anything is invisible precisely because nothing shows it.
+func (s *Server) ruleCheck(w http.ResponseWriter, r *http.Request) {
+	var versionID string
+	if err := s.Store.Pool.QueryRow(r.Context(), `SELECT COALESCE((SELECT v.id FROM checklist_versions v WHERE v.template_id=$1 AND v.status='PUBLISHED' ORDER BY v.published_at DESC NULLS LAST,v.created_at DESC LIMIT 1),'') FROM checklist_templates t WHERE t.id=$1`, r.PathValue("id")).Scan(&versionID); err != nil {
+		problem(w, 404, "NOT_FOUND", "템플릿을 찾을 수 없습니다.", nil)
+		return
+	}
+	if versionID == "" {
+		jsonResponse(w, 200, map[string]any{"items": []any{}, "total": 0, "published": false})
+		return
+	}
+	broken, err := s.itemsWithBrokenRules(r.Context(), versionID)
+	if err != nil {
+		s.fault(w, r, "QUERY_FAILED", "적용 규칙을 확인하지 못했습니다.", err)
+		return
+	}
+	jsonResponse(w, 200, map[string]any{"items": broken, "total": len(broken), "published": true, "version_id": versionID})
 }
 
 // itemsWithBrokenRules names the items whose applicability rule the engine

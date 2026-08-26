@@ -114,6 +114,7 @@ export type Template = {
   versions: TemplateVersion[]
   published_version?: string
   published_items?: number
+  broken_rules?: number
 }
 
 export type TemplateVersion = {
