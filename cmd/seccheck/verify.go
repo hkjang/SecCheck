@@ -4,10 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"io/fs"
 	"os"
-	"path/filepath"
-	"sort"
 	"strings"
 	"time"
 
@@ -20,43 +17,16 @@ import (
 // findOrphans lists encrypted files on the volume that no evidence version
 // refers to. They are reported rather than deleted: an unexpected file on a
 // storage volume is something an operator should look at, not something a
-// maintenance job should quietly remove.
+// maintenance job should quietly remove. What counts as an orphan is defined
+// once, beside the vault that owns the directory, so this check and the
+// hourly one cannot drift apart.
 func findOrphans(ctx context.Context, db *store.Store, dataDir string, sampled bool) ([]string, int64) {
 	if sampled {
 		// A sample says nothing about which files are unreferenced.
 		return nil, 0
 	}
-	known := map[string]bool{}
-	rows, err := db.Pool.Query(ctx, `SELECT stored_filename FROM evidence_versions UNION SELECT stored_filename FROM evidences`)
-	if err != nil {
-		return nil, 0
-	}
-	for rows.Next() {
-		var name string
-		if rows.Scan(&name) == nil {
-			known[name] = true
-		}
-	}
-	rows.Close()
-
-	var orphans []string
-	var bytes int64
-	root := filepath.Join(dataDir, "evidence")
-	_ = filepath.WalkDir(root, func(path string, entry fs.DirEntry, err error) error {
-		if err != nil || entry.IsDir() {
-			return nil
-		}
-		if known[entry.Name()] {
-			return nil
-		}
-		if info, statErr := entry.Info(); statErr == nil {
-			bytes += info.Size()
-		}
-		orphans = append(orphans, path)
-		return nil
-	})
-	sort.Strings(orphans)
-	return orphans, bytes
+	paths, bytes, _ := vault.New(dataDir, nil, db).OrphanBlobs(ctx, 0, 0)
+	return paths, bytes
 }
 
 // verifyEvidence walks every stored evidence file, decrypts it and compares

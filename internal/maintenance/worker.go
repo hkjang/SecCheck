@@ -23,6 +23,10 @@ import (
 // service treats it as stuck.
 const StalledReviewDays = 3
 
+// orphanScanLimit bounds the directory walk: past this many files the count is
+// a signal rather than an inventory, and the sweep has other work to do.
+const orphanScanLimit = 20000
+
 // StalledStatuses are the states in which a review is waiting on a person
 // rather than on work in progress. Sharing the days but not the states left
 // exactly the discrepancy the shared constant exists to prevent: the sweep
@@ -115,8 +119,13 @@ func (w *Worker) Sweep(ctx context.Context) map[string]int64 {
 	removed["audit_chain_checked"] = w.verifyAuditChain(ctx)
 	removed["api_key_reminders"] = w.remindExpiringAPIKeys(ctx)
 	removed["purged_evidence_files"] = w.purgeDeletedEvidence(ctx)
+	removed["orphan_evidence_files"] = w.countOrphanBlobs(ctx)
 	total := int64(0)
-	for _, n := range removed {
+	for name, n := range removed {
+		// An orphan count is a finding, not something the sweep removed.
+		if name == "orphan_evidence_files" {
+			continue
+		}
 		total += n
 	}
 	if total > 0 {
@@ -895,6 +904,23 @@ func (w *Worker) purgeDeletedEvidence(ctx context.Context) int64 {
 // remindDueChangeRequests notifies the assignee once when a change request is
 // close to its due date or already late. The due date was captured from the
 // start but nothing ever acted on it.
+// countOrphanBlobs answers "why is the disk filling up". The definition of an
+// orphan lives with the vault, which owns the directory, so the hourly report
+// and `seccheck verify-evidence` cannot disagree about what one is. The sweep
+// asks for a bounded walk and skips anything written in the last day, which
+// may be an upload still in flight.
+func (w *Worker) countOrphanBlobs(ctx context.Context) int64 {
+	if w.Vault == nil {
+		return 0
+	}
+	paths, bytes, scanned := w.Vault.OrphanBlobs(ctx, 24*time.Hour, orphanScanLimit)
+	if len(paths) > 0 {
+		w.Store.Log(ctx, "WARN", "", "maintenance", "데이터베이스에 기록이 없는 증적 파일이 있습니다. 저장 공간을 차지하지만 어떤 심의에서도 열리지 않습니다.",
+			map[string]any{"orphan_files": len(paths), "orphan_bytes": bytes, "scanned_files": scanned})
+	}
+	return int64(len(paths))
+}
+
 // A cancelled review is a service that is not being built, so the reminders
 // hanging off it are addressed to nobody: the correction cannot be carried out
 // and the review cannot be reopened. They kept going out every three days

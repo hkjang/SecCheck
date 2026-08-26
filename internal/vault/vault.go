@@ -12,9 +12,12 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
+	"time"
 
 	"github.com/hkjang/SecCheck/internal/cryptox"
 	"github.com/hkjang/SecCheck/internal/store"
@@ -166,6 +169,59 @@ type Storage struct {
 // Space probes the evidence volume: whether it can be written to at all, and
 // how much room is left. The write probe is the honest test -- a read-only
 // mount and a full disk both report plenty of inodes.
+// OrphanBlobs lists stored files that no evidence row points at. Every path
+// that writes a blob deletes it again if the database write fails, but a
+// machine that stops between the two leaves a file nothing can reach: it is
+// never read, never purged -- the purge works from the rows -- and until now
+// never counted either, so a full volume had no explanation.
+//
+// olderThan skips files written recently, which may belong to an upload still
+// in flight; limit bounds the walk for the hourly sweep. Both are zero for the
+// command-line check, where the operator is asking for the whole picture.
+// Nothing is deleted here: removing a file the service does not recognise is a
+// worse failure than the one it would be fixing.
+func (v *Vault) OrphanBlobs(ctx context.Context, olderThan time.Duration, limit int) (paths []string, bytes int64, scanned int) {
+	known := map[string]bool{}
+	rows, err := v.Store.Pool.Query(ctx, `SELECT stored_filename FROM evidence_versions UNION SELECT stored_filename FROM evidences`)
+	if err != nil {
+		return nil, 0, 0
+	}
+	for rows.Next() {
+		var name string
+		if rows.Scan(&name) == nil {
+			known[name] = true
+		}
+	}
+	rows.Close()
+
+	cutoff := time.Now().Add(-olderThan)
+	root := filepath.Join(v.Dir, "evidence")
+	_ = filepath.WalkDir(root, func(path string, entry fs.DirEntry, err error) error {
+		if err != nil || entry.IsDir() {
+			return nil
+		}
+		if limit > 0 && scanned >= limit {
+			return fs.SkipAll
+		}
+		info, statErr := entry.Info()
+		if statErr != nil {
+			return nil
+		}
+		if olderThan > 0 && info.ModTime().After(cutoff) {
+			return nil
+		}
+		scanned++
+		if known[entry.Name()] {
+			return nil
+		}
+		bytes += info.Size()
+		paths = append(paths, path)
+		return nil
+	})
+	sort.Strings(paths)
+	return paths, bytes, scanned
+}
+
 func (v *Vault) Space() Storage {
 	dir := filepath.Join(v.Dir, "evidence")
 	out := Storage{Path: dir}

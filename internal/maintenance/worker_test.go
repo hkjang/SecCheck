@@ -1271,3 +1271,69 @@ func TestCancelledReviewsStopChasingPeople(t *testing.T) {
 		}
 	}
 }
+
+// Every path that writes a blob deletes it again if the database write fails,
+// but a machine that stops between the two leaves a file no row points at. It
+// is never read, never purged -- the purge works from the rows -- and never
+// counted, so the storage alert says the disk is filling up and nothing
+// accounts for it.
+func TestTheSweepReportsFilesNoReviewCanReach(t *testing.T) {
+	db := testdb.New(t)
+	ctx := context.Background()
+	dir := t.TempDir()
+	key, err := cryptox.RandomBytes(32)
+	if err != nil {
+		t.Fatal(err)
+	}
+	box, err := cryptox.New(key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	blobs := vault.New(dir, box, db)
+	owner := testdb.Bootstrap(t, db, "orphan-owner")
+	if err = blobs.EnsureUserKey(ctx, owner); err != nil {
+		t.Fatal(err)
+	}
+	userKey, version, err := blobs.ActiveUserKey(ctx, owner)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// One file the database knows about, one it does not, and one written
+	// moments ago -- which may be an upload still in flight.
+	known := store.NewID() + ".enc"
+	evidenceID := store.NewID()
+	if _, _, err = blobs.Write(known, userKey, vault.AAD(evidenceID, 1), strings.NewReader("정상 증적")); err != nil {
+		t.Fatal(err)
+	}
+	seedEvidenceRow(t, db, evidenceID, owner, known, version, 0)
+	if _, err = db.Pool.Exec(ctx, `UPDATE evidences SET deleted_at=NULL WHERE id=$1`, evidenceID); err != nil {
+		t.Fatal(err)
+	}
+	stray := store.NewID() + ".enc"
+	if _, _, err = blobs.Write(stray, userKey, vault.AAD(store.NewID(), 1), strings.NewReader("아무도 모르는 파일")); err != nil {
+		t.Fatal(err)
+	}
+	fresh := store.NewID() + ".enc"
+	if _, _, err = blobs.Write(fresh, userKey, vault.AAD(store.NewID(), 1), strings.NewReader("방금 올라온 파일")); err != nil {
+		t.Fatal(err)
+	}
+	yesterday := time.Now().Add(-48 * time.Hour)
+	for _, name := range []string{known, stray} {
+		if err = os.Chtimes(blobs.Path(name), yesterday, yesterday); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	removed := maintenance.New(db, blobs).Sweep(ctx)
+	if removed["orphan_evidence_files"] != 1 {
+		t.Fatalf("the sweep reports %d files no row points at, want 1 (the stray one)", removed["orphan_evidence_files"])
+	}
+	// Reporting is the whole job: a sweep that deletes files it does not
+	// recognise is a worse failure than the one it is fixing.
+	for _, name := range []string{known, stray, fresh} {
+		if _, err = os.Stat(blobs.Path(name)); err != nil {
+			t.Errorf("the sweep removed %s: %v", name, err)
+		}
+	}
+}

@@ -55,6 +55,7 @@ export default function SystemPage() {
       <div className="table-wrap"><table><tbody>
         <tr><th>마지막 완료</th><td>{upkeep?.last_run_at ? formatDate(upkeep.last_run_at, true) : '기록 없음'}</td></tr>
         <tr><th>수행 항목</th><td className="subtle">기한 알림 · 심의 정체 알림 · 증적 무결성 표본 검사 · 감사로그 체인 검증 · 보존 기간 정리 (매시간)</td></tr>
+        {Number(upkeep?.last_summary?.orphan_evidence_files || 0) > 0 && <tr><th>고아 증적 파일</th><td><Badge tone="amber">{upkeep?.last_summary?.orphan_evidence_files}건</Badge> 데이터베이스에 기록이 없는 파일이 저장소에 남아 있습니다. 어떤 심의에서도 열리지 않지만 공간은 차지합니다. 서버 로그의 <code>maintenance</code> 항목에서 검사 범위를 확인한 뒤, 백업을 마치고 정리하십시오. 서비스는 이런 파일을 스스로 지우지 않습니다.</td></tr>}
         {upkeepStale && <tr><th>확인</th><td>3시간 넘게 완료 기록이 없습니다. 서버 로그의 <code>maintenance</code> 항목과 데이터베이스 연결을 확인하세요. 이 상태에서는 알림과 무결성 검사가 모두 멈춰 있습니다.</td></tr>}
       </tbody></table></div>
     </section>
