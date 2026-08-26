@@ -1557,11 +1557,11 @@ func (s *Server) bulkSaveReviewResults(w http.ResponseWriter, r *http.Request) {
 	// so a bulk judgement cannot quietly replace one made item by item.
 	conflict := `ON CONFLICT(submission_item_id) DO NOTHING`
 	if in.Overwrite {
-		conflict = `ON CONFLICT(submission_item_id) DO UPDATE SET reviewer_id=EXCLUDED.reviewer_id,final_applicability=EXCLUDED.final_applicability,result=EXCLUDED.result,opinion=EXCLUDED.opinion,evidence_adequacy=EXCLUDED.evidence_adequacy,judged_answer=EXCLUDED.judged_answer,updated_at=now()`
+		conflict = `ON CONFLICT(submission_item_id) DO UPDATE SET reviewer_id=EXCLUDED.reviewer_id,final_applicability=EXCLUDED.final_applicability,result=EXCLUDED.result,opinion=EXCLUDED.opinion,evidence_adequacy=EXCLUDED.evidence_adequacy,judged_answer=EXCLUDED.judged_answer,updated_at=EXCLUDED.updated_at`
 	}
 	tag, err := s.Store.Pool.Exec(r.Context(), `
-                INSERT INTO review_results(id,submission_item_id,reviewer_id,final_applicability,result,opinion,evidence_adequacy,judged_answer)
-                SELECT gen_random_uuid()::text,si.id,$1,$2,$3,$4,$5,`+judgedAnswerSQL+`
+                INSERT INTO review_results(id,submission_item_id,reviewer_id,final_applicability,result,opinion,evidence_adequacy,judged_answer,updated_at)
+                SELECT gen_random_uuid()::text,si.id,$1,$2,$3,$4,$5,`+judgedAnswerSQL+`,`+judgedAtSQL+`
                 FROM submission_items si
                 JOIN submissions sub ON sub.id=si.submission_id
                 WHERE si.id = ANY($6) AND sub.review_request_id=$7
@@ -1575,6 +1575,19 @@ func (s *Server) bulkSaveReviewResults(w http.ResponseWriter, r *http.Request) {
 	_ = s.Store.Audit(r.Context(), auditFrom(r, "BULK_REVIEW_RESULT", "REVIEW_REQUEST", reviewID, nil, map[string]any{"items": len(in.ItemIDs), "applied": tag.RowsAffected(), "result": in.Result, "overwrite": in.Overwrite}))
 	jsonResponse(w, 200, map[string]any{"requested": len(in.ItemIDs), "applied": tag.RowsAffected(), "skipped": int64(len(in.ItemIDs)) - tag.RowsAffected()})
 }
+
+// judgedAtSQL stamps a verdict as being at least as new as the answer and the
+// evidence it was formed on. The staleness rule -- a verdict older than what
+// it judged is not a verdict -- compares wall-clock timestamps, and a clock
+// that steps backwards (a virtual machine resynchronising with its host is the
+// ordinary way this happens) can stamp a fresh judgement before the answer it
+// just read. The reviewer then re-judges the item, watches nothing change, and
+// cannot complete the review at all. Taking the later of the two costs nothing
+// when the clock behaves and keeps the rule honest when it does not: the
+// reviewer really did read the current answer.
+const judgedAtSQL = `GREATEST(now(),
+                COALESCE((SELECT resp.updated_at FROM responses resp WHERE resp.submission_item_id=si.id), now()),
+                COALESCE(evidence_touched_at(si.id), now()))`
 
 // markFollowUp records that an action promised at review time was carried
 // out, or takes that back. The register that collects these promises could
@@ -1766,7 +1779,7 @@ func (s *Server) saveReviewResult(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var savedAt time.Time
-	err := s.Store.Pool.QueryRow(r.Context(), `INSERT INTO review_results(id,submission_item_id,reviewer_id,final_applicability,result,opinion,evidence_adequacy,na_approved,follow_up,follow_up_due_date,judged_answer) SELECT $1,si.id,$2,$3,$4,$5,$6,$7,$8,NULLIF($11,'')::date,`+judgedAnswerSQL+` FROM submission_items si JOIN submissions sub ON sub.id=si.submission_id JOIN review_requests rq ON rq.id=sub.review_request_id WHERE si.id=$9 AND sub.review_request_id=$10 AND rq.status='REVIEWING' AND sub.revision=(SELECT max(revision) FROM submissions WHERE review_request_id=$10) ON CONFLICT(submission_item_id) DO UPDATE SET reviewer_id=EXCLUDED.reviewer_id,final_applicability=EXCLUDED.final_applicability,result=EXCLUDED.result,opinion=EXCLUDED.opinion,evidence_adequacy=EXCLUDED.evidence_adequacy,na_approved=EXCLUDED.na_approved,follow_up=EXCLUDED.follow_up,follow_up_due_date=EXCLUDED.follow_up_due_date,judged_answer=EXCLUDED.judged_answer,updated_at=now() RETURNING updated_at`, store.NewID(), session(r).User.ID, in.FinalApplicability, in.Result, in.Opinion, in.EvidenceAdequacy, in.NAApproved, in.FollowUp, itemID, id, strings.TrimSpace(in.FollowUpDueDate)).Scan(&savedAt)
+	err := s.Store.Pool.QueryRow(r.Context(), `INSERT INTO review_results(id,submission_item_id,reviewer_id,final_applicability,result,opinion,evidence_adequacy,na_approved,follow_up,follow_up_due_date,judged_answer,updated_at) SELECT $1,si.id,$2,$3,$4,$5,$6,$7,$8,NULLIF($11,'')::date,`+judgedAnswerSQL+`,`+judgedAtSQL+` FROM submission_items si JOIN submissions sub ON sub.id=si.submission_id JOIN review_requests rq ON rq.id=sub.review_request_id WHERE si.id=$9 AND sub.review_request_id=$10 AND rq.status='REVIEWING' AND sub.revision=(SELECT max(revision) FROM submissions WHERE review_request_id=$10) ON CONFLICT(submission_item_id) DO UPDATE SET reviewer_id=EXCLUDED.reviewer_id,final_applicability=EXCLUDED.final_applicability,result=EXCLUDED.result,opinion=EXCLUDED.opinion,evidence_adequacy=EXCLUDED.evidence_adequacy,na_approved=EXCLUDED.na_approved,follow_up=EXCLUDED.follow_up,follow_up_due_date=EXCLUDED.follow_up_due_date,judged_answer=EXCLUDED.judged_answer,updated_at=EXCLUDED.updated_at RETURNING updated_at`, store.NewID(), session(r).User.ID, in.FinalApplicability, in.Result, in.Opinion, in.EvidenceAdequacy, in.NAApproved, in.FollowUp, itemID, id, strings.TrimSpace(in.FollowUpDueDate)).Scan(&savedAt)
 	if err != nil {
 		problem(w, 404, "NOT_FOUND", "검토 항목을 찾을 수 없습니다.", nil)
 		return

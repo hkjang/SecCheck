@@ -518,8 +518,26 @@ func TestCompletingAReviewCatchesVerdictsTheAuthorEditedAway(t *testing.T) {
 		step(reviewer, http.MethodPut, "/api/v1/review-requests/"+reviewID+"/review-results/"+itemID,
 			map[string]any{"final_applicability": "Y", "result": "COMPLIANT", "opinion": "바뀐 내용도 적합", "evidence_adequacy": "ADEQUATE"}, http.StatusOK, "re-judge the changed item")
 	}
-	step(reviewer, http.MethodPost, "/api/v1/review-requests/"+reviewID+"/complete-review",
-		map[string]any{"final_opinion": "적합", "final_result": "APPROVED"}, http.StatusOK, "complete review after re-judging")
+	if res := reviewer.do(http.MethodPost, "/api/v1/review-requests/"+reviewID+"/complete-review",
+		map[string]any{"final_opinion": "적합", "final_result": "APPROVED"}); res.status != http.StatusOK {
+		rows, qErr := h.db.Pool.Query(ctx, `SELECT si.item_code,resp.updated_at,rr.updated_at,evidence_touched_at(si.id)
+                        FROM submissions sub JOIN submission_items si ON si.submission_id=sub.id
+                        JOIN responses resp ON resp.submission_item_id=si.id
+                        LEFT JOIN review_results rr ON rr.submission_item_id=si.id
+                        WHERE sub.review_request_id=$1 AND si.id = ANY($2) ORDER BY si.item_code`, reviewID, ids[:3])
+		if qErr == nil {
+			for rows.Next() {
+				var code string
+				var answered, judged time.Time
+				var evidence *time.Time
+				if rows.Scan(&code, &answered, &judged, &evidence) == nil {
+					t.Logf("%s answered=%s judged=%s evidence=%v", code, answered.Format(time.RFC3339Nano), judged.Format(time.RFC3339Nano), evidence)
+				}
+			}
+			rows.Close()
+		}
+		t.Fatalf("complete review after re-judging: %d %s", res.status, res.body)
+	}
 }
 
 // A reviewer who loses the role -- a transfer, a leaver, a corrected mistake --
@@ -1515,5 +1533,75 @@ func TestAReviewComingBackIsAlwaysARresubmission(t *testing.T) {
 	}
 	if len(events) != 2 || events[0] != "SUBMIT" || events[1] != "RESUBMIT" {
 		t.Fatalf("the audit log records %v, want [SUBMIT RESUBMIT]", events)
+	}
+}
+
+// A verdict is refused as stale when the answer it judged is newer than it,
+// which is a comparison of two wall-clock stamps. A clock that steps
+// backwards -- a virtual machine resynchronising with its host is the ordinary
+// way this happens -- can stamp a fresh judgement before the answer the
+// reviewer has just read: the item stays flagged, re-judging changes nothing
+// visible, and the review can never be completed. The judgement is stamped no
+// earlier than what it judges, so the remedy always works.
+func TestReJudgingAlwaysClearsTheStaleFlag(t *testing.T) {
+	h := newHarness(t)
+	ctx := context.Background()
+	h.user("clock-author", "REQUESTER")
+	h.user("clock-reviewer", "SECURITY_REVIEWER")
+	author, reviewer := h.login("clock-author"), h.login("clock-reviewer")
+	var reviewerID string
+	if err := h.db.Pool.QueryRow(ctx, `SELECT id FROM users WHERE username='clock-reviewer'`).Scan(&reviewerID); err != nil {
+		t.Fatal(err)
+	}
+
+	reviewID := author.createReview("시계 서비스")
+	itemID := firstItemID(t, h, reviewID)
+	if res := author.do(http.MethodPut, "/api/v1/review-requests/"+reviewID+"/responses/"+itemID,
+		map[string]any{"applicability": "Y", "self_assessment": "COMPLIANT", "current_state": "작성", "expected_updated_at": ""}); res.status != http.StatusOK {
+		t.Fatalf("answering: %d %s", res.status, res.body)
+	}
+	if _, err := h.db.Pool.Exec(ctx, `UPDATE review_requests SET reviewer_id=$2,status='REVIEWING' WHERE id=$1`, reviewID, reviewerID); err != nil {
+		t.Fatal(err)
+	}
+	// The answer carries a stamp from the far side of a clock step. Nothing
+	// else about the review is unusual: this is what the reviewer's own
+	// judgement would look like a moment later on a clock that jumped back.
+	if _, err := h.db.Pool.Exec(ctx, `UPDATE responses SET updated_at=now()+interval '30 seconds' WHERE submission_item_id=$1`, itemID); err != nil {
+		t.Fatal(err)
+	}
+
+	if res := reviewer.do(http.MethodPut, "/api/v1/review-requests/"+reviewID+"/review-results/"+itemID,
+		map[string]any{"final_applicability": "Y", "result": "COMPLIANT", "opinion": "읽고 판정했습니다", "evidence_adequacy": "ADEQUATE", "expected_updated_at": ""}); res.status != http.StatusOK {
+		t.Fatalf("judging: %d %s", res.status, res.body)
+	}
+	items := []map[string]any{}
+	if err := json.Unmarshal([]byte(reviewer.do(http.MethodGet, "/api/v1/review-requests/"+reviewID+"/items", nil).body), &items); err != nil {
+		t.Fatal(err)
+	}
+	for _, item := range items {
+		if item["id"] != itemID {
+			continue
+		}
+		if stale, _ := item["stale_verdict"].(bool); stale {
+			var answered, judged time.Time
+			_ = h.db.Pool.QueryRow(ctx, `SELECT resp.updated_at,rr.updated_at FROM responses resp JOIN review_results rr ON rr.submission_item_id=resp.submission_item_id WHERE resp.submission_item_id=$1`, itemID).Scan(&answered, &judged)
+			t.Fatalf("the item the reviewer just judged is still flagged as judged-before-answered (answer %s, verdict %s)", answered, judged)
+		}
+	}
+	// And the same has to hold for the bulk path, which is how a reviewer
+	// clears a long checklist.
+	if _, err := h.db.Pool.Exec(ctx, `UPDATE responses SET updated_at=now()+interval '30 seconds' WHERE submission_item_id=$1`, itemID); err != nil {
+		t.Fatal(err)
+	}
+	if res := reviewer.do(http.MethodPost, "/api/v1/review-requests/"+reviewID+"/review-results/bulk",
+		map[string]any{"item_ids": []string{itemID}, "result": "COMPLIANT", "opinion": "일괄 재판정", "overwrite": true}); res.status != http.StatusOK {
+		t.Fatalf("bulk re-judging: %d %s", res.status, res.body)
+	}
+	var stillStale bool
+	if err := h.db.Pool.QueryRow(ctx, `SELECT resp.updated_at > rr.updated_at FROM responses resp JOIN review_results rr ON rr.submission_item_id=resp.submission_item_id WHERE resp.submission_item_id=$1`, itemID).Scan(&stillStale); err != nil {
+		t.Fatal(err)
+	}
+	if stillStale {
+		t.Error("a bulk judgement was stamped before the answer it judged")
 	}
 }
