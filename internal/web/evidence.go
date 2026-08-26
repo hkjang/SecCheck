@@ -496,6 +496,50 @@ func (s *Server) itemBelongsToLatestSubmission(ctx context.Context, itemID, revi
 // row's own binding, so the archive keeps the same one-file-one-key rule the
 // upload path establishes, and the digest is checked to prove the copy is
 // faithful.
+// listCarryOverEvidence answers "what did we attach to this last time" for an
+// item that is being filled in. The files were reachable only through the
+// previous-verdict panel, which appears only once an earlier review has judged
+// that item -- so a service whose last review was cancelled, or is still in
+// progress, or was approved without an individual verdict on this item, had
+// attachments nobody could see or carry forward even though the rule for
+// carrying them never mentioned a verdict.
+func (s *Server) listCarryOverEvidence(w http.ResponseWriter, r *http.Request) {
+	reviewID, itemID := r.PathValue("id"), r.PathValue("itemID")
+	sess := session(r)
+	if !s.canAccessReview(r.Context(), sess, reviewID) || !s.itemBelongsToReview(r.Context(), itemID, reviewID) {
+		problem(w, 404, "NOT_FOUND", "체크리스트 항목을 찾을 수 없습니다.", nil)
+		return
+	}
+	where, args := accessFilter(sess, 3)
+	if hasAnyRole(sess.User, "SECURITY_REVIEWER", "AUDITOR") {
+		where = "TRUE"
+		args = nil
+	}
+	rows, err := s.Store.Pool.Query(r.Context(), `SELECT review_requests.id AS review_id,review_requests.review_number,review_requests.status,
+                to_char(display_date(COALESCE(review_requests.approved_at,review_requests.updated_at)),'YYYY-MM-DD') AS decided_on,
+                e.id,e.original_filename,e.size_bytes,e.mime_type
+                FROM evidences e
+                JOIN submission_items si ON si.id=e.submission_item_id
+                JOIN submissions sub ON sub.id=si.submission_id
+                JOIN review_requests ON review_requests.id=sub.review_request_id
+                WHERE e.deleted_at IS NULL AND e.scan_status IN ('CLEAN','SKIPPED') AND review_requests.id<>$1
+                  AND si.item_code=(SELECT item_code FROM submission_items WHERE id=$2)
+                  AND review_requests.service_name=(SELECT service_name FROM review_requests WHERE id=$1)
+                  AND `+where+`
+                ORDER BY COALESCE(review_requests.approved_at,review_requests.updated_at) DESC,e.created_at LIMIT 50`,
+		append([]any{reviewID, itemID}, args...)...)
+	if err != nil {
+		s.fault(w, r, "QUERY_FAILED", "이전 증적을 불러오지 못했습니다.", err)
+		return
+	}
+	files, err := scanDynamic(rows, []string{"review_id", "review_number", "status", "decided_on", "id", "original_filename", "size_bytes", "mime_type"})
+	if err != nil {
+		s.fault(w, r, "QUERY_FAILED", "이전 증적을 불러오지 못했습니다.", err)
+		return
+	}
+	jsonResponse(w, 200, map[string]any{"items": files, "total": len(files)})
+}
+
 func (s *Server) carryOverEvidence(w http.ResponseWriter, r *http.Request) {
 	reviewID, itemID := r.PathValue("id"), r.PathValue("itemID")
 	sess := session(r)

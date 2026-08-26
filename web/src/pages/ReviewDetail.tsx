@@ -384,7 +384,7 @@ function ItemEditor({ review, item, reviewer, people, onSaved, onSelect }: { rev
   // clicking anywhere in the editor marks the item as the current one, and
   // tabbing into any of its fields has to do the same.
   return <div className="checklist-editor" onClick={onSelect} onFocusCapture={onSelect}><div className="form-grid"><Field label="적용 여부" required><div className="answer-pills">{['Y', 'N', 'N/A'].map(v => <button type="button" disabled={!editable} key={v} className={`answer-pill ${draft.applicability === v ? 'selected' : ''}`} onClick={() => set('applicability', v)}>{v}</button>)}</div></Field><Field label="자체 판단"><select className="select" disabled={!editable} value={draft.self_assessment} onChange={e => set('self_assessment', e.target.value)}><option value="">선택</option><option value="COMPLIANT">적합</option><option value="INSUFFICIENT">미흡</option><option value="N/A">N/A</option></select></Field>{!['YNNA','ASSESSMENT','FILE','GUIDE'].includes(item.answer_type) && <AnswerControl item={item} value={draft.answer} disabled={!editable} onChange={v=>set('answer',v)}/>} {draft.applicability === 'N/A' && <Field className="span-2" label="N/A 사유" required><LongText disabled={!editable} value={draft.na_reason} onChange={v => set('na_reason', v)} /></Field>}<Field className="span-2" label="현황 및 증적"><LongText disabled={!editable} placeholder="현재 적용 현황과 증적 위치를 구체적으로 작성하세요." value={draft.current_state} onChange={v => set('current_state', v)} /></Field><Field className="span-2" label="조치 계획"><LongText disabled={!editable} value={draft.action_plan} onChange={v => set('action_plan', v)} /></Field><Field label="담당자" help="이 심의에 참여하는 사람만 지정할 수 있습니다"><select className="select" disabled={!editable} value={draft.assigned_to} onChange={e => set('assigned_to', e.target.value)}><option value="">지정 안 함</option>{people.map(p => <option key={p.id} value={p.id}>{p.display_name}{p.department ? ` · ${p.department}` : ""}</option>)}</select></Field></div>{editable && <div data-sx="sx-012"><span className="save-state">{pending ? <span className="dirty-dot">저장되지 않은 변경</span> : saved ? <><Check size={13} /> {saved} 자동 저장</> : null}</span><Button small onClick={() => save()}><Save size={13} /> 지금 저장</Button></div>}
-    <div data-sx="sx-002"><strong data-sx="sx-018">증적 첨부</strong>{editable && <div className="form-grid" data-sx="sx-028"><Field label="파일" help={evidence.length > 1 ? `${evidence.length}개 선택됨 · 각각 별도 증적으로 저장됩니다` : limits?.max_size_mb ? `여러 개를 한 번에 선택할 수 있습니다 · 파일당 최대 ${limits.max_size_mb}MB` : '여러 개를 한 번에 선택할 수 있습니다'}><input type="file" multiple className="input" accept={(limits?.allowed_extensions || []).map(x => x.startsWith('.') ? x : `.${x}`).join(',') || undefined} onChange={(e: ChangeEvent<HTMLInputElement>) => setEvidence(Array.from(e.target.files || []))} /></Field><Field label="설명"><input className="input" value={evidenceDescription} onChange={e => setEvidenceDescription(e.target.value)} /></Field><div><Button disabled={!evidence.length || uploading} onClick={uploadFile}><Upload size={14} /> {uploading ? '업로드 중…' : evidence.length > 1 ? `${evidence.length}건 암호화 업로드` : '암호화 업로드'}</Button></div></div>}{item.evidences.map(e => <EvidenceRow key={e.id} evidence={e} editable={editable} onSaved={onSaved} />)}</div>
+    <div data-sx="sx-002"><strong data-sx="sx-018">증적 첨부</strong>{editable && <div className="form-grid" data-sx="sx-028"><Field label="파일" help={evidence.length > 1 ? `${evidence.length}개 선택됨 · 각각 별도 증적으로 저장됩니다` : limits?.max_size_mb ? `여러 개를 한 번에 선택할 수 있습니다 · 파일당 최대 ${limits.max_size_mb}MB` : '여러 개를 한 번에 선택할 수 있습니다'}><input type="file" multiple className="input" accept={(limits?.allowed_extensions || []).map(x => x.startsWith('.') ? x : `.${x}`).join(',') || undefined} onChange={(e: ChangeEvent<HTMLInputElement>) => setEvidence(Array.from(e.target.files || []))} /></Field><Field label="설명"><input className="input" value={evidenceDescription} onChange={e => setEvidenceDescription(e.target.value)} /></Field><div><Button disabled={!evidence.length || uploading} onClick={uploadFile}><Upload size={14} /> {uploading ? '업로드 중…' : evidence.length > 1 ? `${evidence.length}건 암호화 업로드` : '암호화 업로드'}</Button></div></div>}{item.evidences.map(e => <EvidenceRow key={e.id} evidence={e} editable={editable} onSaved={onSaved} />)}{editable && <CarryOverEvidence reviewID={review.id} itemID={item.id} onCarried={onSaved} />}</div>
     {!reviewable && <ReviewVerdict result={item.review_result} onSaved={onSaved} />}
     {reviewable && answerChangedSinceReview(item) && <JudgedAnswer item={item} />}
     {(reviewable || editable) && <PreviousVerdicts reviewID={review.id} itemID={item.id} canEdit={editable} onCarried={onSaved} />}
@@ -450,6 +450,33 @@ function JudgedAnswer({ item }: { item: ChecklistItem }) {
 // The panel that says what was decided last time is also the only place that
 // knows which files were attached last time, so the button that brings them
 // forward belongs here rather than next to the upload control.
+
+// The files attached to this item last time were reachable only through the
+// previous-verdict panel, which appears only once an earlier review has judged
+// the item. They belong beside the upload control, where somebody attaching
+// evidence is already looking.
+function CarryOverEvidence({ reviewID, itemID, onCarried }: { reviewID: string; itemID: string; onCarried: () => Promise<void> }) {
+  const toast = useToast()
+  const [rows, setRows] = useState<Record<string, unknown>[]>()
+  const [busy, setBusy] = useState(false)
+  const path = `/api/v1/review-requests/${reviewID}/items/${itemID}/evidences/carry-over`
+  useEffect(() => { let alive = true; get<{ items: Record<string, unknown>[] }>(path).then(out => { if (alive) setRows(out.items) }).catch(() => undefined); return () => { alive = false } }, [path])
+  if (!rows?.length) return null
+  const carry = async () => {
+    setBusy(true)
+    try {
+      const out = await post<{ copied: unknown[]; skipped: unknown[] }>(path, { evidence_ids: rows.map(x => String(x.id)) })
+      toast.push(`증적 ${out.copied.length}건을 가져왔습니다.`)
+      setRows([])
+      await onCarried()
+    } catch (e) { toast.push(errorMessage(e), 'error') } finally { setBusy(false) }
+  }
+  return <div className="guide-block" data-sx="sx-006">
+    <div>같은 서비스의 이전 심의에 이 항목으로 첨부돼 있던 증적 {rows.length}건이 있습니다: {rows.map(x => String(x.original_filename)).join(', ')}</div>
+    <Button small disabled={busy} onClick={carry}><Copy size={13} /> {busy ? '가져오는 중…' : '이전 증적 가져오기'}</Button>
+  </div>
+}
+
 function PreviousVerdicts({ reviewID, itemID, canEdit, onCarried }: { reviewID: string; itemID: string; canEdit: boolean; onCarried: () => Promise<void> }) {
   const toast = useToast()
   const [rows, setRows] = useState<Record<string, unknown>[]>()

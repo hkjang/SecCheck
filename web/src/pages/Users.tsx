@@ -35,7 +35,7 @@ export default function UsersPage() {
         const work = await get<Record<string, number>>(`/api/v1/admin/users/${user.id}/open-work`)
         const parts = ([['requester', '요청자'], ['reviewer', '검토자'], ['approver', '승인자'], ['follow_ups', '미이행 후속조치']] as const)
           .filter(([key]) => Number(work[key] || 0) > 0).map(([key, label]) => `${label} ${work[key]}건`)
-        if (parts.length && !confirm(`${user.display_name} 계정이 아직 맡고 있는 일이 있습니다.\n${parts.join(' · ')}\n\n비활성화해도 이 자리는 비워지지 않습니다. 심의 화면의 \`요청자 인계\`나 검토자 재지정으로 먼저 넘기는 것을 권합니다.\n\n그래도 비활성화할까요?`)) return
+        if (parts.length && !confirm(`${user.display_name} 계정이 아직 맡고 있는 일이 있습니다.\n${parts.join(' · ')}\n\n비활성화해도 이 자리는 비워지지 않습니다. 이 줄의 \`업무 인계\` 버튼으로 한 번에 넘기고 나서 비활성화하는 것을 권합니다.\n\n그래도 비활성화할까요?`)) return
       } catch { /* the summary is advice; a failure must not block the action */ }
     }
     try { const out = await post<{ released_items?: number }>(`/api/v1/admin/users/${user.id}/active`, { active: !user.active }); forgetDirectory(); const released = Number(out?.released_items || 0); toast.push(user.active ? (released ? `계정을 비활성화하고 담당 항목 ${released}개의 담당자를 비웠습니다.` : '계정을 비활성화했습니다.') : '계정을 활성화했습니다.'); load() } catch (e) { toast.push(errorMessage(e), 'error') }

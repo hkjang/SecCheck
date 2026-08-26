@@ -7478,3 +7478,69 @@ func TestAWholeDeskCanBeHandedOverAtOnce(t *testing.T) {
 		t.Errorf("a review was handed to somebody without the reviewer role: %v", moved)
 	}
 }
+
+// Carrying last year's evidence forward was reachable only through the
+// previous-verdict panel, which appears once an earlier review has judged that
+// item. The rule for carrying a file never mentioned a verdict, so a service
+// whose last review was cancelled, or is still open, or was approved without
+// an individual verdict on this item, had attachments that could be copied but
+// never found.
+func TestLastYearsEvidenceIsOfferedWithoutAVerdict(t *testing.T) {
+	h := newHarness(t)
+	ctx := context.Background()
+	h.user("offer-author", "REQUESTER")
+	h.user("offer-stranger", "REQUESTER")
+	author := h.login("offer-author")
+	stranger := h.login("offer-stranger")
+
+	// Last time round: evidence attached, no verdict ever recorded.
+	last := author.createReview("판정 없는 서비스")
+	lastItem := firstItemID(t, h, last)
+	if res := author.upload("/api/v1/review-requests/"+last+"/items/"+lastItem+"/evidences", "구성도.txt", "네트워크 구성도"); res.status != http.StatusCreated {
+		t.Fatalf("attaching: %d %s", res.status, res.body)
+	}
+	if _, err := h.db.Pool.Exec(ctx, `UPDATE review_requests SET status='CANCELLED' WHERE id=$1`, last); err != nil {
+		t.Fatal(err)
+	}
+
+	now := author.createReview("판정 없는 서비스")
+	var nowItem string
+	if err := h.db.Pool.QueryRow(ctx, `SELECT si.id FROM submissions sub JOIN submission_items si ON si.submission_id=sub.id WHERE sub.review_request_id=$1 AND si.item_code=(SELECT item_code FROM submission_items WHERE id=$2) LIMIT 1`, now, lastItem).Scan(&nowItem); err != nil {
+		t.Fatal(err)
+	}
+	path := "/api/v1/review-requests/" + now + "/items/" + nowItem + "/evidences/carry-over"
+
+	// The verdict panel has nothing to say about this item, which is exactly
+	// the case that used to hide the files.
+	if history := author.do(http.MethodGet, "/api/v1/review-requests/"+now+"/items/"+nowItem+"/verdict-history", nil).json()["items"].([]any); len(history) != 0 {
+		t.Fatalf("the fixture accidentally recorded a verdict: %v", history)
+	}
+
+	res := author.do(http.MethodGet, path, nil)
+	if res.status != http.StatusOK {
+		t.Fatalf("listing carryable evidence: %d %s", res.status, res.body)
+	}
+	offered, _ := res.json()["items"].([]any)
+	if len(offered) != 1 {
+		t.Fatalf("the item offers %d earlier files, want 1: %s", len(offered), res.body)
+	}
+	entry := offered[0].(map[string]any)
+	if entry["original_filename"] != "구성도.txt" || entry["review_number"] == "" {
+		t.Errorf("the offer does not name the file and where it came from: %v", entry)
+	}
+
+	// And what is offered can actually be taken.
+	if taken := author.do(http.MethodPost, path, map[string]any{"evidence_ids": []string{entry["id"].(string)}}); taken.status != http.StatusCreated {
+		t.Fatalf("carrying the offered file: %d %s", taken.status, taken.body)
+	}
+
+	// The offer is scoped like everything else: somebody outside the service
+	// is not shown its attachments.
+	elsewhere := stranger.createReview("남의 서비스")
+	otherItem := firstItemID(t, h, elsewhere)
+	if res := stranger.do(http.MethodGet, "/api/v1/review-requests/"+elsewhere+"/items/"+otherItem+"/evidences/carry-over", nil); res.status == http.StatusOK {
+		if listed, _ := res.json()["items"].([]any); len(listed) != 0 {
+			t.Errorf("an unrelated review was offered somebody else's evidence: %v", listed)
+		}
+	}
+}
