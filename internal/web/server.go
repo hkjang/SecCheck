@@ -125,6 +125,7 @@ func (s *Server) routes() {
 	s.handle("PATCH", "/api/v1/review-requests/{id}", "심의", "심의 기본정보, 담당자, 오픈 예정일 수정", nil, false, s.updateReviewRequest)
 	s.handle("GET", "/api/v1/review-requests/{id}/items", "심의", "응답, 검토결과, 증적, 보완요청, 코멘트를 포함한 스냅샷 항목", nil, false, s.listSubmissionItems)
 	s.handle("GET", "/api/v1/review-requests/{id}/completion-check", "심의", "검토 완료를 막는 항목 목록. 검토 완료 전에 미리 확인", nil, false, s.completionCheck)
+	s.handle("GET", "/api/v1/review-requests/{id}/approval-brief", "심의", "결재 전 확인용 요약. 지적 항목, 약속된 후속조치와 기한, 미검증 보완 요청 수", nil, false, s.approvalBrief)
 	s.handle("GET", "/api/v1/review-requests/{id}/submission-check", "심의", "제출을 막는 미완료 항목 목록. 제출 전에 미리 확인", nil, false, s.submissionCheck)
 	s.handle("GET", "/api/v1/review-requests/{id}/items/{itemID}/verdict-history", "심의", "같은 서비스의 이전 심의에서 이 항목이 어떻게 판정되었는지", nil, false, s.itemVerdictHistory)
 	s.handle("GET", "/api/v1/review-requests/{id}/items/{itemID}/why", "심의", "이 항목이 이 심의에 배정된 이유. 적용 규칙의 조건별 판정 또는 수동 포함 사유", nil, false, s.itemAssignmentReason)

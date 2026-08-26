@@ -2280,6 +2280,61 @@ func (s *Server) completionBlockingItems(ctx context.Context, id string) ([]map[
 
 // completionCheck is the reviewer's side of the pre-flight the requester got:
 // what is still in the way, before the button is pressed.
+// approvalBrief is what the approver is being asked to sign. The screen showed
+// them the reviewer's conclusion and a hundred and thirty items: the findings
+// behind that conclusion, and the promises the service made to get it, were
+// somewhere in the list. A signature given without them is a formality, which
+// is the one thing an approval step must not be.
+func (s *Server) approvalBrief(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	if !s.canAccessReview(r.Context(), session(r), id) {
+		problem(w, 404, "NOT_FOUND", "심의를 찾을 수 없습니다.", nil)
+		return
+	}
+	rows, err := s.Store.Pool.Query(r.Context(), `SELECT si.id AS item_id,si.item_code,si.title,rr.result,COALESCE(rr.opinion,''),
+                COALESCE(rr.follow_up,''),to_char(rr.follow_up_due_date,'YYYY-MM-DD') AS due_date,
+                (rr.follow_up_done_at IS NOT NULL) AS follow_up_done
+                FROM submissions sub
+                JOIN submission_items si ON si.submission_id=sub.id
+                JOIN review_results rr ON rr.submission_item_id=si.id
+                WHERE sub.review_request_id=$1
+                  AND sub.revision=(SELECT max(revision) FROM submissions WHERE review_request_id=$1)
+                  AND (rr.result IN ('INSUFFICIENT','NON_COMPLIANT','CONDITIONAL','RECHECK') OR btrim(COALESCE(rr.follow_up,''))<>'')
+                ORDER BY si.item_code`, id)
+	if err != nil {
+		s.fault(w, r, "QUERY_FAILED", "결재 요약을 불러오지 못했습니다.", err)
+		return
+	}
+	entries, err := scanDynamic(rows, []string{"item_id", "item_code", "title", "result", "opinion", "follow_up", "due_date", "follow_up_done"})
+	if err != nil {
+		s.fault(w, r, "QUERY_FAILED", "결재 요약을 불러오지 못했습니다.", err)
+		return
+	}
+	findings := []map[string]any{}
+	followUps := []map[string]any{}
+	undated := 0
+	for _, entry := range entries {
+		if result, _ := entry["result"].(string); contains([]string{"INSUFFICIENT", "NON_COMPLIANT", "CONDITIONAL", "RECHECK"}, result) {
+			findings = append(findings, entry)
+		}
+		if action, _ := entry["follow_up"].(string); strings.TrimSpace(action) != "" {
+			followUps = append(followUps, entry)
+			// A promise with no date is a promise nobody will be reminded of:
+			// the register can only chase what has a deadline.
+			if due, _ := entry["due_date"].(string); due == "" {
+				undated++
+			}
+		}
+	}
+	var unverified int
+	if err := s.Store.Pool.QueryRow(r.Context(), `SELECT count(*) FROM change_requests WHERE review_request_id=$1 AND status<>'VERIFIED'`, id).Scan(&unverified); err != nil {
+		s.fault(w, r, "QUERY_FAILED", "결재 요약을 불러오지 못했습니다.", err)
+		return
+	}
+	jsonResponse(w, 200, map[string]any{"findings": findings, "follow_ups": followUps,
+		"unverified_changes": unverified, "follow_ups_without_due_date": undated})
+}
+
 func (s *Server) completionCheck(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 	if !s.canAccessReview(r.Context(), session(r), id) {

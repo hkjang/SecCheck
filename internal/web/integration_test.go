@@ -8234,3 +8234,89 @@ func TestAReviewerSeesHowTheSameControlWasJudgedElsewhere(t *testing.T) {
 		t.Errorf("the requester was shown %d other services' verdicts", len(across))
 	}
 }
+
+// An approver was shown the reviewer's conclusion and a hundred and thirty
+// items. The findings behind that conclusion, and the promises the service
+// made to earn it, were somewhere in the list -- so the signature could be
+// given without ever seeing them, which is the one thing an approval step
+// must not be.
+func TestTheApproverIsToldWhatTheyAreSigning(t *testing.T) {
+	h := newHarness(t)
+	ctx := context.Background()
+	h.user("brief-author", "REQUESTER")
+	h.user("brief-reviewer", "SECURITY_REVIEWER")
+	h.user("brief-approver", "APPROVER")
+	h.user("brief-outsider", "REQUESTER")
+	author := h.login("brief-author")
+	reviewer := h.login("brief-reviewer")
+	approver := h.login("brief-approver")
+	var reviewerID, approverID string
+	if err := h.db.Pool.QueryRow(ctx, `SELECT id FROM users WHERE username='brief-reviewer'`).Scan(&reviewerID); err != nil {
+		t.Fatal(err)
+	}
+	if err := h.db.Pool.QueryRow(ctx, `SELECT id FROM users WHERE username='brief-approver'`).Scan(&approverID); err != nil {
+		t.Fatal(err)
+	}
+
+	reviewID := author.createReview("결재 요약 서비스")
+	items := []map[string]any{}
+	if err := json.Unmarshal([]byte(author.do(http.MethodGet, "/api/v1/review-requests/"+reviewID+"/items", nil).body), &items); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := h.db.Pool.Exec(ctx, `UPDATE review_requests SET reviewer_id=$2,approver_id=$3,status='REVIEWING' WHERE id=$1`, reviewID, reviewerID, approverID); err != nil {
+		t.Fatal(err)
+	}
+	judge := func(itemID string, body map[string]any) {
+		t.Helper()
+		body["expected_updated_at"] = ""
+		if res := reviewer.do(http.MethodPut, "/api/v1/review-requests/"+reviewID+"/review-results/"+itemID, body); res.status != http.StatusOK {
+			t.Fatalf("judging: %d %s", res.status, res.body)
+		}
+	}
+	judge(items[0]["id"].(string), map[string]any{"result": "CONDITIONAL", "opinion": "조건부", "follow_up": "WAF 규칙 정리", "follow_up_due_date": "2030-04-30"})
+	judge(items[1]["id"].(string), map[string]any{"result": "NON_COMPLIANT", "opinion": "부적합"})
+	judge(items[2]["id"].(string), map[string]any{"result": "COMPLIANT", "opinion": "적합"})
+	// A promise with no date is one the register can never chase, and it is
+	// the approver's last chance to ask for one.
+	if _, err := h.db.Pool.Exec(ctx, `UPDATE review_results SET follow_up='분기별 점검',follow_up_due_date=NULL WHERE submission_item_id=$1`, items[2]["id"].(string)); err != nil {
+		t.Fatal(err)
+	}
+
+	res := approver.do(http.MethodGet, "/api/v1/review-requests/"+reviewID+"/approval-brief", nil)
+	if res.status != http.StatusOK {
+		t.Fatalf("approval brief: %d %s", res.status, res.body)
+	}
+	brief := res.json()
+	findings, _ := brief["findings"].([]any)
+	if len(findings) != 2 {
+		t.Fatalf("the brief lists %d findings, want the conditional and the non-compliant one: %s", len(findings), res.body)
+	}
+	follows, _ := brief["follow_ups"].([]any)
+	if len(follows) != 2 {
+		t.Errorf("the brief lists %d promised actions, want 2", len(follows))
+	}
+	if brief["follow_ups_without_due_date"] != float64(1) {
+		t.Errorf("undated promises reported as %v, want 1", brief["follow_ups_without_due_date"])
+	}
+	// A finding carries what was said about it, or the approver is reading a
+	// list of codes.
+	first, _ := findings[0].(map[string]any)
+	if first["opinion"] == "" || first["item_code"] == "" {
+		t.Errorf("the finding carries no opinion or code: %v", first)
+	}
+
+	// An unverified correction is work the service still owes, and signing
+	// over it is the approver's decision to make knowingly.
+	if res := reviewer.do(http.MethodPost, "/api/v1/review-requests/"+reviewID+"/change-requests",
+		map[string]any{"item_id": items[1]["id"].(string), "reason": "증적 보완", "due_date": "2030-05-31"}); res.status != http.StatusCreated {
+		t.Fatalf("requesting a correction: %d %s", res.status, res.body)
+	}
+	if again := approver.do(http.MethodGet, "/api/v1/review-requests/"+reviewID+"/approval-brief", nil).json(); again["unverified_changes"] != float64(1) {
+		t.Errorf("unverified corrections reported as %v, want 1", again["unverified_changes"])
+	}
+
+	// The brief is part of the review, so it is as private as the review.
+	if res := h.login("brief-outsider").do(http.MethodGet, "/api/v1/review-requests/"+reviewID+"/approval-brief", nil); res.status != http.StatusNotFound {
+		t.Errorf("an outsider read the approval brief: %d %s", res.status, res.body)
+	}
+}

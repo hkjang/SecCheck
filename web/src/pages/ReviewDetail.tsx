@@ -143,6 +143,7 @@ export default function ReviewDetail() {
     {bulkOpen && judging && <BulkReviewModal reviewID={id} itemIDs={Array.from(picked)} count={picked.size} people={assignees} onClose={() => setBulkOpen(false)} onSaved={async () => { setBulkOpen(false); setPicked(new Set()); await load() }} />}
     {bulkOpen && !judging && <BulkModal reviewID={id} itemIDs={Array.from(picked)} count={picked.size} people={assignees} onClose={() => setBulkOpen(false)} onSaved={async () => { setBulkOpen(false); setPicked(new Set()); await load() }} />}
     {validation && <Modal title={review.status === 'REVIEWING' ? '검토 완료 전 확인이 필요합니다' : '제출 전 확인이 필요합니다'} onClose={() => setValidation(null)} footer={<Button variant="primary" onClick={() => setValidation(null)}>확인</Button>}><p className="subtle">서버 검증에서 {validation.length}개 항목이 남아 있습니다. 항목을 누르면 해당 위치로 이동합니다.</p>{validation.map((issue, i) => <div className="change-item" key={i}><button className="link-button" onClick={() => focusItem(String(issue.item_code))}><strong>{String(issue.item_code)} {String(issue.title)}</strong></button><ul>{(issue.reasons as string[]).map(x => <li key={x}>{x}</li>)}</ul></div>)}</Modal>}
+    {review.status === 'APPROVAL_PENDING' && <ApprovalBrief reviewID={review.id} />}
     {dialog && <DecisionModal kind={dialog} busy={busy} draft={dialog === 'complete' ? completionDraft(items || [], results) : ''} suggested={dialog === 'complete' ? suggestedResult(results) : ''} onClose={() => setDialog(null)} onSubmit={(data) => dialog === 'complete' ? action('complete-review', data) : dialog === 'reopen' ? action('reopen', data) : dialog === 'withdraw' ? action('withdraw-approval', data) : action(dialog === 'approval' ? 'approve' : 'reject', data)} />}
     {ruleOpen && <RuleOverrideModal reviewID={id} onClose={() => setRuleOpen(false)} onSaved={load} />}
   </div>
@@ -680,6 +681,30 @@ function ReviewParticipants({ reviewID, editable, onSaved }: { reviewID: string;
         <Field label="사용자" required className="span-2"><PeopleField value={choice.user_id} people={directoryUsers} onChange={id => setChoice(v => ({ ...v, user_id: id }))} emptyLabel="선택" withDepartment /></Field>
         <Field label="권한" help="열람 전용 참여자는 심의와 증적을 볼 수 있지만 체크리스트를 수정하거나 항목을 배정받을 수 없습니다."><select className="select" value={choice.role} onChange={e => setChoice(v => ({ ...v, role: e.target.value }))}><option value="CONTRIBUTOR">작성 가능</option><option value="VIEWER">열람 전용</option></select></Field>
       </div></Modal>}
+  </section>
+}
+
+
+// What the approver is being asked to sign: the findings behind the
+// conclusion, the promises made to earn it, and the work the service still
+// owes. It sits above the two buttons that end the review.
+function ApprovalBrief({ reviewID }: { reviewID: string }) {
+  const [brief, setBrief] = useState<{ findings: Record<string, unknown>[]; follow_ups: Record<string, unknown>[]; unverified_changes: number; follow_ups_without_due_date: number }>()
+  useEffect(() => { let alive = true; get<typeof brief>(`/api/v1/review-requests/${reviewID}/approval-brief`).then(out => { if (alive) setBrief(out) }).catch(() => undefined); return () => { alive = false } }, [reviewID])
+  if (!brief) return null
+  const nothing = !brief.findings.length && !brief.follow_ups.length && !brief.unverified_changes
+  return <section className="card">
+    <div className="card-header"><h2><ShieldCheck size={17} /> 결재 전 확인</h2>
+      <Badge tone={brief.findings.length ? 'amber' : 'green'}>지적 {brief.findings.length}건</Badge>
+      <Badge tone={brief.unverified_changes ? 'red' : ''}>미검증 보완 {brief.unverified_changes}건</Badge></div>
+    <div className="card-body">
+      {nothing ? <p className="subtle">지적 항목과 약속된 후속조치가 없습니다.</p> : null}
+      {brief.findings.length > 0 && <><strong>지적 항목</strong>
+        <ul>{brief.findings.map((f, i) => <li key={`f-${i}`}><code>{String(f.item_code)}</code> {String(f.title)} — <Badge tone={['INSUFFICIENT', 'NON_COMPLIANT'].includes(String(f.result)) ? 'red' : 'amber'}>{resultText[String(f.result)] || String(f.result)}</Badge>{f.opinion ? <span className="subtle"> {String(f.opinion)}</span> : null}</li>)}</ul></>}
+      {brief.follow_ups.length > 0 && <><strong>승인 시 남는 후속조치</strong>
+        <ul>{brief.follow_ups.map((f, i) => <li key={`u-${i}`}><code>{String(f.item_code)}</code> {String(f.follow_up)} {f.due_date ? <span className="subtle">· 기한 {String(f.due_date)}</span> : <Badge tone="red">기한 없음 · 알림이 가지 않습니다</Badge>}</li>)}</ul></>}
+      {brief.unverified_changes > 0 && <p className="subtle">아직 확인되지 않은 보완 요청이 {brief.unverified_changes}건 있습니다.</p>}
+    </div>
   </section>
 }
 
