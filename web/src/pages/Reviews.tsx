@@ -3,7 +3,7 @@ import { Link } from 'react-router-dom'
 import { AlertTriangle, CalendarClock, ChevronLeft, ChevronRight, Download, Filter, Hourglass, Plus, RotateCcw, Search, ShieldCheck, UserRound } from 'lucide-react'
 import { directory, get } from '../lib/api'
 import { DirectoryUser, Page, Review } from '../lib/types'
-import { Badge, Button, Empty, Field, Loading, PeopleField, StatusBadge, formatDate, useDownload } from '../components/ui'
+import { Badge, Button, Empty, Field, LoadFailed, Loading, PeopleField, StatusBadge, formatDate, useDownload } from '../components/ui'
 
 const emptyFilter = { q: '', status: '', department: '', reviewer_id: '', from: '', to: '', overdue: '', open_at_risk: '', unassigned: '', stalled: '', mine: '' }
 const sorts: [string, string][] = [['updated', '최근 변경순'], ['created', '생성일순'], ['open_date', '오픈 예정일순'], ['number', '심의번호순'], ['service', '서비스명순'], ['status', '상태순']]
@@ -22,7 +22,9 @@ export default function Reviews({ security = false }: { security?: boolean }) {
     return qs
   }, [filter, sort, limit, offset])
   useEffect(() => { directory<DirectoryUser>().then(setPeople).catch(() => undefined) }, [])
-  useEffect(() => { setPage(undefined); const timer = window.setTimeout(() => { get<Page<Review>>(`/api/v1/review-requests?${params}`).then(setPage) }, 180); return () => clearTimeout(timer) }, [params])
+  const [failed, setFailed] = useState<unknown>()
+  const load = () => { setFailed(undefined); return get<Page<Review>>(`/api/v1/review-requests?${params}`).then(setPage).catch(setFailed) }
+  useEffect(() => { setPage(undefined); const timer = window.setTimeout(() => { load() }, 180); return () => clearTimeout(timer) }, [params])
   const set = (key: keyof typeof filter, value: string) => { setOffset(0); setFilter(v => ({ ...v, [key]: value })) }
   const dirty = Object.entries(filter).some(([k, v]) => v !== (emptyFilter as Record<string, string>)[k])
   const shown = page?.items || []
@@ -45,7 +47,7 @@ export default function Reviews({ security = false }: { security?: boolean }) {
         <Field label="생성일 종료"><input type="date" className="input" min={filter.from || undefined} value={filter.to} onChange={e => set('to', e.target.value)} /></Field>
       </div>
     </div>
-      {!page ? <Loading /> : shown.length ? <><div className="table-wrap"><table><caption className="sr-only">심의 목록</caption><thead><tr><th scope="col">심의번호</th><th scope="col">서비스</th><th scope="col">유형</th><th scope="col">담당 부서</th><th scope="col">요청자 / 검토자</th><th scope="col">보완</th><th scope="col">오픈 예정</th><th scope="col">상태</th><th scope="col"><span className="sr-only">작업</span></th></tr></thead>
+      {failed ? <LoadFailed error={failed} onRetry={load} /> : !page ? <Loading /> : shown.length ? <><div className="table-wrap"><table><caption className="sr-only">심의 목록</caption><thead><tr><th scope="col">심의번호</th><th scope="col">서비스</th><th scope="col">유형</th><th scope="col">담당 부서</th><th scope="col">요청자 / 검토자</th><th scope="col">보완</th><th scope="col">오픈 예정</th><th scope="col">상태</th><th scope="col"><span className="sr-only">작업</span></th></tr></thead>
         <tbody>{shown.map(item => <tr key={item.id}><td><Link className="table-link" to={`/reviews/${item.id}`}>{item.review_number}</Link></td><td><strong>{item.service_name}</strong></td><td>{item.service_type} · {item.change_type}</td><td>{item.department}</td><td>{String(item.requester_name || '-')}<div className="subtle">{String(item.reviewer_name || '미배정')}</div></td><td>{item.open_change_requests ? <Badge tone={item.overdue_change_requests ? 'red' : 'amber'}>{item.open_change_requests}건{item.overdue_change_requests ? ` · 초과 ${item.overdue_change_requests}` : ''}</Badge> : <span className="subtle">-</span>}</td><td>{formatDate(item.planned_open_date)}</td><td><StatusBadge status={item.status} /></td><td><Link to={`/reviews/${item.id}`}><Button small>{security ? <><ShieldCheck size={14} /> 검토</> : '상세'}</Button></Link></td></tr>)}</tbody></table></div>
         <div className="card-body pager"><span className="subtle">{page.total}건 중 {from}–{offset + shown.length}</span><div className="header-actions"><select className="select" aria-label="페이지 크기" value={limit} onChange={e => { setOffset(0); setLimit(Number(e.target.value)) }}>{[25, 50, 100, 200].map(n => <option key={n} value={n}>{n}개씩</option>)}</select><Button small disabled={offset === 0} onClick={() => setOffset(Math.max(0, offset - limit))}><ChevronLeft size={14} /> 이전</Button><Button small disabled={!page.has_more} onClick={() => setOffset(offset + limit)}>다음 <ChevronRight size={14} /></Button></div></div></> : <Empty title="조건에 맞는 심의가 없습니다." description="필터를 바꾸거나 신규 심의를 요청하세요." />}
     </div>

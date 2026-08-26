@@ -2,7 +2,7 @@ import { useEffect, useMemo, useState } from 'react'
 import { Link } from 'react-router-dom'
 import { BarChart3, CalendarRange, Check, Download, Timer } from 'lucide-react'
 import { errorMessage, get, post } from '../lib/api'
-import { Badge, Button, Empty, Field, Loading, Modal, StatusBadge, useDownload, useToast } from '../components/ui'
+import { Badge, Button, Empty, Field, LoadFailed, Loading, Modal, StatusBadge, useDownload, useToast } from '../components/ui'
 
 type Row = Record<string, string | number | boolean>
 type Report = {
@@ -24,7 +24,8 @@ export default function Reports() {
   const [includeDone, setIncludeDone] = useState(false)
   const [data, setData] = useState<Report>()
   const params = useMemo(() => { const qs = new URLSearchParams(); Object.entries(filter).forEach(([k, v]) => { if (v) qs.set(k, v) }); if (includeDone) qs.set('include_done', '1'); return qs }, [filter, includeDone])
-  const reload = () => get<Report>(`/api/v1/reports/reviews?${params}`).then(setData).catch(e => toast.push(errorMessage(e), 'error'))
+  const [failed, setFailed] = useState<unknown>()
+  const reload = () => { setFailed(undefined); return get<Report>(`/api/v1/reports/reviews?${params}`).then(setData).catch(setFailed) }
   useEffect(() => { setData(undefined); const timer = window.setTimeout(reload, 200); return () => clearTimeout(timer) }, [params])
   const set = (key: keyof typeof filter, value: string) => setFilter(v => ({ ...v, [key]: value }))
   // The list filters the same period the report does -- both read created_at --
@@ -43,7 +44,7 @@ export default function Reports() {
       <div className="field"><label>기간 선택</label><div className="header-actions"><Button small onClick={() => preset(1)}>이번 달</Button><Button small onClick={() => preset(3)}>최근 3개월</Button><Button small onClick={() => preset(12)}>최근 1년</Button></div></div>
     </div></div></div>
 
-    {!data ? <Loading /> : <>
+    {failed ? <LoadFailed error={failed} onRetry={reload} /> : !data ? <Loading /> : <>
       <div className="grid stats">
         <div className="card stat-card"><div className="stat-icon"><CalendarRange /></div><div><span className="stat-value">{data.totals.created}</span><div className="stat-label">신규 심의</div></div></div>
         <div className="card stat-card"><div className="stat-icon green"><BarChart3 /></div><div><span className="stat-value">{data.totals.completed}</span><div className="stat-label">완료</div></div></div>

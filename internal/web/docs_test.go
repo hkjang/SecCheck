@@ -593,3 +593,40 @@ func TestEveryErrorCodeIsInTheApiGuide(t *testing.T) {
 		}
 	}
 }
+
+// A screen that fetches on mount has three states, and it used to render two:
+// a spinner while it waits and the empty state when the answer is empty. A
+// request that failed left the spinner turning for good on the busiest lists,
+// and on the ones that toasted the error the toast faded and the spinner
+// stayed -- an administrator searching for an account was shown "조건에 맞는
+// 사용자가 없습니다" or a spinner where the honest answer was "불러오지
+// 못했습니다".
+func TestAScreenThatFetchesOnMountCanSayItFailed(t *testing.T) {
+	pages, err := filepath.Glob(filepath.Join("..", "..", "web", "src", "pages", "*.tsx"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(pages) < 10 {
+		t.Fatalf("only %d screens found; the layout must have changed", len(pages))
+	}
+	checked := 0
+	for _, page := range pages {
+		body, err := os.ReadFile(page)
+		if err != nil {
+			t.Fatal(err)
+		}
+		text := string(body)
+		// A screen that reads the API through the typed helper and has an
+		// effect to run it on arrival is a screen with something to load.
+		if !strings.Contains(text, "get<") || !strings.Contains(text, "useEffect(") {
+			continue
+		}
+		checked++
+		if !strings.Contains(text, "LoadFailed") {
+			t.Errorf("%s fetches on mount and has no way to say the request failed", filepath.Base(page))
+		}
+	}
+	if checked < 15 {
+		t.Fatalf("only %d screens were found to fetch on mount; the check is not reading the pages", checked)
+	}
+}

@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react'
 import { Copy, ExternalLink, Sparkles } from 'lucide-react'
 import { get } from '../lib/api'
-import { Badge, Button, Loading, useToast } from '../components/ui'
+import { Badge, Button, LoadFailed, Loading, useToast } from '../components/ui'
 import { useAuth } from '../main'
 
 type Integration = {
@@ -15,7 +15,9 @@ export default function Integrations() {
   const [info, setInfo] = useState<Integration>()
   // The tool list is served rather than written here: the hard-coded copy had
   // drifted to five entries while seven were being offered.
-  useEffect(() => { get<Integration>('/api/v1/integrations').then(setInfo).catch(() => undefined) }, [])
+  const [failed, setFailed] = useState<unknown>()
+  const load = () => { setFailed(undefined); return get<Integration>('/api/v1/integrations').then(setInfo).catch(setFailed) }
+  useEffect(() => { load() }, [])
   const copy = (value: string) => { navigator.clipboard.writeText(value); toast.push('클립보드에 복사했습니다.') }
   const endpoint = `${location.origin}${info?.mcp_endpoint || '/mcp'}`
 
@@ -33,7 +35,7 @@ export default function Integrations() {
         <p className="subtle" data-sx="sx-023">최신 Stateless Streamable HTTP를 지원하며, 구형 {(info?.mcp_compatibility || []).join(', ') || '이전'} initialize 클라이언트도 호환합니다. 개인 API 키를 Authorization 헤더에 설정하세요.</p>
         <div className="field"><label>Endpoint</label><div data-sx="sx-004"><input className="input" readOnly value={endpoint} /><Button aria-label="MCP 엔드포인트 주소 복사" onClick={() => copy(endpoint)}><Copy size={14} /></Button></div></div>
         <div data-sx="sx-029"><strong data-sx="sx-018">제공 도구 {info ? `(${info.tools.length})` : ''}</strong>
-          {!info ? <Loading /> : <div className="table-wrap"><table><caption className="sr-only">제공 중인 MCP 도구</caption><tbody>{info.tools.map(tool => <tr key={tool.name}><td><code>{tool.name}</code>{tool.read_only && <Badge tone="green">읽기 전용</Badge>}<div className="subtle">{tool.description}</div></td></tr>)}</tbody></table></div>}
+          {failed ? <LoadFailed error={failed} onRetry={load} /> : !info ? <Loading /> : <div className="table-wrap"><table><caption className="sr-only">제공 중인 MCP 도구</caption><tbody>{info.tools.map(tool => <tr key={tool.name}><td><code>{tool.name}</code>{tool.read_only && <Badge tone="green">읽기 전용</Badge>}<div className="subtle">{tool.description}</div></td></tr>)}</tbody></table></div>}
         </div>
       </div></section>
     </div>

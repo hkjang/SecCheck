@@ -2,7 +2,7 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import { Link, useSearchParams } from 'react-router-dom'
 import { Download, RotateCcw, Search, ShieldCheck } from 'lucide-react'
 import { errorMessage, get } from '../lib/api'
-import { Badge, Button, Empty, Field, Loading, Modal, formatDate, useDownload, useToast } from '../components/ui'
+import { Badge, Button, Empty, Field, LoadFailed, Loading, Modal, formatDate, useDownload, useToast } from '../components/ui'
 
 const today = () => new Date().toISOString().slice(0, 10)
 
@@ -24,6 +24,7 @@ export default function AuditPage() {
   const [hasMore, setHasMore] = useState(false)
   const key = params.toString()
   const lastKey = useRef(key)
+  const [failed, setFailed] = useState<unknown>()
   useEffect(() => {
     if (lastKey.current !== key) { lastKey.current = key; if (offset !== 0) { setOffset(0); return } }
     if (!offset) setItems(undefined)
@@ -33,7 +34,8 @@ export default function AuditPage() {
         setItems(prev => (offset && prev ? [...prev, ...page.items] : page.items))
         setHasMore(Boolean(page.has_more))
         if (page.events?.length) setEvents(page.events)
-      })
+        setFailed(undefined)
+      }).catch(setFailed)
     }, 200)
     return () => clearTimeout(timer)
   }, [key, offset])
@@ -67,7 +69,7 @@ export default function AuditPage() {
       <Field label="표시 건수"><select className="select" value={filter.limit} onChange={e => set('limit', e.target.value)}><option value="50">50</option><option value="200">200</option></select></Field>
       <div className="field"><label>&nbsp;</label><Button disabled={!active} onClick={() => setFilter({ event: '', user: '', target: '', target_type: '', event_id: '', result: '', from: '', to: '', limit: filter.limit })}><RotateCcw size={13} /> 필터 초기화</Button></div>
     </div></div>
-      {!items ? <Loading /> : items.length ? <div className="table-wrap"><table><thead><tr><th>시각</th><th>이벤트</th><th>사용자 / IP</th><th>대상</th><th>결과</th><th>해시</th></tr></thead><tbody>{items.map(x => <tr key={String(x.event_id)}><td>{formatDate(x.timestamp, true)}</td><td><button className="link-button" onClick={() => setDetail(x)}><Badge tone="blue">{String(x.event_label || x.event_type)}</Badge></button><div className="subtle">{String(x.event_type)}</div></td><td>{String(x.user_name || '-')}<div className="subtle">{String(x.source_ip || '')}</div></td><td>{x.target_id ? <button className="link-button" title="이 대상의 이력만 보기" onClick={() => setFilter(v => ({ ...v, target: String(x.target_id), target_type: String(x.target_type || '') }))}>{String(x.target_type)}<div className="subtle">{String(x.target_id)}</div></button> : <>{String(x.target_type)}</>}</td><td><Badge tone={x.result === 'SUCCESS' ? 'green' : 'red'}>{String(x.result)}</Badge></td><td><code title={String(x.event_hash)}>{String(x.event_hash).slice(0, 12)}…</code></td></tr>)}</tbody></table></div> : <Empty title="조건에 맞는 감사 이벤트가 없습니다." description="필터를 넓히거나 기간을 조정하세요." />}
+      {failed ? <LoadFailed error={failed} /> : !items ? <Loading /> : items.length ? <div className="table-wrap"><table><thead><tr><th>시각</th><th>이벤트</th><th>사용자 / IP</th><th>대상</th><th>결과</th><th>해시</th></tr></thead><tbody>{items.map(x => <tr key={String(x.event_id)}><td>{formatDate(x.timestamp, true)}</td><td><button className="link-button" onClick={() => setDetail(x)}><Badge tone="blue">{String(x.event_label || x.event_type)}</Badge></button><div className="subtle">{String(x.event_type)}</div></td><td>{String(x.user_name || '-')}<div className="subtle">{String(x.source_ip || '')}</div></td><td>{x.target_id ? <button className="link-button" title="이 대상의 이력만 보기" onClick={() => setFilter(v => ({ ...v, target: String(x.target_id), target_type: String(x.target_type || '') }))}>{String(x.target_type)}<div className="subtle">{String(x.target_id)}</div></button> : <>{String(x.target_type)}</>}</td><td><Badge tone={x.result === 'SUCCESS' ? 'green' : 'red'}>{String(x.result)}</Badge></td><td><code title={String(x.event_hash)}>{String(x.event_hash).slice(0, 12)}…</code></td></tr>)}</tbody></table></div> : <Empty title="조건에 맞는 감사 이벤트가 없습니다." description="필터를 넓히거나 기간을 조정하세요." />}
       {items && hasMore && <div className="card-body"><Button small onClick={() => setOffset(items.length)}>더 보기 (현재 {items.length.toLocaleString('ko-KR')}건)</Button> <span className="subtle">더 오래된 이벤트가 남아 있습니다.</span></div>}
     </div>
     {detail && <AuditDetail event={detail} onClose={() => setDetail(undefined)} />}
