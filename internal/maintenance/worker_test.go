@@ -1189,3 +1189,85 @@ func TestASweepRecordsThatItRan(t *testing.T) {
 		t.Fatalf("after a second sweep the record reads %v", after)
 	}
 }
+
+// A cancelled review is a service that is not being built. The corrections and
+// follow-up actions written on it were never withdrawn, so the sweep went on
+// chasing them: every three days a 기한 초과 notice about a review the
+// recipient had cancelled themselves and cannot reopen.
+func TestCancelledReviewsStopChasingPeople(t *testing.T) {
+	db := testdb.New(t)
+	ctx := context.Background()
+	requester := testdb.Bootstrap(t, db, "cancel-owner")
+	worker := maintenance.New(db, nil)
+	exec := func(sql string, args ...any) {
+		t.Helper()
+		if _, err := db.Pool.Exec(ctx, sql, args...); err != nil {
+			t.Fatalf("%s: %v", sql, err)
+		}
+	}
+	templateID, versionID := store.NewID(), store.NewID()
+	exec(`INSERT INTO checklist_templates(id,name,category,created_by) VALUES($1,'취소 템플릿','DEVELOPMENT',$2)`, templateID, requester)
+	exec(`INSERT INTO checklist_versions(id,template_id,version,status,created_by) VALUES($1,$2,'V1','PUBLISHED',$3)`, versionID, templateID, requester)
+
+	// Each review carries one overdue correction and one overdue follow-up;
+	// the only difference between them is the status of the review itself.
+	seed := func(number, status string) (reviewID, changeID, resultID string) {
+		t.Helper()
+		reviewID, changeID, resultID = store.NewID(), store.NewID(), store.NewID()
+		submissionID, sourceID, itemID := store.NewID(), store.NewID(), store.NewID()
+		exec(`INSERT INTO review_requests(id,review_number,service_name,description,service_type,change_type,builder_id,developer_id,department,requester_id,exposure,status)
+                        VALUES($1,$2,'취소 서비스','설명','WEB','NEW',$3,$3,'보안팀',$3,'INTERNAL',$4)`, reviewID, number, requester, status)
+		exec(`INSERT INTO submissions(id,review_request_id,revision,status) VALUES($1,$2,1,'DRAFT')`, submissionID, reviewID)
+		exec(`INSERT INTO checklist_items(id,version_id,item_code,category,title,question,severity,required,answer_type,evidence_required,sort_order)
+                        VALUES($1,$2,$3,'DEVELOPMENT','보안요건','질문','MEDIUM',true,'YNNA',false,1)`, sourceID, versionID, "C-"+sourceID[:6])
+		exec(`INSERT INTO submission_items(id,submission_id,source_item_id,template_name,template_version,item_code,section,category,title,question,severity,required,answer_type,evidence_required,sort_order)
+                        VALUES($1,$2,$3,'개발보안','V1',$4,'구분','DEVELOPMENT','보안요건','질문','MEDIUM',true,'YNNA',false,1)`, itemID, submissionID, sourceID, "C-"+sourceID[:6])
+		exec(`INSERT INTO change_requests(id,review_request_id,submission_item_id,reason,requester_id,due_date,status)
+                        VALUES($1,$2,$3,'보완하세요',$4,$5::date,'OPEN')`, changeID, reviewID, itemID, requester, time.Now().AddDate(0, 0, -3).Format("2006-01-02"))
+		exec(`INSERT INTO review_results(id,submission_item_id,reviewer_id,result,follow_up,follow_up_due_date)
+                        VALUES($1,$2,$3,'CONDITIONAL','조치하세요',$4::date)`, resultID, itemID, requester, time.Now().AddDate(0, 0, -3).Format("2006-01-02"))
+		return reviewID, changeID, resultID
+	}
+	_, liveChange, liveResult := seed("SC-2026-000910", "CHANGE_REQUESTED")
+	_, deadChange, deadResult := seed("SC-2026-000911", "CANCELLED")
+
+	worker.Sweep(ctx)
+
+	remindedChange := func(id string) bool {
+		t.Helper()
+		var at *time.Time
+		if err := db.Pool.QueryRow(ctx, `SELECT reminded_at FROM change_requests WHERE id=$1`, id).Scan(&at); err != nil {
+			t.Fatal(err)
+		}
+		return at != nil
+	}
+	remindedResult := func(id string) bool {
+		t.Helper()
+		var at *time.Time
+		if err := db.Pool.QueryRow(ctx, `SELECT follow_up_reminded_at FROM review_results WHERE id=$1`, id).Scan(&at); err != nil {
+			t.Fatal(err)
+		}
+		return at != nil
+	}
+	if !remindedChange(liveChange) {
+		t.Error("the correction on the live review was not reminded")
+	}
+	if !remindedResult(liveResult) {
+		t.Error("the follow-up on the live review was not reminded")
+	}
+	if remindedChange(deadChange) {
+		t.Error("a correction on a cancelled review was chased")
+	}
+	if remindedResult(deadResult) {
+		t.Error("a follow-up on a cancelled review was chased")
+	}
+	for _, event := range []string{"CHANGE_REQUEST_DUE", "FOLLOW_UP_DUE"} {
+		var notices int
+		if err := db.Pool.QueryRow(ctx, `SELECT count(*) FROM notifications WHERE event_type=$1`, event).Scan(&notices); err != nil {
+			t.Fatal(err)
+		}
+		if notices != 1 {
+			t.Errorf("%s notices = %d, want 1 (the live review only)", event, notices)
+		}
+	}
+}

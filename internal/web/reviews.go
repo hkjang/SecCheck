@@ -111,11 +111,13 @@ func (s *Server) reviewFilter(r *http.Request) (string, []any) {
 	if strings.TrimSpace(query.Get("stalled")) == "1" {
 		where += fmt.Sprintf(" AND review_requests.status IN ('SUBMITTED','RESUBMITTED','REVIEWING') AND review_requests.updated_at < now()-make_interval(days=>%d)", maintenance.StalledReviewDays)
 	}
+	// Both of these are the list behind a dashboard count, and the count stops
+	// at a cancelled review, so the list has to as well.
 	if strings.TrimSpace(query.Get("open_changes")) == "1" {
-		where += " AND EXISTS(SELECT 1 FROM change_requests oc WHERE oc.review_request_id=review_requests.id AND oc.status='OPEN')"
+		where += " AND review_requests.status<>'CANCELLED' AND EXISTS(SELECT 1 FROM change_requests oc WHERE oc.review_request_id=review_requests.id AND oc.status='OPEN')"
 	}
 	if strings.TrimSpace(query.Get("overdue")) == "1" {
-		where += " AND EXISTS(SELECT 1 FROM change_requests oc WHERE oc.review_request_id=review_requests.id AND oc.status<>'VERIFIED' AND oc.due_date < display_today())"
+		where += " AND review_requests.status<>'CANCELLED' AND EXISTS(SELECT 1 FROM change_requests oc WHERE oc.review_request_id=review_requests.id AND oc.status<>'VERIFIED' AND oc.due_date < display_today())"
 	}
 	if v := strings.TrimSpace(query.Get("mine")); v != "" {
 		where += " AND " + myTurnClause(sess, len(args)+1)

@@ -515,7 +515,10 @@ func (w *Worker) remindDueFollowUps(ctx context.Context) int64 {
                 UPDATE review_results SET follow_up_reminded_at=now()
                 WHERE id IN (
                   SELECT rr.id FROM review_results rr
-                  WHERE btrim(rr.follow_up)<>'' AND rr.follow_up_done_at IS NULL
+                  JOIN submission_items si ON si.id=rr.submission_item_id
+                  JOIN submissions sub ON sub.id=si.submission_id
+                  JOIN review_requests r ON r.id=sub.review_request_id
+                  WHERE btrim(rr.follow_up)<>'' AND rr.follow_up_done_at IS NULL AND r.status<>'CANCELLED'
                     AND rr.follow_up_due_date IS NOT NULL
                     AND rr.follow_up_due_date <= display_today()+7
                     AND (rr.follow_up_reminded_at IS NULL OR rr.follow_up_reminded_at < now()-interval '7 days')
@@ -884,12 +887,17 @@ func (w *Worker) purgeDeletedEvidence(ctx context.Context) int64 {
 // remindDueChangeRequests notifies the assignee once when a change request is
 // close to its due date or already late. The due date was captured from the
 // start but nothing ever acted on it.
+// A cancelled review is a service that is not being built, so the reminders
+// hanging off it are addressed to nobody: the correction cannot be carried out
+// and the review cannot be reopened. They kept going out every three days
+// anyway, to the requester who had just cancelled it.
 func (w *Worker) remindDueChangeRequests(ctx context.Context) int64 {
 	rows, err := w.Store.Pool.Query(ctx, `
                 UPDATE change_requests SET reminded_at=now()
                 WHERE id IN (
                   SELECT c.id FROM change_requests c
-                  WHERE c.status<>'VERIFIED' AND c.due_date IS NOT NULL
+                  JOIN review_requests r ON r.id=c.review_request_id
+                  WHERE c.status<>'VERIFIED' AND r.status<>'CANCELLED' AND c.due_date IS NOT NULL
                     AND c.due_date <= display_today()+2
                     AND (c.reminded_at IS NULL OR c.reminded_at < now()-interval '3 days')
                   LIMIT 200)

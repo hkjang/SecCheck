@@ -6883,3 +6883,82 @@ func TestACorrectionHandedToSomebodyReachesThemAndTheOwner(t *testing.T) {
 		t.Errorf("a correction nobody was named for reached the helper anyway: %d notices", got)
 	}
 }
+
+// The other half of the same hole: a cancelled review kept its corrections in
+// every count and list of outstanding work. The requester who cancelled it saw
+// their own dropped service in 미처리 보완 요청 and in 보완 조치 기한 with no way
+// to clear it -- the review cannot be reopened and the correction cannot be
+// verified.
+func TestCancellingAReviewClearsItsOutstandingWork(t *testing.T) {
+	h := newHarness(t)
+	ctx := context.Background()
+	h.user("drop-owner", "REQUESTER")
+	h.user("drop-reviewer", "SECURITY_REVIEWER")
+	owner := h.login("drop-owner")
+	reviewer := h.login("drop-reviewer")
+	var reviewerID string
+	if err := h.db.Pool.QueryRow(ctx, `SELECT id FROM users WHERE username='drop-reviewer'`).Scan(&reviewerID); err != nil {
+		t.Fatal(err)
+	}
+
+	reviewID := owner.createReview("취소 예정 서비스")
+	items := []map[string]any{}
+	if err := json.Unmarshal([]byte(owner.do(http.MethodGet, "/api/v1/review-requests/"+reviewID+"/items", nil).body), &items); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := h.db.Pool.Exec(ctx, `UPDATE review_requests SET reviewer_id=$2,status='REVIEWING' WHERE id=$1`, reviewID, reviewerID); err != nil {
+		t.Fatal(err)
+	}
+	if res := reviewer.do(http.MethodPost, "/api/v1/review-requests/"+reviewID+"/change-requests",
+		map[string]any{"item_id": items[0]["id"].(string), "reason": "보완하세요", "due_date": "2030-06-30"}); res.status != http.StatusCreated {
+		t.Fatalf("requesting a correction: %d %s", res.status, res.body)
+	}
+	// The deadline has to have passed for the correction to reach 보완 조치 기한.
+	if _, err := h.db.Pool.Exec(ctx, `UPDATE change_requests SET due_date=display_today()-1 WHERE review_request_id=$1`, reviewID); err != nil {
+		t.Fatal(err)
+	}
+
+	board := func() map[string]any { return owner.do(http.MethodGet, "/api/v1/dashboard", nil).json() }
+	before := board()
+	if before["open_change_requests"] != float64(1) {
+		t.Fatalf("before cancelling, 미처리 보완 요청 = %v, want 1", before["open_change_requests"])
+	}
+	if due, _ := before["due_soon"].([]any); len(due) != 1 {
+		t.Fatalf("before cancelling, 보완 조치 기한 lists %d rows, want 1", len(due))
+	}
+	if res := owner.do(http.MethodGet, "/api/v1/review-requests?open_changes=1", nil); !strings.Contains(res.body, reviewID) {
+		t.Fatal("before cancelling, the review is missing from the 미처리 보완 요청 list")
+	}
+
+	if res := owner.do(http.MethodPost, "/api/v1/review-requests/"+reviewID+"/cancel", nil); res.status != http.StatusOK {
+		t.Fatalf("cancelling: %d %s", res.status, res.body)
+	}
+
+	after := board()
+	if after["open_change_requests"] != float64(0) {
+		t.Errorf("a cancelled review still counts %v outstanding corrections", after["open_change_requests"])
+	}
+	if due, _ := after["due_soon"].([]any); len(due) != 0 {
+		t.Errorf("a cancelled review still fills 보완 조치 기한 with %d rows", len(due))
+	}
+	// The count and the list behind it have to agree, or the number opens an
+	// empty screen.
+	if res := owner.do(http.MethodGet, "/api/v1/review-requests?open_changes=1", nil); strings.Contains(res.body, reviewID) {
+		t.Error("the cancelled review is still listed under 미처리 보완 요청")
+	}
+	if res := owner.do(http.MethodGet, "/api/v1/review-requests?overdue=1", nil); strings.Contains(res.body, reviewID) {
+		t.Error("the cancelled review is still listed under 기한 초과")
+	}
+	// The review itself is still readable, corrections and all: cancelling
+	// drops the work, it does not erase the record.
+	if res := owner.do(http.MethodGet, "/api/v1/review-requests/"+reviewID, nil); res.status != http.StatusOK {
+		t.Fatalf("the cancelled review became unreadable: %d %s", res.status, res.body)
+	}
+	var kept int
+	if err := h.db.Pool.QueryRow(ctx, `SELECT count(*) FROM change_requests WHERE review_request_id=$1`, reviewID).Scan(&kept); err != nil {
+		t.Fatal(err)
+	}
+	if kept != 1 {
+		t.Errorf("cancelling deleted the correction record (%d rows left)", kept)
+	}
+}

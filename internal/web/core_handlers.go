@@ -334,7 +334,11 @@ func (s *Server) dashboard(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	openChanges, ok := count(`SELECT count(*) FROM change_requests c JOIN review_requests r ON r.id=c.review_request_id WHERE `+strings.ReplaceAll(where, "review_requests.", "r.")+` AND c.status='OPEN'`, args...)
+	// A cancelled review is a service that is not being built. The corrections
+	// written on it were never withdrawn, so they went on being counted here,
+	// listed as overdue below and mailed about every three days -- work nobody
+	// could do on a review nobody could reopen.
+	openChanges, ok := count(`SELECT count(*) FROM change_requests c JOIN review_requests r ON r.id=c.review_request_id WHERE `+strings.ReplaceAll(where, "review_requests.", "r.")+` AND c.status='OPEN' AND r.status<>'CANCELLED'`, args...)
 	if !ok {
 		return
 	}
@@ -404,7 +408,7 @@ func (s *Server) myFollowUps(r *http.Request) []map[string]any {
                 JOIN submission_items si ON si.id=rr.submission_item_id
                 JOIN submissions sub ON sub.id=si.submission_id
                 JOIN review_requests ON review_requests.id=sub.review_request_id
-                WHERE btrim(rr.follow_up)<>'' AND rr.follow_up_done_at IS NULL AND `+where+`
+                WHERE btrim(rr.follow_up)<>'' AND rr.follow_up_done_at IS NULL AND review_requests.status<>'CANCELLED' AND `+where+`
                 ORDER BY rr.follow_up_due_date NULLS LAST,review_requests.review_number LIMIT 12`, args...)
 	if err != nil {
 		return []map[string]any{}
@@ -464,7 +468,7 @@ func (s *Server) dueChangeRequests(r *http.Request) []map[string]any {
                 FROM change_requests c
                 JOIN review_requests ON review_requests.id=c.review_request_id
                 JOIN submission_items si ON si.id=c.submission_item_id
-                WHERE c.status<>'VERIFIED' AND c.due_date IS NOT NULL AND c.due_date <= display_today()+7 AND `+where+`
+                WHERE c.status<>'VERIFIED' AND c.due_date IS NOT NULL AND c.due_date <= display_today()+7 AND review_requests.status<>'CANCELLED' AND `+where+`
                 ORDER BY c.due_date ASC LIMIT 12`, args...)
 	if err != nil {
 		return []map[string]any{}
