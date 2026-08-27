@@ -8736,3 +8736,82 @@ func min(a, b int) int {
 	}
 	return b
 }
+
+// A service is identified across reviews by its name, and a name is free text
+// a team is free to change. Rename the service between annual reviews and
+// every earlier verdict, and every file that could have been carried forward,
+// silently stops being found -- exactly when a re-review needs them most.
+func TestRenamingAServiceDoesNotLoseItsHistory(t *testing.T) {
+	h := newHarness(t)
+	ctx := context.Background()
+	h.user("rename-author", "REQUESTER")
+	h.user("rename-reviewer", "SECURITY_REVIEWER")
+	author := h.login("rename-author")
+	reviewer := h.login("rename-reviewer")
+	var reviewerID string
+	if err := h.db.Pool.QueryRow(ctx, `SELECT id FROM users WHERE username='rename-reviewer'`).Scan(&reviewerID); err != nil {
+		t.Fatal(err)
+	}
+
+	// Last year: judged, with a file attached.
+	last := author.createReview("결제 서비스")
+	lastItem := firstItemID(t, h, last)
+	if res := author.upload("/api/v1/review-requests/"+last+"/items/"+lastItem+"/evidences", "작년구성도.txt", "작년 구성도"); res.status != http.StatusCreated {
+		t.Fatalf("attaching: %d %s", res.status, res.body)
+	}
+	if _, err := h.db.Pool.Exec(ctx, `UPDATE review_requests SET reviewer_id=$2,status='REVIEWING' WHERE id=$1`, last, reviewerID); err != nil {
+		t.Fatal(err)
+	}
+	if res := reviewer.do(http.MethodPut, "/api/v1/review-requests/"+last+"/review-results/"+lastItem,
+		map[string]any{"result": "CONDITIONAL", "opinion": "작년 판정", "expected_updated_at": ""}); res.status != http.StatusOK {
+		t.Fatalf("judging: %d %s", res.status, res.body)
+	}
+	if _, err := h.db.Pool.Exec(ctx, `UPDATE review_requests SET status='APPROVED',approved_at=now()-interval '300 days' WHERE id=$1`, last); err != nil {
+		t.Fatal(err)
+	}
+
+	// This year the team copies it forward and renames the service.
+	copied := author.do(http.MethodPost, "/api/v1/review-requests/"+last+"/copy", map[string]any{})
+	if copied.status != http.StatusCreated && copied.status != http.StatusOK {
+		t.Fatalf("copying for the re-review: %d %s", copied.status, copied.body)
+	}
+	now := copied.json()["id"].(string)
+	if res := author.do(http.MethodPatch, "/api/v1/review-requests/"+now, map[string]any{"description": "이름이 바뀐 서비스"}); res.status != http.StatusOK {
+		t.Fatalf("editing the copy: %d %s", res.status, res.body)
+	}
+	if _, err := h.db.Pool.Exec(ctx, `UPDATE review_requests SET service_name='페이먼트 서비스' WHERE id=$1`, now); err != nil {
+		t.Fatal(err)
+	}
+	var nowItem string
+	if err := h.db.Pool.QueryRow(ctx, `SELECT si.id FROM submissions sub JOIN submission_items si ON si.submission_id=sub.id WHERE sub.review_request_id=$1 AND si.item_code=(SELECT item_code FROM submission_items WHERE id=$2) LIMIT 1`, now, lastItem).Scan(&nowItem); err != nil {
+		t.Fatal(err)
+	}
+
+	// The history follows the copy, not the name.
+	history := reviewer.do(http.MethodGet, "/api/v1/review-requests/"+now+"/items/"+nowItem+"/verdict-history", nil).json()
+	rows, _ := history["items"].([]any)
+	if len(rows) != 1 {
+		t.Fatalf("the renamed service sees %d earlier verdicts, want last year's: %v", len(rows), rows)
+	}
+	if entry := rows[0].(map[string]any); entry["review_id"] != last || entry["opinion"] != "작년 판정" {
+		t.Errorf("the earlier verdict reads %v", entry)
+	}
+	// And so do the files it could carry forward.
+	offered := author.do(http.MethodGet, "/api/v1/review-requests/"+now+"/items/"+nowItem+"/evidences/carry-over", nil)
+	items, _ := offered.json()["items"].([]any)
+	if len(items) != 1 {
+		t.Fatalf("the renamed service is offered %d earlier files: %s", len(items), offered.body)
+	}
+	if res := author.do(http.MethodPost, "/api/v1/review-requests/"+now+"/items/"+nowItem+"/evidences/carry-over",
+		map[string]any{"evidence_ids": []string{items[0].(map[string]any)["id"].(string)}}); res.status != http.StatusCreated {
+		t.Fatalf("carrying a file across the rename: %d %s", res.status, res.body)
+	}
+
+	// An unrelated service that never shared a name or a copy stays out of it.
+	stranger := author.createReview("전혀 다른 서비스")
+	strangerItem := firstItemID(t, h, stranger)
+	other := reviewer.do(http.MethodGet, "/api/v1/review-requests/"+stranger+"/items/"+strangerItem+"/verdict-history", nil).json()
+	if rows, _ := other["items"].([]any); len(rows) != 0 {
+		t.Errorf("an unrelated service picked up %d verdicts", len(rows))
+	}
+}

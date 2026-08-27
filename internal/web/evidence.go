@@ -524,7 +524,7 @@ func (s *Server) listCarryOverEvidence(w http.ResponseWriter, r *http.Request) {
                 JOIN review_requests ON review_requests.id=sub.review_request_id
                 WHERE e.deleted_at IS NULL AND e.scan_status IN ('CLEAN','SKIPPED') AND review_requests.id<>$1
                   AND si.item_code=(SELECT item_code FROM submission_items WHERE id=$2)
-                  AND review_requests.service_name=(SELECT service_name FROM review_requests WHERE id=$1)
+                  AND review_requests.id IN (SELECT id FROM review_lineage($1))
                   AND `+where+`
                 ORDER BY COALESCE(review_requests.approved_at,review_requests.updated_at) DESC,e.created_at LIMIT 50`,
 		append([]any{reviewID, itemID}, args...)...)
@@ -579,7 +579,7 @@ func (s *Server) carryOverEvidence(w http.ResponseWriter, r *http.Request) {
                 JOIN review_requests ON review_requests.id=sub.review_request_id
                 WHERE e.id=ANY($1) AND e.deleted_at IS NULL AND review_requests.id<>$2
                   AND si.item_code=(SELECT item_code FROM submission_items WHERE id=$3)
-                  AND review_requests.service_name=(SELECT service_name FROM review_requests WHERE id=$2)
+                  AND review_requests.id IN (SELECT id FROM review_lineage($2))
                   AND `+where+`
                 ORDER BY e.created_at`, append([]any{in.EvidenceIDs, reviewID, itemID}, args...)...)
 	if err != nil {

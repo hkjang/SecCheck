@@ -988,7 +988,7 @@ func (s *Server) itemVerdictHistory(w http.ResponseWriter, r *http.Request) {
                 LEFT JOIN users u ON u.id=rr.reviewer_id
                 WHERE review_requests.id<>$1
                   AND si.item_code=(SELECT item_code FROM submission_items WHERE id=$2)
-                  AND review_requests.service_name=(SELECT service_name FROM review_requests WHERE id=$1)
+                  AND review_requests.id IN (SELECT id FROM review_lineage($1))
                   AND COALESCE(rr.result,'')<>'' AND `+where+`
                 ORDER BY COALESCE(review_requests.approved_at,review_requests.updated_at) DESC LIMIT 5`,
 		append([]any{id, itemID}, args...)...)
@@ -2991,7 +2991,7 @@ func (s *Server) copyReview(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	id, submissionID := store.NewID(), store.NewID()
-	_, err = tx.Exec(r.Context(), `INSERT INTO review_requests(id,review_number,service_name,description,service_type,change_type,builder_id,developer_id,operator_id,department,requester_id,reviewer_id,approver_id,exposure,has_admin_page,processes_personal_data,processes_credit_data,external_customer_service,uses_cloud,uses_docker,uses_kubernetes,external_integration,internet_access,business_criticality) VALUES($1,$2,$3,$4,$5,'REVIEW',$6,$7,NULLIF($8,''),$9,$10,NULLIF($11,''),NULLIF($12,''),$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23)`, id, number, in.ServiceName, in.Description, in.ServiceType, in.BuilderID, in.DeveloperID, in.OperatorID, in.Department, sess.User.ID, in.ReviewerID, in.ApproverID, in.Exposure, in.HasAdminPage, in.ProcessesPersonalData, in.ProcessesCreditData, in.ExternalCustomerService, in.UsesCloud, in.UsesDocker, in.UsesKubernetes, in.ExternalIntegration, in.InternetAccess, in.BusinessCriticality)
+	_, err = tx.Exec(r.Context(), `INSERT INTO review_requests(id,review_number,service_name,description,service_type,change_type,builder_id,developer_id,operator_id,department,requester_id,reviewer_id,approver_id,exposure,has_admin_page,processes_personal_data,processes_credit_data,external_customer_service,uses_cloud,uses_docker,uses_kubernetes,external_integration,internet_access,business_criticality,copied_from) VALUES($1,$2,$3,$4,$5,'REVIEW',$6,$7,NULLIF($8,''),$9,$10,NULLIF($11,''),NULLIF($12,''),$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24)`, id, number, in.ServiceName, in.Description, in.ServiceType, in.BuilderID, in.DeveloperID, in.OperatorID, in.Department, sess.User.ID, in.ReviewerID, in.ApproverID, in.Exposure, in.HasAdminPage, in.ProcessesPersonalData, in.ProcessesCreditData, in.ExternalCustomerService, in.UsesCloud, in.UsesDocker, in.UsesKubernetes, in.ExternalIntegration, in.InternetAccess, in.BusinessCriticality, source)
 	if err == nil {
 		_, err = tx.Exec(r.Context(), `INSERT INTO submissions(id,review_request_id) VALUES($1,$2)`, submissionID, id)
 	}
