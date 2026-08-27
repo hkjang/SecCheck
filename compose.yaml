@@ -1,6 +1,6 @@
 services:
   seccheck:
-    image: seccheck:v1.0.138
+    image: seccheck:v1.0.139
     container_name: seccheck
     restart: unless-stopped
     stop_grace_period: 25s

@@ -130,6 +130,7 @@ func (s *Server) routes() {
 	s.handle("GET", "/api/v1/review-requests/{id}/items/{itemID}/verdict-history", "심의", "같은 서비스의 이전 심의에서 이 항목이 어떻게 판정되었는지", nil, false, s.itemVerdictHistory)
 	s.handle("GET", "/api/v1/review-requests/{id}/items/{itemID}/why", "심의", "이 항목이 이 심의에 배정된 이유. 적용 규칙의 조건별 판정 또는 수동 포함 사유", nil, false, s.itemAssignmentReason)
 	s.handle("GET", "/api/v1/review-requests/{id}/history", "심의", "이 심의에서 일어난 일의 이력. 감사로그에서 해당 심의 범위만 추출", nil, false, s.reviewHistory)
+	s.handle("GET", "/api/v1/review-requests/{id}/service-history", "심의", "같은 서비스의 지난 심의 목록. 이름을 바꿔도 재심의 복사 관계로 이어짐", nil, false, s.serviceHistory)
 	s.handle("PUT", "/api/v1/review-requests/{id}/responses/{itemID}", "심의", "체크리스트 항목 작성. expected_updated_at으로 동시 편집 충돌 감지", nil, false, s.saveResponse)
 	s.handle("POST", "/api/v1/review-requests/{id}/responses/bulk", "심의", "체크리스트 항목 일괄 작성 또는 담당자 일괄 배정", nil, false, s.bulkSaveResponses)
 	s.handle("POST", "/api/v1/review-requests/{id}/submit", "워크플로", "서버 검증 후 제출 또는 재제출", nil, false, s.submitReview)

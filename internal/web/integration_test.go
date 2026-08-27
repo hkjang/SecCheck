@@ -8815,3 +8815,71 @@ func TestRenamingAServiceDoesNotLoseItsHistory(t *testing.T) {
 		t.Errorf("an unrelated service picked up %d verdicts", len(rows))
 	}
 }
+
+// "Has this service been through here before, and how did it go" is the
+// question that comes before any item. The only way to ask it was to search
+// the list by name -- which is exactly what a rename breaks, and a re-review
+// is the moment somebody wants the answer.
+func TestAReviewShowsTheServicesEarlierReviews(t *testing.T) {
+	h := newHarness(t)
+	ctx := context.Background()
+	h.user("hist-author", "REQUESTER")
+	h.user("hist-reviewer", "SECURITY_REVIEWER")
+	h.user("hist-outsider", "REQUESTER")
+	author := h.login("hist-author")
+	reviewer := h.login("hist-reviewer")
+	var reviewerID string
+	if err := h.db.Pool.QueryRow(ctx, `SELECT id FROM users WHERE username='hist-reviewer'`).Scan(&reviewerID); err != nil {
+		t.Fatal(err)
+	}
+
+	last := author.createReview("이력 서비스")
+	item := firstItemID(t, h, last)
+	if _, err := h.db.Pool.Exec(ctx, `UPDATE review_requests SET reviewer_id=$2,status='REVIEWING' WHERE id=$1`, last, reviewerID); err != nil {
+		t.Fatal(err)
+	}
+	if res := reviewer.do(http.MethodPut, "/api/v1/review-requests/"+last+"/review-results/"+item,
+		map[string]any{"result": "NON_COMPLIANT", "opinion": "작년 지적", "expected_updated_at": ""}); res.status != http.StatusOK {
+		t.Fatalf("judging: %d %s", res.status, res.body)
+	}
+	if _, err := h.db.Pool.Exec(ctx, `UPDATE review_requests SET status='APPROVED',final_result='CONDITIONAL',approved_at=now()-interval '200 days' WHERE id=$1`, last); err != nil {
+		t.Fatal(err)
+	}
+
+	// This year, copied forward and renamed -- the case a name match misses.
+	copied := author.do(http.MethodPost, "/api/v1/review-requests/"+last+"/copy", map[string]any{})
+	if copied.status != http.StatusCreated && copied.status != http.StatusOK {
+		t.Fatalf("copying: %d %s", copied.status, copied.body)
+	}
+	now := copied.json()["id"].(string)
+	if _, err := h.db.Pool.Exec(ctx, `UPDATE review_requests SET service_name='이력 서비스 (개편)' WHERE id=$1`, now); err != nil {
+		t.Fatal(err)
+	}
+
+	res := author.do(http.MethodGet, "/api/v1/review-requests/"+now+"/service-history", nil)
+	if res.status != http.StatusOK {
+		t.Fatalf("service history: %d %s", res.status, res.body)
+	}
+	rows, _ := res.json()["items"].([]any)
+	if len(rows) != 1 {
+		t.Fatalf("the re-review lists %d earlier reviews, want last year's: %s", len(rows), res.body)
+	}
+	entry := rows[0].(map[string]any)
+	if entry["id"] != last || entry["final_result"] != "CONDITIONAL" {
+		t.Errorf("the earlier review reads %v", entry)
+	}
+	// The number that decides whether to read it: how much was found last time.
+	if entry["findings"] != float64(1) {
+		t.Errorf("the earlier review reports %v findings, want 1", entry["findings"])
+	}
+	// A review that is nobody else's business stays that way.
+	if res := h.login("hist-outsider").do(http.MethodGet, "/api/v1/review-requests/"+now+"/service-history", nil); res.status != http.StatusNotFound {
+		t.Errorf("an outsider read the service history: %d %s", res.status, res.body)
+	}
+	// And the first review of a service says nothing rather than something
+	// wrong.
+	fresh := author.createReview("처음 보는 서비스")
+	if rows, _ := author.do(http.MethodGet, "/api/v1/review-requests/"+fresh+"/service-history", nil).json()["items"].([]any); len(rows) != 0 {
+		t.Errorf("a first review claims %d earlier ones", len(rows))
+	}
+}

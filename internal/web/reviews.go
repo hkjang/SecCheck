@@ -947,6 +947,47 @@ func (s *Server) itemAssignmentReason(w http.ResponseWriter, r *http.Request) {
 	jsonResponse(w, 200, out)
 }
 
+// serviceHistory lists the earlier reviews of the same service. The verdict
+// history answers "what did we decide about this item"; this answers the
+// question that comes first -- has this service been through here before, and
+// how did it go. Until now the only way to ask was to search the list by name,
+// which is exactly what a rename breaks.
+func (s *Server) serviceHistory(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	sess := session(r)
+	if !s.canAccessReview(r.Context(), sess, id) {
+		problem(w, 404, "NOT_FOUND", "심의를 찾을 수 없습니다.", nil)
+		return
+	}
+	where, args := accessFilter(sess, 2)
+	if hasAnyRole(sess.User, "SECURITY_REVIEWER", "AUDITOR") {
+		where = "TRUE"
+		args = nil
+	}
+	rows, err := s.Store.Pool.Query(r.Context(), `SELECT review_requests.id,review_requests.review_number,review_requests.service_name,review_requests.status,
+                COALESCE(review_requests.final_result,'') AS final_result,
+                to_char(display_date(COALESCE(review_requests.approved_at,review_requests.updated_at)),'YYYY-MM-DD') AS decided_on,
+                (SELECT count(*) FROM review_results rr
+                        JOIN submission_items si ON si.id=rr.submission_item_id
+                        JOIN submissions sub ON sub.id=si.submission_id
+                        WHERE sub.review_request_id=review_requests.id
+                          AND rr.result IN ('INSUFFICIENT','NON_COMPLIANT','CONDITIONAL','RECHECK')) AS findings
+                FROM review_requests
+                WHERE review_requests.id<>$1 AND review_requests.id IN (SELECT id FROM review_lineage($1)) AND `+where+`
+                ORDER BY COALESCE(review_requests.approved_at,review_requests.updated_at) DESC LIMIT 10`,
+		append([]any{id}, args...)...)
+	if err != nil {
+		s.fault(w, r, "QUERY_FAILED", "지난 심의를 불러오지 못했습니다.", err)
+		return
+	}
+	items, err := scanDynamic(rows, []string{"id", "review_number", "service_name", "status", "final_result", "decided_on", "findings"})
+	if err != nil {
+		s.fault(w, r, "QUERY_FAILED", "목록을 불러오지 못했습니다.", err)
+		return
+	}
+	jsonResponse(w, 200, map[string]any{"items": items, "total": len(items)})
+}
+
 // itemVerdictHistory answers "what did we decide about this last time".
 // A service comes back for review every year and the same checklist item comes
 // with it; the verdict, the opinion and the follow-up from the previous round

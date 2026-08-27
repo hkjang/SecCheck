@@ -144,6 +144,7 @@ export default function ReviewDetail() {
     {bulkOpen && !judging && <BulkModal reviewID={id} itemIDs={Array.from(picked)} count={picked.size} people={assignees} onClose={() => setBulkOpen(false)} onSaved={async () => { setBulkOpen(false); setPicked(new Set()); await load() }} />}
     {validation && <Modal title={review.status === 'REVIEWING' ? '검토 완료 전 확인이 필요합니다' : '제출 전 확인이 필요합니다'} onClose={() => setValidation(null)} footer={<Button variant="primary" onClick={() => setValidation(null)}>확인</Button>}><p className="subtle">서버 검증에서 {validation.length}개 항목이 남아 있습니다. 항목을 누르면 해당 위치로 이동합니다.</p>{validation.map((issue, i) => <div className="change-item" key={i}><button className="link-button" onClick={() => focusItem(String(issue.item_code))}><strong>{String(issue.item_code)} {String(issue.title)}</strong></button><ul>{(issue.reasons as string[]).map(x => <li key={x}>{x}</li>)}</ul></div>)}</Modal>}
     {review.status === 'APPROVAL_PENDING' && <ApprovalBrief reviewID={review.id} />}
+    <ServiceHistory reviewID={review.id} />
     {dialog && <DecisionModal kind={dialog} busy={busy} draft={dialog === 'complete' ? completionDraft(items || [], results) : ''} suggested={dialog === 'complete' ? suggestedResult(results) : ''} onClose={() => setDialog(null)} onSubmit={(data) => dialog === 'complete' ? action('complete-review', data) : dialog === 'reopen' ? action('reopen', data) : dialog === 'withdraw' ? action('withdraw-approval', data) : action(dialog === 'approval' ? 'approve' : 'reject', data)} />}
     {ruleOpen && <RuleOverrideModal reviewID={id} onClose={() => setRuleOpen(false)} onSaved={load} />}
   </div>
@@ -705,6 +706,29 @@ function ApprovalBrief({ reviewID }: { reviewID: string }) {
         <ul>{brief.follow_ups.map((f, i) => <li key={`u-${i}`}><code>{String(f.item_code)}</code> {String(f.follow_up)} {f.due_date ? <span className="subtle">· 기한 {String(f.due_date)}</span> : <Badge tone="red">기한 없음 · 알림이 가지 않습니다</Badge>}</li>)}</ul></>}
       {brief.unverified_changes > 0 && <p className="subtle">아직 확인되지 않은 보완 요청이 {brief.unverified_changes}건 있습니다.</p>}
     </div>
+  </section>
+}
+
+
+// Has this service been through here before, and how did it go? The verdict
+// history answers that item by item; this is the question that comes first,
+// and the only way to ask it used to be a search by name -- which is exactly
+// what a rename breaks.
+function ServiceHistory({ reviewID }: { reviewID: string }) {
+  const [rows, setRows] = useState<Record<string, unknown>[]>([])
+  useEffect(() => { let alive = true; get<{ items: Record<string, unknown>[] }>(`/api/v1/review-requests/${reviewID}/service-history`).then(out => { if (alive) setRows(out.items || []) }).catch(() => undefined); return () => { alive = false } }, [reviewID])
+  if (!rows.length) return null
+  return <section className="card">
+    <div className="card-header"><h2><History size={17} /> 이 서비스의 지난 심의</h2><Badge>{rows.length}건</Badge></div>
+    <div className="table-wrap"><table><caption className="sr-only">같은 서비스의 이전 심의</caption>
+      <thead><tr><th scope="col">심의</th><th scope="col">상태</th><th scope="col">결과</th><th scope="col">지적</th><th scope="col">일자</th></tr></thead>
+      <tbody>{rows.map((row, i) => <tr key={i}>
+        <td><Link className="table-link" to={`/reviews/${String(row.id)}`}>{String(row.review_number)}</Link><div className="subtle">{String(row.service_name)}</div></td>
+        <td><StatusBadge status={String(row.status)} /></td>
+        <td>{row.final_result ? (outcomeLabel[String(row.final_result)] || String(row.final_result)) : <span className="subtle">-</span>}</td>
+        <td>{Number(row.findings) > 0 ? <Badge tone="amber">{String(row.findings)}건</Badge> : <span className="subtle">없음</span>}</td>
+        <td className="subtle">{String(row.decided_on || '')}</td>
+      </tr>)}</tbody></table></div>
   </section>
 }
 
