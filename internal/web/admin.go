@@ -1051,6 +1051,25 @@ func (s *Server) retryJob(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(204)
 }
 
+// requeueLostScans gives a scan job back to evidence that is waiting for one
+// and has none. The same repair runs hourly in the maintenance sweep; it is
+// done here as well because an administrator pressing 재시도 is asking for the
+// queue to be put right now, not within the hour.
+func (s *Server) requeueLostScans(ctx context.Context) int64 {
+	tag, err := s.Store.Pool.Exec(ctx, `INSERT INTO jobs(id,type,payload)
+                SELECT gen_random_uuid()::text,'SCAN_EVIDENCE',jsonb_build_object('evidence_id',e.id)
+                FROM evidences e
+                WHERE e.deleted_at IS NULL AND e.scan_status IN ('PENDING','ERROR')
+                  AND NOT EXISTS(SELECT 1 FROM jobs j WHERE j.type='SCAN_EVIDENCE'
+                        AND j.status IN ('PENDING','RUNNING') AND j.payload->>'evidence_id'=e.id)
+                LIMIT 500`)
+	if err != nil {
+		s.Store.Log(ctx, "ERROR", "", "admin", "검사 대기 증적의 작업을 다시 넣지 못했습니다.", map[string]any{"error": err.Error()})
+		return 0
+	}
+	return tag.RowsAffected()
+}
+
 // retryFailedJobs is the bulk form, for when an SMTP or clamd outage has
 // filled the queue.
 func (s *Server) retryFailedJobs(w http.ResponseWriter, r *http.Request) {
@@ -1060,8 +1079,13 @@ func (s *Server) retryFailedJobs(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	_, _ = s.Store.Pool.Exec(r.Context(), `UPDATE evidences SET scan_status='PENDING' WHERE scan_status='ERROR' AND deleted_at IS NULL`)
-	_ = s.Store.Audit(r.Context(), auditFrom(r, "RETRY_JOB", "JOB", "all-failed", nil, map[string]any{"requeued": tag.RowsAffected()}))
-	jsonResponse(w, 200, map[string]any{"requeued": tag.RowsAffected()})
+	// Marking the evidence as waiting is only half of it. If the job that was
+	// going to scan it has since been cleared out of the queue -- a failed job
+	// is deleted after ninety days -- the file waits for ever and the review
+	// it belongs to can never be submitted, so anything without a job gets one.
+	requeued := s.requeueLostScans(r.Context())
+	_ = s.Store.Audit(r.Context(), auditFrom(r, "RETRY_JOB", "JOB", "all-failed", nil, map[string]any{"requeued": tag.RowsAffected(), "rescheduled_scans": requeued}))
+	jsonResponse(w, 200, map[string]any{"requeued": tag.RowsAffected(), "rescheduled_scans": requeued})
 }
 
 // handoverUserWork moves everything a departing account still holds to another

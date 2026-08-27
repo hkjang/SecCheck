@@ -120,6 +120,7 @@ func (w *Worker) Sweep(ctx context.Context) map[string]int64 {
 	removed["api_key_reminders"] = w.remindExpiringAPIKeys(ctx)
 	removed["purged_evidence_files"] = w.purgeDeletedEvidence(ctx)
 	removed["orphan_evidence_files"] = w.countOrphanBlobs(ctx)
+	removed["requeued_scans"] = w.requeueLostScans(ctx)
 	total := int64(0)
 	for name, n := range removed {
 		// An orphan count is a finding, not something the sweep removed.
@@ -904,6 +905,32 @@ func (w *Worker) purgeDeletedEvidence(ctx context.Context) int64 {
 // remindDueChangeRequests notifies the assignee once when a change request is
 // close to its due date or already late. The due date was captured from the
 // start but nothing ever acted on it.
+// requeueLostScans finds evidence waiting for a scan that nothing is going to
+// run. Every upload enqueues its own scan, but the queue is cleared of old
+// rows by this very sweep -- a failed job is deleted after ninety days -- and
+// the administrator's "실패 전체 재시도" flips ERROR evidence back to PENDING
+// whether or not a job still exists to act on it. The evidence then waits for
+// ever, and the review it belongs to cannot be submitted: the gate refuses an
+// unscanned file and the author has no way to move it.
+func (w *Worker) requeueLostScans(ctx context.Context) int64 {
+	tag, err := w.Store.Pool.Exec(ctx, `INSERT INTO jobs(id,type,payload)
+                SELECT gen_random_uuid()::text,'SCAN_EVIDENCE',jsonb_build_object('evidence_id',e.id)
+                FROM evidences e
+                WHERE e.deleted_at IS NULL AND e.scan_status IN ('PENDING','ERROR')
+                  AND NOT EXISTS(SELECT 1 FROM jobs j WHERE j.type='SCAN_EVIDENCE'
+                        AND j.status IN ('PENDING','RUNNING') AND j.payload->>'evidence_id'=e.id)
+                LIMIT 500`)
+	if err != nil {
+		w.Store.Log(ctx, "ERROR", "", "maintenance", "검사 대기 증적의 작업을 다시 넣지 못했습니다.", map[string]any{"error": err.Error()})
+		return 0
+	}
+	if tag.RowsAffected() > 0 {
+		w.Store.Log(ctx, "WARN", "", "maintenance", "검사를 기다리지만 대기열에 작업이 없던 증적을 다시 넣었습니다. 이 상태의 증적은 제출을 막습니다.",
+			map[string]any{"requeued": tag.RowsAffected()})
+	}
+	return tag.RowsAffected()
+}
+
 // countOrphanBlobs answers "why is the disk filling up". The definition of an
 // orphan lives with the vault, which owns the directory, so the hourly report
 // and `seccheck verify-evidence` cannot disagree about what one is. The sweep

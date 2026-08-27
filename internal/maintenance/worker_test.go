@@ -1337,3 +1337,61 @@ func TestTheSweepReportsFilesNoReviewCanReach(t *testing.T) {
 		}
 	}
 }
+
+// Every upload enqueues its own scan, and this sweep clears old jobs out of
+// the queue: a failed one is deleted after ninety days. The evidence it was
+// going to scan is still marked as waiting, so the file waits for ever and the
+// review it belongs to can never be submitted -- the gate refuses an unscanned
+// file and the author has no way to move it. Pressing "실패 전체 재시도" made
+// it worse, turning ERROR into PENDING with still nothing to run.
+func TestTheSweepGivesBackAScanJobThatWasLost(t *testing.T) {
+	db := testdb.New(t)
+	ctx := context.Background()
+	owner := testdb.Bootstrap(t, db, "scan-owner")
+	stranded := store.NewID()
+	seedEvidenceRow(t, db, stranded, owner, store.NewID()+".enc", 1, 0)
+	if _, err := db.Pool.Exec(ctx, `UPDATE evidences SET deleted_at=NULL,scan_status='PENDING' WHERE id=$1`, stranded); err != nil {
+		t.Fatal(err)
+	}
+	// A second file that is already queued must not be queued twice.
+	queued := store.NewID()
+	seedEvidenceRow(t, db, queued, owner, store.NewID()+".enc", 1, 0)
+	if _, err := db.Pool.Exec(ctx, `UPDATE evidences SET deleted_at=NULL,scan_status='PENDING' WHERE id=$1`, queued); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Pool.Exec(ctx, `INSERT INTO jobs(id,type,payload) VALUES($1,'SCAN_EVIDENCE',jsonb_build_object('evidence_id',$2::text))`, store.NewID(), queued); err != nil {
+		t.Fatal(err)
+	}
+	// And a clean one, which has nothing to wait for.
+	clean := store.NewID()
+	seedEvidenceRow(t, db, clean, owner, store.NewID()+".enc", 1, 0)
+	if _, err := db.Pool.Exec(ctx, `UPDATE evidences SET deleted_at=NULL,scan_status='CLEAN' WHERE id=$1`, clean); err != nil {
+		t.Fatal(err)
+	}
+
+	removed := maintenance.New(db, nil).Sweep(ctx)
+	if removed["requeued_scans"] != 1 {
+		t.Fatalf("the sweep requeued %d scans, want the one that lost its job", removed["requeued_scans"])
+	}
+	jobs := func(evidenceID string) int {
+		t.Helper()
+		var n int
+		if err := db.Pool.QueryRow(ctx, `SELECT count(*) FROM jobs WHERE type='SCAN_EVIDENCE' AND payload->>'evidence_id'=$1`, evidenceID).Scan(&n); err != nil {
+			t.Fatal(err)
+		}
+		return n
+	}
+	if jobs(stranded) != 1 {
+		t.Errorf("the stranded file has %d scan jobs", jobs(stranded))
+	}
+	if jobs(queued) != 1 {
+		t.Errorf("a file that was already queued now has %d jobs", jobs(queued))
+	}
+	if jobs(clean) != 0 {
+		t.Errorf("a scanned file was queued again (%d jobs)", jobs(clean))
+	}
+	// A second sweep finds nothing to do: the repair is not a treadmill.
+	if again := maintenance.New(db, nil).Sweep(ctx); again["requeued_scans"] != 0 {
+		t.Errorf("the next sweep requeued %d scans", again["requeued_scans"])
+	}
+}
