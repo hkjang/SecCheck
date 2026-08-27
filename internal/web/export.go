@@ -22,6 +22,12 @@ import (
 type exportData struct {
 	Review map[string]any   `json:"review"`
 	Items  []map[string]any `json:"items"`
+	// The corrections are part of what happened, and the exported package is
+	// the copy that outlives the service: it carried the answers and the
+	// verdicts and left out the fact that the review went back and forth --
+	// who asked for what, when it was due, what the team answered and when it
+	// was accepted.
+	ChangeRequests []map[string]any `json:"change_requests"`
 }
 
 func (s *Server) exportReview(w http.ResponseWriter, r *http.Request) {
@@ -68,7 +74,28 @@ func (s *Server) loadExportData(r *http.Request, id string) (exportData, error) 
 	if err != nil {
 		return exportData{}, err
 	}
-	return exportData{Review: review, Items: items}, nil
+
+	// The same order the reviewer worked in: item by item, oldest correction
+	// first.
+	crRows, crErr := s.Store.Pool.Query(r.Context(), `SELECT si.item_code,si.title,c.reason,COALESCE(u.display_name,'') AS requested_by,
+                to_char(c.due_date,'YYYY-MM-DD') AS due_date,c.status,c.answer,
+                COALESCE(a.display_name,'') AS assigned_to,
+                to_char(display_date(c.created_at),'YYYY-MM-DD') AS requested_on,
+                to_char(display_date(c.updated_at),'YYYY-MM-DD') AS updated_on
+                FROM change_requests c
+                JOIN submission_items si ON si.id=c.submission_item_id
+                LEFT JOIN users u ON u.id=c.requester_id
+                LEFT JOIN users a ON a.id=c.assignee_id
+                WHERE c.review_request_id=$1
+                ORDER BY si.item_code,c.created_at`, id)
+	if crErr != nil {
+		return exportData{}, crErr
+	}
+	changes, crErr := scanDynamic(crRows, []string{"item_code", "title", "reason", "requested_by", "due_date", "status", "answer", "assigned_to", "requested_on", "updated_on"})
+	if crErr != nil {
+		return exportData{}, crErr
+	}
+	return exportData{Review: review, Items: items, ChangeRequests: changes}, nil
 }
 
 // localTimestamp renders a stored timestamp in the configured display zone.
@@ -189,6 +216,24 @@ func (s *Server) writeExcelExport(w http.ResponseWriter, r *http.Request, data e
 		_ = f.SetColWidth(evidenceSheet, "A", "E", 24)
 		_ = f.SetColWidth(evidenceSheet, "E", "E", 68)
 	}
+	// The corrections belong in the archived copy as much as the answers do:
+	// an approved review that went back twice is not the same record as one
+	// that passed first time.
+	changeSheet := "보완 요청"
+	if _, err := f.NewSheet(changeSheet); err == nil {
+		changeRows := [][]any{{"항목코드", "보안요건", "요청 사유", "요청자", "담당자", "요청일", "기한", "상태", "조치 내용", "최종 변경일"}}
+		for _, c := range data.ChangeRequests {
+			changeRows = append(changeRows, []any{c["item_code"], c["title"], c["reason"], c["requested_by"], c["assigned_to"],
+				c["requested_on"], c["due_date"], changeStatusText(c["status"]), c["answer"], c["updated_on"]})
+		}
+		if len(changeRows) == 1 {
+			changeRows = append(changeRows, []any{"", "보완 요청이 없었습니다.", "", "", "", "", "", "", "", ""})
+		}
+		writeSheetRows(f, changeSheet, changeRows, 1)
+		_ = f.SetColWidth(changeSheet, "A", "J", 22)
+		_ = f.SetColWidth(changeSheet, "C", "C", 52)
+		_ = f.SetColWidth(changeSheet, "I", "I", 52)
+	}
 	buf, err := f.WriteToBuffer()
 	if err != nil {
 		s.fault(w, r, "EXPORT_FAILED", "Excel 파일을 생성하지 못했습니다.", err)
@@ -265,6 +310,20 @@ func (s *Server) writePDFExport(w http.ResponseWriter, r *http.Request, data exp
 
 // valueOr keeps a null column out of the rendered text, where fmt would
 // otherwise print "<nil>".
+// changeStatusText spells the correction's state the way the screens do, so
+// the archived copy reads the same as the review it came from.
+func changeStatusText(v any) string {
+	switch fmt.Sprint(v) {
+	case "OPEN":
+		return "미조치"
+	case "DONE":
+		return "조치 완료(확인 대기)"
+	case "VERIFIED":
+		return "확인 완료"
+	}
+	return fmt.Sprint(v)
+}
+
 func valueOr(v any, fallback string) any {
 	if v == nil {
 		return fallback

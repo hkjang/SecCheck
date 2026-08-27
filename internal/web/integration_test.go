@@ -8943,3 +8943,82 @@ func TestTheReviewListCarriesTheConclusionAndCanFilterOnIt(t *testing.T) {
 		t.Errorf("filtering on two conclusions returned %d rows", len(both))
 	}
 }
+
+// The exported package is the copy that outlives the service, and it carried
+// the answers and the verdicts while leaving out the fact that the review went
+// back and forth: who asked for what, by when, what the team answered and when
+// it was accepted. An approved review that was sent back twice is not the same
+// record as one that passed first time.
+func TestTheExportCarriesTheCorrectionsToo(t *testing.T) {
+	h := newHarness(t)
+	ctx := context.Background()
+	h.user("export-author", "REQUESTER")
+	h.user("export-reviewer", "SECURITY_REVIEWER")
+	author := h.login("export-author")
+	reviewer := h.login("export-reviewer")
+	var reviewerID string
+	if err := h.db.Pool.QueryRow(ctx, `SELECT id FROM users WHERE username='export-reviewer'`).Scan(&reviewerID); err != nil {
+		t.Fatal(err)
+	}
+
+	reviewID := author.createReview("보존 서비스")
+	itemID := firstItemID(t, h, reviewID)
+	var itemCode string
+	if err := h.db.Pool.QueryRow(ctx, `SELECT item_code FROM submission_items WHERE id=$1`, itemID).Scan(&itemCode); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := h.db.Pool.Exec(ctx, `UPDATE review_requests SET reviewer_id=$2,status='REVIEWING' WHERE id=$1`, reviewID, reviewerID); err != nil {
+		t.Fatal(err)
+	}
+	if res := reviewer.do(http.MethodPost, "/api/v1/review-requests/"+reviewID+"/change-requests",
+		map[string]any{"item_id": itemID, "reason": "접근 권한 목록을 첨부하세요", "due_date": "2030-06-30"}); res.status != http.StatusCreated {
+		t.Fatalf("requesting a correction: %d %s", res.status, res.body)
+	}
+	var changeID string
+	if err := h.db.Pool.QueryRow(ctx, `SELECT id FROM change_requests WHERE review_request_id=$1`, reviewID).Scan(&changeID); err != nil {
+		t.Fatal(err)
+	}
+	if res := author.do(http.MethodPatch, "/api/v1/change-requests/"+changeID, map[string]any{"answer": "권한 목록을 첨부했습니다", "status": "DONE"}); res.status != http.StatusOK {
+		t.Fatalf("answering the correction: %d %s", res.status, res.body)
+	}
+
+	// The machine-readable copy carries the whole exchange.
+	structured := author.do(http.MethodGet, "/api/v1/review-requests/"+reviewID+"/export/json", nil)
+	if structured.status != http.StatusOK {
+		t.Fatalf("json export: %d", structured.status)
+	}
+	for _, want := range []string{"change_requests", "접근 권한 목록을 첨부하세요", "권한 목록을 첨부했습니다", "2030-06-30"} {
+		if !strings.Contains(structured.body, want) {
+			t.Errorf("the JSON export does not carry %q", want)
+		}
+	}
+
+	// And so does the workbook an auditor actually opens.
+	req, _ := http.NewRequest(http.MethodGet, h.server.URL+"/api/v1/review-requests/"+reviewID+"/export/xlsx", nil)
+	book := author.send(req)
+	if book.status != http.StatusOK {
+		t.Fatalf("xlsx export: %d", book.status)
+	}
+	sheet, err := readXLSXStrings([]byte(book.body))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"보완 요청", "접근 권한 목록을 첨부하세요", "조치 완료(확인 대기)", itemCode} {
+		if !strings.Contains(sheet, want) {
+			t.Errorf("the workbook does not carry %q", want)
+		}
+	}
+
+	// A review that never went back says so rather than leaving a reader
+	// wondering whether the sheet is broken.
+	clean := author.createReview("한 번에 통과한 서비스")
+	cleanReq, _ := http.NewRequest(http.MethodGet, h.server.URL+"/api/v1/review-requests/"+clean+"/export/xlsx", nil)
+	cleanBook := author.send(cleanReq)
+	cleanSheet, err := readXLSXStrings([]byte(cleanBook.body))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(cleanSheet, "보완 요청이 없었습니다") {
+		t.Error("a review with no corrections leaves the sheet unexplained")
+	}
+}
