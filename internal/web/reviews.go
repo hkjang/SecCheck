@@ -44,7 +44,7 @@ type reviewInput struct {
 	ManualRuleOverrideReason string  `json:"manual_rule_override_reason"`
 }
 
-var reviewColumns = []string{"id", "review_number", "service_name", "service_type", "change_type", "department", "status", "planned_open_date", "requester_id", "reviewer_id", "approver_id", "requester_name", "reviewer_name", "open_change_requests", "overdue_change_requests", "created_at", "updated_at"}
+var reviewColumns = []string{"id", "review_number", "service_name", "service_type", "change_type", "department", "status", "final_result", "planned_open_date", "requester_id", "reviewer_id", "approver_id", "requester_name", "reviewer_name", "open_change_requests", "overdue_change_requests", "created_at", "updated_at"}
 
 // reviewSorts is an allowlist: the sort key never reaches SQL as free text.
 var reviewSorts = map[string]string{
@@ -114,6 +114,19 @@ func (s *Server) reviewFilter(r *http.Request) (string, []any) {
 	}
 	// Both of these are the list behind a dashboard count, and the count stops
 	// at a cancelled review, so the list has to as well.
+	// A conclusion is not a state: two approved reviews can mean "clean" and
+	// "approved with three things still to do", and the list could not tell
+	// them apart -- so the question "which services passed conditionally" had
+	// to be answered by opening them one at a time.
+	if v := strings.TrimSpace(query.Get("result")); v != "" {
+		if results := strings.Split(v, ","); len(results) > 1 {
+			args = append(args, results)
+			where += fmt.Sprintf(" AND review_requests.final_result = ANY($%d)", len(args))
+		} else {
+			args = append(args, v)
+			where += fmt.Sprintf(" AND review_requests.final_result=$%d", len(args))
+		}
+	}
 	if strings.TrimSpace(query.Get("open_changes")) == "1" {
 		where += " AND review_requests.status<>'CANCELLED' AND EXISTS(SELECT 1 FROM change_requests oc WHERE oc.review_request_id=review_requests.id AND oc.status='OPEN')"
 	}
@@ -127,7 +140,7 @@ func (s *Server) reviewFilter(r *http.Request) (string, []any) {
 	return where, args
 }
 
-const reviewSelect = `SELECT review_requests.id,review_number,service_name,service_type,change_type,review_requests.department,review_requests.status,planned_open_date,requester_id,reviewer_id,approver_id,
+const reviewSelect = `SELECT review_requests.id,review_number,service_name,service_type,change_type,review_requests.department,review_requests.status,COALESCE(review_requests.final_result,''),planned_open_date,requester_id,reviewer_id,approver_id,
         requester.display_name,COALESCE(reviewer.display_name,''),
         (SELECT count(*) FROM change_requests c WHERE c.review_request_id=review_requests.id AND c.status<>'VERIFIED'),
         (SELECT count(*) FROM change_requests c WHERE c.review_request_id=review_requests.id AND c.status<>'VERIFIED' AND c.due_date < display_today()),

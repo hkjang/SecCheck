@@ -8883,3 +8883,63 @@ func TestAReviewShowsTheServicesEarlierReviews(t *testing.T) {
 		t.Errorf("a first review claims %d earlier ones", len(rows))
 	}
 }
+
+// 승인 is not one answer. A review approved cleanly and one approved with three
+// things still to do read the same in the list, so "which services passed only
+// conditionally" -- the question a security lead asks every quarter -- had to
+// be answered by opening them one at a time.
+func TestTheReviewListCarriesTheConclusionAndCanFilterOnIt(t *testing.T) {
+	h := newHarness(t)
+	ctx := context.Background()
+	h.user("result-author", "REQUESTER")
+	h.user("result-lead", "SECURITY_REVIEWER")
+	author := h.login("result-author")
+	lead := h.login("result-lead")
+
+	decided := func(service, result string) string {
+		t.Helper()
+		id := author.createReview(service)
+		if _, err := h.db.Pool.Exec(ctx, `UPDATE review_requests SET status='APPROVED',final_result=$2,approved_at=now() WHERE id=$1`, id, result); err != nil {
+			t.Fatal(err)
+		}
+		return id
+	}
+	clean := decided("깨끗한 서비스", "APPROVED")
+	conditional := decided("조건부 서비스", "CONDITIONAL")
+	inFlight := author.createReview("진행 중 서비스")
+
+	rows := func(query string) []map[string]any {
+		t.Helper()
+		res := lead.do(http.MethodGet, "/api/v1/review-requests?limit=50"+query, nil)
+		if res.status != http.StatusOK {
+			t.Fatalf("list%s: %d %s", query, res.status, res.body)
+		}
+		out := []map[string]any{}
+		raw, _ := json.Marshal(res.json()["items"])
+		if err := json.Unmarshal(raw, &out); err != nil {
+			t.Fatal(err)
+		}
+		return out
+	}
+	byID := map[string]map[string]any{}
+	for _, row := range rows("") {
+		byID[row["id"].(string)] = row
+	}
+	if byID[conditional]["final_result"] != "CONDITIONAL" || byID[clean]["final_result"] != "APPROVED" {
+		t.Errorf("the list does not carry the conclusion: %v / %v", byID[conditional]["final_result"], byID[clean]["final_result"])
+	}
+	// A review still in progress has no conclusion, and says so by carrying
+	// none rather than by looking approved.
+	if byID[inFlight]["final_result"] != "" {
+		t.Errorf("an undecided review reports %v", byID[inFlight]["final_result"])
+	}
+
+	only := rows("&result=CONDITIONAL")
+	if len(only) != 1 || only[0]["id"] != conditional {
+		t.Fatalf("the conditional filter returned %d rows: %v", len(only), only)
+	}
+	// Two results at once, the way the status filter already works.
+	if both := rows("&result=CONDITIONAL,APPROVED"); len(both) != 2 {
+		t.Errorf("filtering on two conclusions returned %d rows", len(both))
+	}
+}
