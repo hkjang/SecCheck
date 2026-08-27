@@ -127,6 +127,11 @@ func (s *Server) reviewFilter(r *http.Request) (string, []any) {
 			where += fmt.Sprintf(" AND review_requests.final_result=$%d", len(args))
 		}
 	}
+	// The other half of the same queue: corrections the team has answered and
+	// nobody has accepted yet.
+	if strings.TrimSpace(query.Get("awaiting_verification")) == "1" {
+		where += " AND review_requests.status<>'CANCELLED' AND EXISTS(SELECT 1 FROM change_requests oc WHERE oc.review_request_id=review_requests.id AND oc.status='DONE')"
+	}
 	if strings.TrimSpace(query.Get("open_changes")) == "1" {
 		where += " AND review_requests.status<>'CANCELLED' AND EXISTS(SELECT 1 FROM change_requests oc WHERE oc.review_request_id=review_requests.id AND oc.status='OPEN')"
 	}

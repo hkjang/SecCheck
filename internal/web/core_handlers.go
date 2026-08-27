@@ -362,6 +362,15 @@ func (s *Server) dashboard(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
+	// A correction the team has answered is waiting for the reviewer to accept
+	// it, and until they do the review cannot be completed. That work was on
+	// nobody's screen: 미처리 counts what the author still owes, 보완 조치 기한
+	// only reaches a week ahead, and a correction answered in March with a
+	// June deadline appeared in neither.
+	awaiting, ok := count(`SELECT count(*) FROM change_requests c JOIN review_requests r ON r.id=c.review_request_id WHERE `+strings.ReplaceAll(where, "review_requests.", "r.")+` AND c.status='DONE' AND r.status<>'CANCELLED'`, args...)
+	if !ok {
+		return
+	}
 	// Two counts a security lead acts on, and links that lead to the exact list.
 	// The two aggregations that used to sit here -- findings by category and the
 	// most repeated failures -- were computed on every load of the busiest
@@ -387,7 +396,7 @@ func (s *Server) dashboard(w http.ResponseWriter, r *http.Request) {
 	due, dueMore := s.dueChangeRequests(r)
 	follows, followsMore := s.myFollowUps(r)
 	mine, mineMore := s.myAssignedItems(r)
-	jsonResponse(w, 200, map[string]any{"status_counts": counts, "opening_soon": overdue, "opening_soon_unfinished": openingUnfinished, "open_change_requests": openChanges, "security_analytics": analytics,
+	jsonResponse(w, 200, map[string]any{"status_counts": counts, "opening_soon": overdue, "opening_soon_unfinished": openingUnfinished, "open_change_requests": openChanges, "awaiting_verification": awaiting, "security_analytics": analytics,
 		"my_queue": queue, "due_soon": due, "my_follow_ups": follows, "my_items": mine,
 		"has_more": map[string]bool{"my_queue": queueMore, "due_soon": dueMore, "my_follow_ups": followsMore, "my_items": mineMore}})
 }

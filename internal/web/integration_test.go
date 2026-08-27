@@ -9022,3 +9022,71 @@ func TestTheExportCarriesTheCorrectionsToo(t *testing.T) {
 		t.Error("a review with no corrections leaves the sheet unexplained")
 	}
 }
+
+// A correction the team has answered is waiting for the reviewer to accept it,
+// and until they do the review cannot be completed. That work was on nobody's
+// screen: 미처리 counts what the author still owes, 보완 조치 기한 only reaches
+// a week ahead, and a correction answered in March with a June deadline
+// appeared in neither.
+func TestCorrectionsWaitingForTheReviewerAreCounted(t *testing.T) {
+	h := newHarness(t)
+	ctx := context.Background()
+	h.user("await-author", "REQUESTER")
+	h.user("await-lead", "SECURITY_REVIEWER")
+	author := h.login("await-author")
+	lead := h.login("await-lead")
+	var leadID string
+	if err := h.db.Pool.QueryRow(ctx, `SELECT id FROM users WHERE username='await-lead'`).Scan(&leadID); err != nil {
+		t.Fatal(err)
+	}
+
+	// A correction answered by the team, with a deadline far enough away that
+	// the 보완 조치 기한 card never mentions it.
+	reviewID := author.createReview("확인 대기 서비스")
+	itemID := firstItemID(t, h, reviewID)
+	if _, err := h.db.Pool.Exec(ctx, `UPDATE review_requests SET reviewer_id=$2,status='REVIEWING' WHERE id=$1`, reviewID, leadID); err != nil {
+		t.Fatal(err)
+	}
+	if res := lead.do(http.MethodPost, "/api/v1/review-requests/"+reviewID+"/change-requests",
+		map[string]any{"item_id": itemID, "reason": "설정값을 캡처해 주세요", "due_date": "2030-12-31"}); res.status != http.StatusCreated {
+		t.Fatalf("requesting a correction: %d %s", res.status, res.body)
+	}
+	var changeID string
+	if err := h.db.Pool.QueryRow(ctx, `SELECT id FROM change_requests WHERE review_request_id=$1`, reviewID).Scan(&changeID); err != nil {
+		t.Fatal(err)
+	}
+
+	board := func() map[string]any { return lead.do(http.MethodGet, "/api/v1/dashboard", nil).json() }
+	if before := board(); before["awaiting_verification"] != float64(0) {
+		t.Fatalf("before it was answered the reviewer is shown %v waiting", before["awaiting_verification"])
+	}
+	if res := author.do(http.MethodPatch, "/api/v1/change-requests/"+changeID, map[string]any{"answer": "캡처를 첨부했습니다", "status": "DONE"}); res.status != http.StatusOK {
+		t.Fatalf("answering: %d %s", res.status, res.body)
+	}
+
+	after := board()
+	if after["awaiting_verification"] != float64(1) {
+		t.Fatalf("the answered correction is counted as %v waiting for the reviewer", after["awaiting_verification"])
+	}
+	// It is not double-counted as work the author still owes.
+	if after["open_change_requests"] != float64(0) {
+		t.Errorf("an answered correction still counts as 미처리: %v", after["open_change_requests"])
+	}
+	// The number opens the reviews behind it.
+	listed := lead.do(http.MethodGet, "/api/v1/review-requests?awaiting_verification=1&limit=50", nil)
+	items, _ := listed.json()["items"].([]any)
+	if len(items) != 1 || items[0].(map[string]any)["id"] != reviewID {
+		t.Fatalf("the list behind the number holds %d rows: %s", len(items), listed.body)
+	}
+
+	// Once accepted it leaves both the number and the list.
+	if res := lead.do(http.MethodPatch, "/api/v1/change-requests/"+changeID, map[string]any{"answer": "", "status": "VERIFIED"}); res.status != http.StatusOK {
+		t.Fatalf("verifying: %d %s", res.status, res.body)
+	}
+	if done := board(); done["awaiting_verification"] != float64(0) {
+		t.Errorf("a verified correction is still counted: %v", done["awaiting_verification"])
+	}
+	if again := lead.do(http.MethodGet, "/api/v1/review-requests?awaiting_verification=1&limit=50", nil); strings.Contains(again.body, reviewID) {
+		t.Error("a verified correction still shows in the list")
+	}
+}

@@ -8,7 +8,7 @@ import { useAuth } from '../main'
 
 type FollowUp = { id: string; review_id: string; item_id?: string; review_number: string; service_name: string; item_code: string; title: string; follow_up: string; due_date?: string; overdue: boolean; reported: boolean }
 type MyItems = { review_id: string; review_number: string; service_name: string; status: string; items: number; unanswered: number; to_fix: number }
-type DashboardData = { status_counts: Record<string, number>; opening_soon: number; opening_soon_unfinished: number; open_change_requests: number; my_queue: QueueEntry[]; due_soon: DueChange[]; my_follow_ups?: FollowUp[]; my_items?: MyItems[]; has_more?: Record<string, boolean>; security_analytics?: { unassigned?: number; long_pending?: number; long_pending_days?: number } }
+type DashboardData = { status_counts: Record<string, number>; opening_soon: number; opening_soon_unfinished: number; open_change_requests: number; awaiting_verification?: number; my_queue: QueueEntry[]; due_soon: DueChange[]; my_follow_ups?: FollowUp[]; my_items?: MyItems[]; has_more?: Record<string, boolean>; security_analytics?: { unassigned?: number; long_pending?: number; long_pending_days?: number } }
 export default function Dashboard() {
   const { user } = useAuth()
   // Only a security lead sees these; for everybody else the server omits them.
@@ -37,10 +37,11 @@ export default function Dashboard() {
         distance between the landing page and the work. */}
     <div className="grid stats"><Link className="card stat-card" to="/reviews?status=DRAFT,REVIEWING"><div className="stat-icon"><ClipboardList /></div><div><span className="stat-value">{active}</span><div className="stat-label">진행 중 심의</div></div></Link><Link className="card stat-card" to={reviewMode ? '/reviews?status=SUBMITTED,RESUBMITTED' : '/reviews?open_changes=1'}><div className="stat-icon amber"><AlertTriangle /></div><div><span className="stat-value">{reviewMode ? pending : data.open_change_requests}</span><div className="stat-label">{reviewMode ? '신규 검토 대기' : '미처리 보완 요청'}</div></div></Link><Link className="card stat-card" to="/reviews?open_at_risk=1"><div className="stat-icon red"><CalendarClock /></div><div><span className="stat-value">{data.opening_soon}</span><div className="stat-label">14일 내 오픈 예정{data.opening_soon_unfinished > 0 && <> · <strong data-sx="sx-060">미완료 {data.opening_soon_unfinished}건</strong></>}</div></div></Link><Link className="card stat-card" to="/reviews?status=APPROVED"><div className="stat-icon green"><ShieldCheck /></div><div><span className="stat-value">{completed}</span><div className="stat-label">심의 완료</div></div></Link></div>
 
-    {analytics && (Number(analytics.unassigned) > 0 || Number(analytics.long_pending) > 0) && <section className="card"><div className="card-header"><h2><Hourglass size={17} /> 대기열 상태</h2></div><div className="card-body" data-sx="sx-006">
+    {analytics && (Number(analytics.unassigned) > 0 || Number(analytics.long_pending) > 0 || Number(data.awaiting_verification || 0) > 0) && <section className="card"><div className="card-header"><h2><Hourglass size={17} /> 대기열 상태</h2></div><div className="card-body" data-sx="sx-006">
       {/* Both numbers are counted the same way the reminder mails count them,
           and each links to the list that holds exactly those reviews. */}
       <Link className="table-link" to="/reviews?unassigned=1">담당자 없는 심의 {analytics.unassigned ?? 0}건 <ArrowRight size={13} /></Link>
+      {Number(data.awaiting_verification || 0) > 0 && <Link className="table-link" to="/reviews?awaiting_verification=1">조치 완료 후 확인 대기 {data.awaiting_verification}건 <ArrowRight size={13} /></Link>}
       <Link className="table-link" to="/reviews?stalled=1">{analytics.long_pending_days ?? 3}일 이상 멈춘 심의 {analytics.long_pending ?? 0}건 <ArrowRight size={13} /></Link>
     </div></section>}
 
