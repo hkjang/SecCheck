@@ -1277,7 +1277,7 @@ func (s *Server) simulateRules(w http.ResponseWriter, r *http.Request) {
 	if !decodeJSON(w, r, &in) {
 		return
 	}
-	rows, err := s.Store.Pool.Query(r.Context(), `SELECT t.name,v.version,v.status,i.item_code,i.category,i.title,i.severity,i.applicability_rule
+	rows, err := s.Store.Pool.Query(r.Context(), `SELECT t.name,v.version,v.status,i.item_code,i.category,i.title,i.severity,i.applicability_rule,i.answer_type,COALESCE(i.options_json,'[]'::jsonb),i.evidence_required,i.required,COALESCE(i.guide,'')
                 FROM checklist_items i
                 JOIN checklist_versions v ON v.id=i.version_id
                 JOIN checklist_templates t ON t.id=v.template_id
@@ -1301,6 +1301,11 @@ func (s *Server) simulateRules(w http.ResponseWriter, r *http.Request) {
 		Applied    bool            `json:"applied"`
 		Reason     string          `json:"reason"`
 		Conditions []ruleCondition `json:"conditions,omitempty"`
+		// What a requester needs before they start: which of these will ask
+		// for a file, and what the item actually says.
+		EvidenceRequired bool   `json:"evidence_required"`
+		Required         bool   `json:"required"`
+		Guide            string `json:"guide,omitempty"`
 		// A rule written before the vocabulary was checked can name something
 		// the engine never sees, in which case the item is not excluded by
 		// this profile -- it is excluded by every profile, for ever.
@@ -1313,7 +1318,9 @@ func (s *Server) simulateRules(w http.ResponseWriter, r *http.Request) {
 	for rows.Next() {
 		var o outcome
 		var rule []byte
-		if err = rows.Scan(&o.Template, &o.Version, new(string), &o.ItemCode, &o.Category, &o.Title, &o.Severity, &rule); err != nil {
+		var answerType string
+		var options []byte
+		if err = rows.Scan(&o.Template, &o.Version, new(string), &o.ItemCode, &o.Category, &o.Title, &o.Severity, &rule, &answerType, &options, &o.EvidenceRequired, &o.Required, &o.Guide); err != nil {
 			s.fault(w, r, "QUERY_FAILED", "체크리스트를 불러오지 못했습니다.", err)
 			return
 		}
@@ -1324,6 +1331,9 @@ func (s *Server) simulateRules(w http.ResponseWriter, r *http.Request) {
 			} else if ruleErr := validateRule(node, vocabulary); ruleErr != nil {
 				o.RuleError = ruleErr.Error()
 			}
+		}
+		if o.RuleError == "" {
+			o.RuleError = unanswerableReason(answerType, options)
 		}
 		switch {
 		case o.RuleError != "":

@@ -8675,3 +8675,64 @@ func TestABulkAnswerCannotAssignSomebodyOutsideTheReview(t *testing.T) {
 		t.Errorf("%d of %d items were assigned to the participant", assigned, len(ids))
 	}
 }
+
+// "42 items will be assigned" is not the same as being able to read them. The
+// point of asking before the review exists is to gather the evidence first,
+// and the preview said how many and never which -- so the requester found out
+// what they needed only after creating the review.
+func TestThePreviewSaysWhichItemsAndWhichNeedFiles(t *testing.T) {
+	h := newHarness(t)
+	ctx := context.Background()
+	h.user("preview-author", "REQUESTER")
+	author := h.login("preview-author")
+
+	// One published item that will ask for a file, so the preview has
+	// something to warn about.
+	if _, err := h.db.Pool.Exec(ctx, `UPDATE checklist_items SET evidence_required=true
+                WHERE id=(SELECT i.id FROM checklist_items i JOIN checklist_versions v ON v.id=i.version_id WHERE v.status='PUBLISHED' ORDER BY i.sort_order LIMIT 1)`); err != nil {
+		t.Fatal(err)
+	}
+
+	res := author.do(http.MethodPost, "/api/v1/templates/rule-simulation", map[string]any{
+		"service_name": "미리보기", "description": "미리보기", "department": "보안팀",
+		"service_type": "WEB", "change_type": "NEW", "exposure": "EXTERNAL", "business_criticality": "HIGH",
+		"processes_personal_data": true, "internet_access": true,
+	})
+	if res.status != http.StatusOK {
+		t.Fatalf("previewing before the review exists: %d %s", res.status, res.body)
+	}
+	items, _ := res.json()["items"].([]any)
+	if len(items) == 0 {
+		t.Fatalf("the preview carries no items: %s", res.body[:min(len(res.body), 400)])
+	}
+	var applied, needFiles int
+	var titled bool
+	for _, raw := range items {
+		item, _ := raw.(map[string]any)
+		if hit, _ := item["applied"].(bool); !hit {
+			continue
+		}
+		applied++
+		if item["title"] != "" && item["item_code"] != "" {
+			titled = true
+		}
+		if needs, _ := item["evidence_required"].(bool); needs {
+			needFiles++
+		}
+	}
+	if applied == 0 || !titled {
+		t.Fatalf("the preview names %d assigned items", applied)
+	}
+	// The warning the requester acts on: how many of these will ask for a
+	// document they have to go and find.
+	if needFiles == 0 {
+		t.Error("the preview does not say which items will ask for evidence")
+	}
+}
+
+func min(a, b int) int {
+	if a < b {
+		return a
+	}
+	return b
+}
