@@ -7,6 +7,28 @@
 
 여러 버전을 건너뛰어 올라오는 경우, 확인이 필요한 항목만 모아 둔 [운영 가이드의 업그레이드 표](docs/operations.md#여러-버전을-건너뛰어-올라올-때)를 먼저 보십시오.
 
+## v1.0.144
+
+### 수정
+- **최초 릴리스에서 만들어진 설치가 로그인 자체를 못 하던 문제**: 기본 스키마
+  파일은 마이그레이션 001이고, **1은 최초 릴리스가 `schema.sql`을 적용한 뒤
+  기록한 번호이기도 합니다**. 그 설치의 `schema_migrations`에는 이미 1이 있어
+  001은 영원히 건너뜁니다 — 그래서 그 뒤 001에 추가된 로그인 잠금 열
+  `users.failed_login_count`·`users.locked_until`이 그런 데이터베이스에는
+  끝내 만들어지지 않았고, 로그인 시도마다
+  `column "failed_login_count" does not exist`로 실패했습니다.
+- 마이그레이션 **033**이 그 차이(열 2개, 인덱스 `idx_sessions_last_seen`·
+  `idx_oidc_states_expiry`·`idx_jobs_retention`)를 다시 적용합니다. 멱등이므로
+  이미 정상인 설치는 아무 변화가 없습니다.
+
+### 추가
+- **같은 일이 다시 생기지 않도록**: 최초 릴리스 스키마를
+  `internal/store/testdata/v1_schema.sql`로 고정하고,
+  `TestUpgradingTheFirstReleaseReachesTheSameSchema`가 그것을 최신까지 올린 뒤
+  신규 설치와 테이블·열·타입·기본값·인덱스·함수를 비교합니다. 001에 무언가를
+  더하면서 번호 파일을 같이 만들지 않으면 CI가 그 자리에서 실패합니다.
+- 운영 가이드에 `001을 고치지 마십시오` 규칙과 그 이유를 적었습니다.
+
 ## v1.0.143
 
 ### 추가

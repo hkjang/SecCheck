@@ -390,6 +390,9 @@ docker compose exec seccheck /app/seccheck selftest --username admin --password 
 | 030 | 판정 당시의 답변 스냅숏(`review_results.judged_answer`) |
 | 031 | 항목 코드 조회 인덱스(`submission_items.item_code`). 이전 판정 조회가 전체 스캔으로 떨어지지 않도록 |
 | 032 | 재심의 복사 연결(`review_requests.copied_from`)과 `review_lineage()` 함수. 서비스명을 바꿔도 이전 판정·증적 이력이 이어지도록 |
+| 033 | 최초 릴리스에서 만들어진 설치 보정. 로그인 잠금 열(`users.failed_login_count`, `users.locked_until`)과 인덱스 3개를 다시 적용합니다. 001은 이미 적용됨으로 기록되어 건너뛰기 때문에, 이후 001에 추가된 것들이 그 설치에는 닿지 않았습니다 |
+
+**001을 고치지 마십시오.** 001은 최초 릴리스가 `schema.sql`을 적용한 뒤 기록한 번호이기도 합니다. 그 설치의 `schema_migrations`에는 이미 1이 있으므로 001은 영원히 건너뜁니다 — 001에 무언가를 더해도 그런 데이터베이스에는 닿지 않습니다. 기본 스키마를 바꿔야 하면 새 번호 파일로 같은 내용을 한 번 더 적용하십시오. `TestUpgradingTheFirstReleaseReachesTheSameSchema`가 최초 릴리스 스키마(`internal/store/testdata/v1_schema.sql`)를 올려 보고 신규 설치와 다르면 빌드를 실패시킵니다.
 
 ## 업그레이드와 롤백
 

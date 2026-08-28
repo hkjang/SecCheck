@@ -30,6 +30,11 @@ func DSN() string { return strings.TrimSpace(os.Getenv(DSNEnv)) }
 // parallel packages never see each other's rows.
 func New(t *testing.T) *store.Store {
 	t.Helper()
+	return open(t, true)
+}
+
+func open(t *testing.T, migrate bool) *store.Store {
+	t.Helper()
 	dsn := DSN()
 	if dsn == "" {
 		t.Skipf("%s is not set; skipping the database-backed test", DSNEnv)
@@ -53,7 +58,7 @@ func New(t *testing.T) *store.Store {
 		admin.Close()
 		t.Fatalf("connect to schema %s: %v", schema, err)
 	}
-	if err = scoped.Migrate(ctx); err != nil {
+	if err = migrateIf(migrate, ctx, scoped); err != nil {
 		scoped.Close()
 		_, _ = admin.Pool.Exec(ctx, `DROP SCHEMA `+schema+` CASCADE`)
 		admin.Close()
@@ -86,6 +91,13 @@ func Bootstrap(t *testing.T, s *store.Store, username string) string {
 	return u.ID
 }
 
+func migrateIf(migrate bool, ctx context.Context, s *store.Store) error {
+	if !migrate {
+		return nil
+	}
+	return s.Migrate(ctx)
+}
+
 func withSearchPath(dsn, schema string) string {
 	parsed, err := url.Parse(dsn)
 	if err != nil {
@@ -99,4 +111,12 @@ func withSearchPath(dsn, schema string) string {
 	q.Set("search_path", schema)
 	parsed.RawQuery = q.Encode()
 	return parsed.String()
+}
+
+// Bare creates an isolated empty schema and returns a Store bound to it with
+// no migrations applied, for tests that need to build a database up from some
+// earlier state themselves.
+func Bare(t *testing.T) *store.Store {
+	t.Helper()
+	return open(t, false)
 }

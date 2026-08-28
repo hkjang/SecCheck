@@ -2,6 +2,9 @@ package store_test
 
 import (
 	"context"
+	"os"
+	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/hkjang/SecCheck/internal/store"
@@ -169,5 +172,96 @@ func TestAuditChainCheckpointColumnsExist(t *testing.T) {
 	}
 	if sequence != 0 || hash != "" {
 		t.Errorf("a fresh installation starts unverified, got sequence=%d hash=%q", sequence, hash)
+	}
+}
+
+// shape lists everything about a schema that the application depends on:
+// which tables and columns exist, with what type and default, and which
+// indexes back them. Sequence defaults name the schema they live in, so that
+// prefix is folded away before comparing two schemas.
+func shape(t *testing.T, s *store.Store) []string {
+	t.Helper()
+	ctx := context.Background()
+	rows, err := s.Pool.Query(ctx, `
+                SELECT 'column '||table_name||'.'||column_name||' '||data_type||' null='||is_nullable||
+                       ' default='||replace(COALESCE(column_default,'-'), current_schema()||'.', '')
+                FROM information_schema.columns WHERE table_schema=current_schema()
+                UNION ALL
+                SELECT 'index '||indexname FROM pg_indexes WHERE schemaname=current_schema()
+                UNION ALL
+                SELECT 'routine '||routine_name FROM information_schema.routines WHERE routine_schema=current_schema()
+                ORDER BY 1`)
+	if err != nil {
+		t.Fatalf("read schema shape: %v", err)
+	}
+	defer rows.Close()
+	var out []string
+	for rows.Next() {
+		var line string
+		if err := rows.Scan(&line); err != nil {
+			t.Fatalf("scan shape: %v", err)
+		}
+		out = append(out, line)
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatalf("read schema shape: %v", err)
+	}
+	return out
+}
+
+// The baseline is version 1, and version 1 is also the number the very first
+// release recorded after applying its own schema.sql. So an installation from
+// that release skips 001_baseline.sql forever, and anything the baseline file
+// gained afterwards never reaches it. Two columns were added that way and
+// those databases could no longer log in at all: every attempt writes
+// users.failed_login_count, which did not exist.
+//
+// testdata/v1_schema.sql is that first release, frozen. Upgrading a copy of it
+// has to land on exactly the schema a fresh install gets, so the next change
+// made to the baseline without a numbered migration beside it fails here
+// instead of in somebody's database.
+func TestUpgradingTheFirstReleaseReachesTheSameSchema(t *testing.T) {
+	ctx := context.Background()
+	fresh := testdb.New(t)
+	legacy := testdb.Bare(t)
+
+	first, err := os.ReadFile(filepath.Join("testdata", "v1_schema.sql"))
+	if err != nil {
+		t.Fatalf("read the frozen first release: %v", err)
+	}
+	if _, err = legacy.Pool.Exec(ctx, string(first)); err != nil {
+		t.Fatalf("apply the first release: %v", err)
+	}
+	if _, err = legacy.Pool.Exec(ctx, `INSERT INTO schema_migrations(version) VALUES(1) ON CONFLICT DO NOTHING`); err != nil {
+		t.Fatalf("record version 1 the way that release did: %v", err)
+	}
+	if err = legacy.Migrate(ctx); err != nil {
+		t.Fatalf("upgrade the first release: %v", err)
+	}
+	if got, want := legacy.SchemaVersion(ctx), fresh.SchemaVersion(ctx); got != want {
+		t.Fatalf("upgraded to version %d, a fresh install is at %d", got, want)
+	}
+
+	have := map[string]bool{}
+	for _, line := range shape(t, legacy) {
+		have[line] = true
+	}
+	var missing []string
+	for _, line := range shape(t, fresh) {
+		if !have[line] {
+			missing = append(missing, line)
+		}
+	}
+	if len(missing) > 0 {
+		t.Errorf("upgrading the first release leaves %d differences from a fresh install; add a numbered migration for each:\n  %s",
+			len(missing), strings.Join(missing, "\n  "))
+	}
+
+	// The symptom that started this: signing in writes the lockout counter.
+	if _, err = legacy.Pool.Exec(ctx, `INSERT INTO users(id,username,display_name) VALUES('u-legacy','legacy','Legacy')`); err != nil {
+		t.Fatalf("create a user: %v", err)
+	}
+	if _, err = legacy.Pool.Exec(ctx, `UPDATE users SET failed_login_count=failed_login_count+1,locked_until=now() WHERE id='u-legacy'`); err != nil {
+		t.Errorf("an upgraded first-release database still cannot record a login attempt: %v", err)
 	}
 }
