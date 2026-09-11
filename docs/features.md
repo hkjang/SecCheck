@@ -7,7 +7,7 @@
 ## 📸 전체 메뉴별 주요 화면 및 기능 명세
 
 ### 1. 인증 및 로그인 (`/login`)
-![로그인 화면](./screenshots/01_login.png)
+![로그인 화면](./screenshots/login.png)
 - **로컬 부트스트랩 관리자**: 초기 4대 환경변수(`BOOTSTRAP_ADMIN`, `BOOTSTRAP_ADMIN_PASSWORD`) 기반 보안 로그인
 - **Keycloak OIDC SSO**: 설정 시 `사내 SSO로 로그인` 버튼을 통한 통합 인증 연동
 - **서비스 브랜드 & 버전**: 현재 릴리스 버전(`v0.1.0`) 및 서비스명 실시간 표시
@@ -15,7 +15,7 @@
 ---
 
 ### 2. 보안 심의 대시보드 (`/`, `/dashboard`)
-![대시보드](./screenshots/02_dashboard.png)
+![대시보드](./screenshots/dashboard.png)
 - **내 후속조치**: 이행해야 할 후속조치를 심의 전체에서 모아 표시. 기한 초과와 확인 대기 상태를 구분하며, 리포트를 열 수 없는 요청자도 자기 조치 목록을 확인 가능
 - **내 담당 항목**: 나에게 배정된 체크리스트 항목을 심의를 가로질러 모아 심의별 배정·미작성·보완 필요 건수로 표시. 심의번호를 누르면 그 심의가 `내 담당 항목` 필터가 켜진 상태로 열립니다. 남은 작업이 없는 심의는 목록에서 사라집니다
 - **핵심 KPI 현황 카드**: 진행 중 심의(Active), 신규 검토 대기/미처리 보완 요청(Pending), 14일 내 오픈 예정, 심의 완료 통계 오픈 예정 카드에는 그중 **심의가 끝나지 않은 건수**가 함께 표시되어, 검토가 완료되지 않은 채 열릴 서비스가 몇 건인지 바로 보입니다. **각 카드를 누르면 그 숫자에 해당하는 심의 목록**이 열립니다.
@@ -27,14 +27,14 @@
 ---
 
 ### 3. 보안성 심의 목록 (`/reviews`)
-![심의 목록](./screenshots/03_reviews_list.png)
+![심의 목록](./screenshots/reviews-list.png)
 - **다차원 실시간 검색 & 필터링**: 심의번호, 서비스명, 담당 부서 키워드 검색 및 상태 필터(작성 중, 제출 완료, 재제출, 검토 중, 보완 요청, 승인 대기, 심의 완료, 반려)
 - **신규 심의 요청**: 상단 `신규 심의` 버튼을 통한 즉시 요청 생성
 
 ---
 
 ### 4. 신규 보안성 심의 요청 (`/reviews/new`)
-![신규 심의 요청 폼](./screenshots/04_new_review_form.png)
+![신규 심의 요청 폼](./screenshots/review-new.png)
 - **서비스 기본정보**: 서비스명, 담당 부서, 서비스 설명, 서비스 유형(대내/대외/관리자/배치), 신규·변경 구분, 구축·개발·운영 담당자, 오픈 예정일, 업무 중요도
 - **Rule Engine 적용 조건**:
   - 관리자 페이지 존재, 개인정보 처리, 개인신용정보 처리, 외부 고객 서비스, 클라우드 사용, Docker 사용, Kubernetes 사용, 외부기관 연계, 인터넷 통신 여부
@@ -43,7 +43,7 @@
 ---
 
 ### 5. 심의 상세 & 체크리스트 작업 공간 (`/reviews/:id`)
-![심의 상세 및 체크리스트](./screenshots/05_review_detail_checklist.png)
+![심의 상세 및 체크리스트](./screenshots/review-detail.png)
 - **작성 진행률 & 검토 집계 바**: 총 항목 대비 작성률(%), 적합/조건부/미흡/N/A 집계 실시간 표시
 - **빈 화면과 실패한 화면의 구분**: 목록을 불러오지 못하면 빈 목록이나 무한 로딩이 아니라 `화면을 불러오지 못했습니다`와 원인, `다시 시도` 버튼을 보여 줍니다
 - **검색 결과 안내**: 통합 검색은 종류별 20건까지 보여 주고, 더 있으면 "더 많은 결과가 있습니다"를 함께 표시해 찾는 대상이 목록 밖에 있을 수 있음을 알립니다
@@ -80,7 +80,7 @@
 ---
 
 ### 6. 체크리스트 항목 편집 & 증적 암호화 업로드
-![항목 편집기](./screenshots/06_review_item_editor.png)
+![항목 편집기](./screenshots/review-item-editor.png)
 - **적용 여부 & 자체 판단**: `Y`, `N`, `N/A` 원클릭 선택 및 적합/미흡 자체 평가
 - **N/A 사유 & 현황 작성**: N/A 선택 시 필수 사유 입력 및 조치 계획 수립
 - **실시간 자동 저장**: 타이핑 시 수초 내 백그라운드 자동 저장 및 상태 알림
@@ -90,20 +90,20 @@
 ---
 
 ### 7. 자동 배정 결과 수동 조정 (Rule Override)
-![자동 배정 조정 모달](./screenshots/09_review_rule_override_modal.png)
+![자동 배정 조정 모달](./screenshots/review-rule-override.png)
 - **규칙 예외 처리**: 서비스 특성에 따라 자동 배정된 항목을 제외하거나 미배정 항목을 수동 포함
 - **불변 감사 추적**: 수동 변경 사유, 작업자, 시각을 감사로그에 영구 기록
 
 ---
 
 ### 8. 보안 검토 Queue (`/security`)
-![보안 검토 대기열](./screenshots/10_security_reviews.png)
+![보안 검토 대기열](./screenshots/security-queue.png)
 - **보안 담당자 전용 대기열**: 제출(`SUBMITTED`) 및 재제출(`RESUBMITTED`)된 심의 건을 집중 관리하고 `검토 시작` 및 항목별 검토 의견/보완 요청 등록
 
 ---
 
 ### 9. 통합 Security Controls 카탈로그 (`/controls`)
-![Security Controls](./screenshots/11_controls_catalog.png)
+![Security Controls](./screenshots/controls.png)
 - **단일 보안 통제 관리**: `SEC-ENC-001` 등 표준 보안 통제 코드와 제목/설명 관리
 - **영향 범위 (Blast Radius) 추적**: 해당 Control이 연결된 체크리스트 템플릿 및 적용된 심의 건수를 실시간 추적
 - **판정 이력**: 이 Control로 연결된 항목들이 실제 심의에서 어떻게 판정됐는지(적합·조건부·미흡·부적합·N/A 건수)와 최근 지적 10건을 함께 보여 줍니다. 집계 기준이 항목 코드가 아니라 Control 연결이므로, 템플릿이 바뀌어 코드가 달라져도 한 통제의 이력으로 이어집니다
@@ -111,7 +111,7 @@
 ---
 
 ### 10. 체크리스트 템플릿 관리 (`/templates`)
-![체크리스트 템플릿 목록](./screenshots/12_templates_list.png)
+![체크리스트 템플릿 목록](./screenshots/templates-list.png)
 - **기본 탑재 템플릿**: 개발보안, 개인(신용)정보보호, 클라우드 보안, Docker/Kubernetes 컨테이너 보안 템플릿 자동 시딩
 - **버전 분리 원칙**: 게시된 버전은 수정 불가능하며, 새 버전 생성을 통해서만 안전하게 변경 관리
 - **사용 중지**: 게시된 버전을 `사용 중지`하면 이후 새 심의에 배정되지 않습니다. 이미 만들어진 심의의 스냅샷은 그대로 유지되므로, 진행 중인 심의에 영향을 주지 않고 낡은 체크리스트를 물러나게 할 수 있습니다
@@ -119,27 +119,27 @@
 ---
 
 ### 11. 템플릿 상세 및 카테고리/항목 편집 (`/templates/:id`)
-![템플릿 상세](./screenshots/13_template_detail.png)
+![템플릿 상세](./screenshots/template-detail.png)
 - **카테고리 & 항목 구성**: 보안 요건, 질문, 가이드, 작성 예시, 법적 근거, 가중치, 증적 필수 여부 정의
 - **Rule Engine 조건 지정**: 특정 서비스 특성(개인정보, 클라우드, K8s 등)일 때만 자동 배정되도록 조건 규칙 설정
 
 ---
 
 ### 12. Excel Import Wizard (`/templates/import`)
-![Excel 가져오기 마법사](./screenshots/14_excel_import_wizard.png)
+![Excel 가져오기 마법사](./screenshots/templates-import.png)
 - **기존 엑셀 자산 변환**: 기존 엑셀 체크리스트 파일을 업로드하고 컬럼(항목코드, 요건명, 질문, 점검기준 등)을 매핑하여 신규 템플릿으로 즉시 변환
 - **건드린 행을 짚어 주는 미리보기**: 건너뛴 행, 항목코드를 자동 부여한 행, 길이 제한으로 자른 행을 **행 번호로** 알려 줍니다. 건수만 알려 주면 300행짜리 워크북에서 어느 행인지 찾는 일이 그대로 남습니다
 
 ---
 
 ### 13. 개인 프로필 (`/profile`)
-![개인 프로필](./screenshots/15_personal_profile.png)
+![개인 프로필](./screenshots/profile.png)
 - **계정 정보**: 표시 이름, 이메일, 부서, 인증 원본(로컬/OIDC), 부여된 RBAC 역할 확인 및 정보 변경
 
 ---
 
 ### 14. 개인 키 관리 & 증적 암호화 키 회전 (`/profile/keys`)
-![개인 키 관리](./screenshots/16_api_keys_and_encryption.png)
+![개인 키 관리](./screenshots/profile-keys.png)
 - **개인 Bearer API 키**: 시스템 연동 및 CI/CD 파이프라인용 API 키 발급, 회전 및 폐기
 - **API 키 만료 관리**: 목록에 만료일과 `만료 임박`·`만료됨` 표시를 함께 보여 주고, 만료 7일 전에 발급자에게 `API 키 만료 임박` 알림을 보냅니다. 키를 쓰는 연동이 예고 없이 401로 끊기지 않도록 합니다.
 - **증적 정기 무결성 확인**: 저장된 증적을 매시 20건씩 돌아가며 복호화해 크기·SHA-256을 대조하고, 사라졌거나 달라진 파일을 관리자에게 알립니다.
@@ -148,20 +148,20 @@
 ---
 
 ### 15. 인앱 알림 센터 (`/notifications`)
-![알림](./screenshots/17_notifications.png)
+![알림](./screenshots/notifications.png)
 - **심의 이벤트 피드**: 심의 제출, 검토자 배정, 보완 요청, 승인/반려 알림 열람 및 읽음 처리
 
 ---
 
 ### 16. API · MCP 연계 가이드 (`/integrations`)
-![API 및 MCP 연계](./screenshots/18_integrations_mcp.png)
+![API 및 MCP 연계](./screenshots/integrations.png)
 - **REST API & OpenAPI 3.1**: 엔드포인트 명세 및 Bearer 인증 가이드
 - **Model Context Protocol (MCP)**: `2026-07-28` Stateless Streamable HTTP 지원 및 5대 도구 연동 안내
 
 ---
 
 ### 17. 서비스 관리자: 사용자 및 역할 관리 (`/admin/users`)
-![사용자 관리](./screenshots/19_admin_users.png)
+![사용자 관리](./screenshots/admin-users.png)
 - **업무 일괄 인계**: 떠나는 계정이 맡고 있는 심의·항목·보완 요청의 담당을 한 번에 다른 사람에게 넘깁니다. 넘길 수 없는 자리는 이유와 함께 남겨 둡니다
 - **RBAC 7대 역할 체계**: `SYSTEM_ADMIN`, `TEMPLATE_ADMIN`, `SECURITY_REVIEWER`, `REQUESTER`, `CONTRIBUTOR`, `APPROVER`, `AUDITOR` 조합 및 활성/비활성 즉시 제어
 - **마지막 접속과 접근 검토**: 계정별 마지막 로그인 일시와 경과 일수를 표시. 권한 계정이 `장기 미접속 관리자 잠금` 기준일에 근접하면 경고, 초과하면 `잠금 대상`으로 표시하며, `N일 이상 미접속` 필터로 접근 검토 대상을 한 번에 조회
@@ -169,12 +169,12 @@
 ---
 
 ### 18. 서비스 관리자: 시스템 설정 (`/admin/settings`)
-![관리자 설정 - 일반](./screenshots/20_admin_settings_general.png)
-![관리자 설정 - OIDC](./screenshots/21_admin_settings_oidc.png)
-![관리자 설정 - 보안](./screenshots/22_admin_settings_security.png)
-![관리자 설정 - 알림](./screenshots/22_admin_settings_smtp.png)
-![관리자 설정 - 워크플로](./screenshots/23_admin_settings_workflow.png)
-![관리자 설정 - 파일보안](./screenshots/24_admin_settings_upload.png)
+![관리자 설정 - 일반](./screenshots/admin-settings-general.png)
+![관리자 설정 - OIDC](./screenshots/admin-settings-oidc.png)
+![관리자 설정 - 보안](./screenshots/admin-settings-security.png)
+![관리자 설정 - 알림](./screenshots/admin-settings-notification.png)
+![관리자 설정 - 워크플로](./screenshots/admin-settings-workflow.png)
+![관리자 설정 - 파일보안](./screenshots/admin-settings-upload.png)
 - **일반 설정**: 세션 시간, 데이터 보존 기간(일), 표시 시간대
 - **검토·승인 워크플로**: 팀장/승인자 최종 승인 프로세스 On/Off, 검토자 배정 필수 정책
 - **본인 심의 처리 금지**: 신청자 본인은 자신이 올린 심의를 검토하거나 승인할 수 없습니다(기본값). 담당자가 한 명뿐인 설치를 위해 설정에서 해제할 수 있습니다
@@ -186,14 +186,14 @@
 ---
 
 ### 19. 서비스 관리자: 해시 체인 불변 감사로그 (`/admin/audit`)
-![감사로그](./screenshots/25_admin_audit_hashchain.png)
+![감사로그](./screenshots/admin-audit.png)
 - **암호학적 해시 체인 (Hash Chaining)**: 이전 이벤트 해시(`prev_hash`)를 연결하여 위변조를 원천 차단
 - **원클릭 체인 검증 (`체인 검증`)**: 전체 감사 이벤트의 무결성을 실시간으로 검증
 
 ---
 
 ### 20. 서비스 관리자: 구조화 서버 로그 (`/admin/logs`)
-![서버 로그](./screenshots/26_admin_logs.png)
+![서버 로그](./screenshots/admin-logs.png)
 - **민감정보 마스킹 구조화 로그**: 요청 ID(Request ID), 레벨(INFO/WARN/ERROR), 구성요소별 로그 실시간 조회
 
 ---

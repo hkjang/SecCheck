@@ -11,13 +11,13 @@
 
 ### 🌟 종합 완본 및 시연 영상
 - 🎬 **[SecCheck 3분 서비스 시연 영상 (MP4)](seccheck_overview.mp4)**: 플랫폼 핵심 업무 흐름 및 CRU 시연 (1080p FHD, 3분 06초)
-- 📕 **[SecCheck 종합 기술 매뉴얼 완본 (Complete Manual PDF)](seccheck_complete_manual.pdf)**: 아키텍처, 전체 기능, 사용자 실무, 관리자 운영, API & MCP 가이드가 통합된 종합 기술 완본 (A4 인쇄용)
+- 📕 **[SecCheck 종합 기술 매뉴얼 완본 (Complete Manual PDF)](seccheck_complete_manual.pdf)**: 기능 및 화면 가이드, API & MCP 연계 가이드, 시스템 아키텍처를 한 권으로 묶은 것 (A4 인쇄용). 사용자·관리자 가이드는 아래에 따로 있습니다
 
 ### 1. 사용자 및 기능 가이드
 - 📄 **[기능 및 화면 가이드 (PDF)](seccheck_features_guide.pdf)** (`docs/seccheck_features_guide.pdf`) · [MD](features.md)
   - 25개 전체 메뉴별 실제 구동 화면 캡처 및 세부 CRU 기능 명세
-- 📄 **[사용자 실무 가이드 (PDF)](seccheck_user_guide.pdf)** (`docs/seccheck_user_guide.pdf`) · [MD](user-guide.md)
-  - 심의 생성, Rule Engine, 체크리스트 작성, N/A 사유, 증적 업로드, 검토/승인 및 내보내기
+- 📄 **[사용자 가이드 (PDF)](USER_GUIDE.pdf)** (`docs/USER_GUIDE.pdf`) · [MD](USER_GUIDE.md)
+  - 처음 5분, 화면별 사용법(실제 화면 캡처), 자주 하는 작업, 막혔을 때, 용어
 
 ### 2. 아키텍처 및 시스템 설계
 - 📄 **[시스템 아키텍처 및 보안 설계 (PDF)](seccheck_architecture.pdf)** (`docs/seccheck_architecture.pdf`) · [MD](architecture.md)
@@ -26,14 +26,33 @@
   - 단일 Docker 이미지 반입 및 패키지 릴리스 가이드
 
 ### 3. 관리자 및 운영 가이드
-- 📄 **[관리자 운영 가이드 (PDF)](seccheck_admin_guide.pdf)** (`docs/seccheck_admin_guide.pdf`) · [MD](admin-guide.md)
-  - 4대 환경변수 부트스트랩, Keycloak OIDC SSO 연동, ClamAV 안티바이러스, RBAC 역할 관리, 체인 검증
+- 📄 **[관리자 가이드 (PDF)](ADMIN_GUIDE.pdf)** (`docs/ADMIN_GUIDE.pdf`) · [MD](ADMIN_GUIDE.md)
+  - 구성 요소, 설치(docker load → compose → 최초 관리자), 환경 변수·설정 전수 표, 역할, 운영(백업·복구·업그레이드), 장애 대응, 보안
 
 ### 4. API & AI / MCP 연동
 - 📄 **[API & MCP 연계 가이드 (PDF)](seccheck_api_guide.pdf)** (`docs/seccheck_api_guide.pdf`) · [MD](api-guide.md)
   - REST API 명세, Model Context Protocol(MCP) `2026-07-28` Stateless Streamable HTTP 명세
 - 📄 **[OpenAPI 3.1 명세 (Markdown)](integrations.md)**
   - REST API & MCP 연계 계약 스키마
+
+---
+
+## 🔁 문서 다시 만들기
+
+Markdown 이 정본이고 PDF 는 거기서 굽습니다. 문서를 고쳤으면 PDF 도 같은 커밋에서 다시 만듭니다.
+
+```bash
+scripts/build_docs_pdf.sh                # 전부
+scripts/build_docs_pdf.sh user admin     # 사용자·관리자 가이드만
+```
+
+변환기는 공용 도구(`md2pdf.mjs`)를 쓰며 경로는 `MD2PDF` 환경 변수로 바꿀 수 있습니다. 화면 캡처는
+`scripts/capture_all.js` 로 실제 서버에서 찍습니다 (스크립트 머리말의 필수 환경 변수 참고). 화면 하나를
+더하거나 다시 찍을 때는 `SECCHECK_CAPTURE_ONLY=<파일명,…>` 으로 그 파일만 쓰게 하면 나머지 그림은 그대로 남습니다.
+
+`scripts/precheck.sh` 는 원고(Markdown 과 거기 실린 그림)가 PDF 를 마지막으로 구운 뒤에 바뀌었는지
+git 으로 확인해, PDF 를 다시 굽지 않은 채로 푸시하는 것을 막습니다. 어느 문서가 어느 PDF 가 되는지는
+`scripts/build_docs_pdf.sh --list` 로 볼 수 있습니다.
 
 ---
 

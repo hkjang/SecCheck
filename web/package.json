@@ -22,7 +22,6 @@
     "@playwright/test": "^1.62.1",
     "@types/react": "latest",
     "@types/react-dom": "latest",
-    "marked": "^18.0.9",
     "vitest": "latest"
   }
 }

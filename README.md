@@ -29,10 +29,10 @@
 <div align="center">
 
 ### 📊 보안 심의 현황 대시보드
-![대시보드](docs/screenshots/02_dashboard.png)
+![대시보드](docs/screenshots/dashboard.png)
 
 ### 📋 체크리스트 & 실시간 진행 집계
-![체크리스트 상세](docs/screenshots/05_review_detail_checklist.png)
+![체크리스트 상세](docs/screenshots/review-detail.png)
 
 <details>
 <summary><b>👉 더 많은 기능 화면 스크린샷 접기/펼치기</b></summary>
@@ -40,21 +40,21 @@
 
 | 화면명 | 캡처 이미지 | 설명 |
 | :--- | :--- | :--- |
-| **로그인 & SSO** | ![로그인](docs/screenshots/01_login.png) | 부트스트랩 관리자 및 Keycloak OIDC 통합 로그인 |
-| **심의 목록** | ![심의 목록](docs/screenshots/03_reviews_list.png) | 다차원 상태 필터링 및 심의 현황 테이블 |
-| **신규 심의 요청** | ![신규 심의](docs/screenshots/04_new_review_form.png) | 서비스 정보 및 Rule Engine 9대 적용 조건 |
-| **항목 편집 & 증적** | ![항목 편집](docs/screenshots/06_review_item_editor.png) | 자체 판단, N/A 사유, AES-256 증적 첨부 |
-| **배정 조정 모달** | ![배정 조정](docs/screenshots/09_review_rule_override_modal.png) | Rule Engine 결과 수동 제외/포함 조정 |
-| **보안 검토 Queue** | ![보안 검토](docs/screenshots/10_security_reviews.png) | 보안 담당자 전용 제출/재제출 심의 대기열 |
-| **Security Controls** | ![통합 Controls](docs/screenshots/11_controls_catalog.png) | 통제 코드 관리 및 템플릿/심의 영향 범위 추적 |
-| **템플릿 관리** | ![템플릿](docs/screenshots/12_templates_list.png) | 개발보안, 개인정보, 클라우드, K8s 기본 탑재 |
-| **템플릿 상세/규칙** | ![템플릿 상세](docs/screenshots/13_template_detail.png) | 카테고리, 항목, 중요도 및 자동 배정 조건 |
-| **Excel 가져오기** | ![Excel 마법사](docs/screenshots/14_excel_import_wizard.png) | 기존 엑셀 체크리스트 업로드 및 컬럼 매핑 |
-| **개인 키 & 암호화** | ![키 관리](docs/screenshots/16_api_keys_and_encryption.png) | Bearer API 키 발급 및 증적 암호화 키 회전 |
-| **API · MCP 연계** | ![MCP 연계](docs/screenshots/18_integrations_mcp.png) | REST API 명세 및 MCP `2026-07-28` 도구 규격 |
-| **사용자 및 역할** | ![사용자 관리](docs/screenshots/19_admin_users.png) | RBAC 7대 역할 체계 및 활성 제어 |
-| **해시 체인 감사로그** | ![감사로그](docs/screenshots/25_admin_audit_hashchain.png) | SHA-256 해시 체인 무결성 전수 검증 |
-| **구조화 서버 로그** | ![서버 로그](docs/screenshots/26_admin_logs.png) | 민감정보 마스킹 요청 ID 기반 서버 로그 |
+| **로그인 & SSO** | ![로그인](docs/screenshots/login.png) | 부트스트랩 관리자 및 Keycloak OIDC 통합 로그인 |
+| **심의 목록** | ![심의 목록](docs/screenshots/reviews-list.png) | 다차원 상태 필터링 및 심의 현황 테이블 |
+| **신규 심의 요청** | ![신규 심의](docs/screenshots/review-new.png) | 서비스 정보 및 Rule Engine 9대 적용 조건 |
+| **항목 편집 & 증적** | ![항목 편집](docs/screenshots/review-item-editor.png) | 자체 판단, N/A 사유, AES-256 증적 첨부 |
+| **배정 조정 모달** | ![배정 조정](docs/screenshots/review-rule-override.png) | Rule Engine 결과 수동 제외/포함 조정 |
+| **보안 검토 Queue** | ![보안 검토](docs/screenshots/security-queue.png) | 보안 담당자 전용 제출/재제출 심의 대기열 |
+| **Security Controls** | ![통합 Controls](docs/screenshots/controls.png) | 통제 코드 관리 및 템플릿/심의 영향 범위 추적 |
+| **템플릿 관리** | ![템플릿](docs/screenshots/templates-list.png) | 개발보안, 개인정보, 클라우드, K8s 기본 탑재 |
+| **템플릿 상세/규칙** | ![템플릿 상세](docs/screenshots/template-detail.png) | 카테고리, 항목, 중요도 및 자동 배정 조건 |
+| **Excel 가져오기** | ![Excel 마법사](docs/screenshots/templates-import.png) | 기존 엑셀 체크리스트 업로드 및 컬럼 매핑 |
+| **개인 키 & 암호화** | ![키 관리](docs/screenshots/profile-keys.png) | Bearer API 키 발급 및 증적 암호화 키 회전 |
+| **API · MCP 연계** | ![MCP 연계](docs/screenshots/integrations.png) | REST API 명세 및 MCP `2026-07-28` 도구 규격 |
+| **사용자 및 역할** | ![사용자 관리](docs/screenshots/admin-users.png) | RBAC 7대 역할 체계 및 활성 제어 |
+| **해시 체인 감사로그** | ![감사로그](docs/screenshots/admin-audit.png) | SHA-256 해시 체인 무결성 전수 검증 |
+| **구조화 서버 로그** | ![서버 로그](docs/screenshots/admin-logs.png) | 민감정보 마스킹 요청 ID 기반 서버 로그 |
 
 </details>
 
@@ -99,10 +99,10 @@
 | 문서명 | 설명 | PDF 다운로드 / 바로보기 |
 | :--- | :--- | :--- |
 | **🎬 3분 서비스 시연 영상** | 플랫폼 핵심 업무 흐름 및 실시간 CRU 시연 (1080p FHD, 3분 06초) | [**docs/seccheck_overview.mp4**](docs/seccheck_overview.mp4) |
-| **📕 종합 기술 매뉴얼 완본** | 모든 아키텍처·기능·실무·운영·API 통합 기술 완본 (A4 인쇄용) | [**docs/seccheck_complete_manual.pdf**](docs/seccheck_complete_manual.pdf) |
+| **📕 종합 기술 매뉴얼 완본** | 기능·화면 가이드, API & MCP 가이드, 시스템 아키텍처를 한 권으로 (A4 인쇄용) | [**docs/seccheck_complete_manual.pdf**](docs/seccheck_complete_manual.pdf) |
 | **📸 기능 및 화면 가이드** | 전체 메뉴별 화면 가이드와 캡처 스크린샷, CRU 동작 설명 | [**PDF 바로보기**](docs/seccheck_features_guide.pdf) · [MD](docs/features.md) |
-| **👤 사용자 실무 가이드** | 심의 생성, Rule Engine, 체크리스트 작성, N/A, 증적 첨부, 승인 | [**PDF 바로보기**](docs/seccheck_user_guide.pdf) · [MD](docs/user-guide.md) |
-| **🛠️ 관리자 운영 가이드** | 4대 환경변수, Keycloak SSO, ClamAV, RBAC 역할, 체인 검증 | [**PDF 바로보기**](docs/seccheck_admin_guide.pdf) · [MD](docs/admin-guide.md) |
+| **👤 사용자 가이드** | 처음 5분, 화면별 사용법(화면 캡처), 자주 하는 작업, 막혔을 때 | [**PDF 바로보기**](docs/USER_GUIDE.pdf) · [MD](docs/USER_GUIDE.md) |
+| **🛠️ 관리자 가이드** | 설치(docker load → compose), 환경 변수·설정 전수 표, 역할, 백업·복구·업그레이드, 장애 대응 | [**PDF 바로보기**](docs/ADMIN_GUIDE.pdf) · [MD](docs/ADMIN_GUIDE.md) |
 | **🔌 API & MCP 가이드** | REST API 명세, Model Context Protocol(MCP) `2026-07-28` 스펙 | [**PDF 바로보기**](docs/seccheck_api_guide.pdf) · [MD](docs/api-guide.md) |
 | **🏗️ 시스템 아키텍처** | 3계층 불변 모델, AES-256-GCM 증적 암호화, 해시 체인 감사로그 | [**PDF 바로보기**](docs/seccheck_architecture.pdf) · [MD](docs/architecture.md) |
 | **🌐 웹 쇼케이스** | 인터랙티브 깃허브 홍보 및 기능 둘러보기 웹페이지 | [**쇼케이스 열기**](docs/index.html) |

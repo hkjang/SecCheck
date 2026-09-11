@@ -1,9 +1,11 @@
 package web
 
 import (
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"regexp"
+	"sort"
 	"strconv"
 	"strings"
 	"testing"
@@ -36,6 +38,41 @@ func TestFeatureGuideCoversEveryMenu(t *testing.T) {
 		}
 		if !strings.Contains(guide, "(`"+route+"`)") {
 			t.Errorf("docs/features.md has no section for the %q menu (%s)", label, route)
+		}
+	}
+}
+
+// The user and admin guides are what people are handed, and the standard
+// wants a section with a picture for every screen. A menu that is added
+// without either guide following it ships a screen nobody is told about, so
+// every label in the sidebar has to appear in a section heading or a picture
+// caption of one of the two guides -- the caption, because a screen that is
+// shown gets named the way the menu names it. The guides split the menu by
+// who reads them: the working screens in the user guide, the checklist and
+// administration screens in the admin guide; either counts.
+func TestGuidesPictureEveryMenu(t *testing.T) {
+	nav := repoFile(t, "web/src/components/Layout.tsx")
+	entry := regexp.MustCompile(`\{ to: '([^']+)', label: '([^']+)'`)
+	matches := entry.FindAllStringSubmatch(nav, -1)
+	if len(matches) < 10 {
+		t.Fatalf("parsed only %d nav entries, the Layout.tsx shape must have changed", len(matches))
+	}
+	named := regexp.MustCompile(`(?m)^(###+ |!\[).*$`)
+	var lines []string
+	for _, guide := range []string{"docs/USER_GUIDE.md", "docs/ADMIN_GUIDE.md"} {
+		lines = append(lines, named.FindAllString(repoFile(t, guide), -1)...)
+	}
+	for _, m := range matches {
+		route, label := m[1], m[2]
+		found := false
+		for _, line := range lines {
+			if strings.Contains(line, label) {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Errorf("neither guide has a section heading or picture caption naming the %q menu (%s)", label, route)
 		}
 	}
 }
@@ -222,15 +259,16 @@ func TestPinnedActionsDoNotClaimTheProductVersion(t *testing.T) {
 	}
 }
 
-// The release version lives in five files that are bumped by hand. A bump that
+// The release version lives in six files that are bumped by hand. A bump that
 // misses one ships an image tagged as the previous release, or a README that
-// tells an operator to pull a tag that was never built.
+// tells an operator to pull a tag that was never built. The admin guide names
+// the archive an offline site is handed, so it is one of the six.
 func TestReleaseVersionIsTheSameEverywhere(t *testing.T) {
 	version := strings.TrimSpace(repoFile(t, "VERSION"))
-	for _, file := range []string{"compose.yaml", "README.md", filepath.Join(".github", "workflows", "ci.yml"), filepath.Join("web", "package.json")} {
+	for _, file := range []string{"compose.yaml", "README.md", filepath.Join(".github", "workflows", "ci.yml"), filepath.Join("web", "package.json"), filepath.Join("docs", "ADMIN_GUIDE.md")} {
 		body := repoFile(t, file)
 		found := false
-		for _, m := range regexp.MustCompile(`(?:seccheck:v|Release-v|VERSION=|"version": ")(\d+\.\d+\.\d+)`).FindAllStringSubmatch(body, -1) {
+		for _, m := range regexp.MustCompile(`(?:seccheck:v|seccheck-v|Release-v|VERSION=|"version": ")(\d+\.\d+\.\d+)`).FindAllStringSubmatch(body, -1) {
 			found = true
 			if m[1] != version {
 				t.Errorf("%s names version %s but VERSION says %s", file, m[1], version)
@@ -240,6 +278,26 @@ func TestReleaseVersionIsTheSameEverywhere(t *testing.T) {
 			t.Errorf("%s no longer carries the release version -- the guard cannot see a missed bump", file)
 		}
 	}
+}
+
+// The only release asset is the image archive, so an operator on a closed
+// network has no way to fetch compose.yaml from the repository. The admin
+// guide's install section carries the file in full instead -- and a copy that
+// is not the file is worse than a link, because the guide promises it can be
+// saved and started as is.
+func TestAdminGuideCarriesTheComposeFile(t *testing.T) {
+	guide := repoFile(t, filepath.Join("docs", "ADMIN_GUIDE.md"))
+	blocks := regexp.MustCompile("(?s)```yaml\n(.*?)```").FindAllStringSubmatch(guide, -1)
+	if len(blocks) == 0 {
+		t.Fatal("docs/ADMIN_GUIDE.md has no yaml block; the install section no longer carries compose.yaml")
+	}
+	compose := repoFile(t, "compose.yaml")
+	for _, block := range blocks {
+		if block[1] == compose {
+			return
+		}
+	}
+	t.Errorf("no yaml block in docs/ADMIN_GUIDE.md matches compose.yaml -- paste the file into section 2-4 again")
 }
 
 // A release that changes how an installation behaves carries a 주의 section in
@@ -660,6 +718,1137 @@ func TestThePrePushScriptUsesThePipelinesOwnScanner(t *testing.T) {
 	for name, body := range map[string]string{"ci.yml": string(workflow), "precheck.sh": string(script)} {
 		if strings.Contains(body, "gitleaks") && !strings.Contains(body, "--no-git") {
 			t.Errorf("%s scans a commit rather than the tree that will be shipped", name)
+		}
+	}
+}
+
+// The admin guide says its environment-variable table is everything the
+// runtime reads, and an operator on a closed network has nowhere else to look
+// it up. A variable the code reads but the table omits is one nobody sets; a
+// variable the table names but nothing reads is one somebody sets in vain.
+func TestAdminGuideEnvVarTableIsEverythingTheCodeReads(t *testing.T) {
+	guide := repoFile(t, filepath.Join("docs", "ADMIN_GUIDE.md"))
+	start := strings.Index(guide, "### 3-1. 환경 변수")
+	if start < 0 {
+		t.Fatal("docs/ADMIN_GUIDE.md has no environment variable section")
+	}
+	section := guide[start:]
+	if end := strings.Index(section, "\n### "); end > 0 {
+		section = section[:end]
+	}
+	documented := map[string]bool{}
+	for _, m := range regexp.MustCompile("(?m)^\\| `([A-Z][A-Z0-9_]*)` \\|").FindAllStringSubmatch(section, -1) {
+		documented[m[1]] = true
+	}
+	if len(documented) < 4 {
+		t.Fatalf("parsed only %d rows from the environment variable table; its shape must have changed", len(documented))
+	}
+	read := map[string]string{}
+	call := regexp.MustCompile(`os\.(?:Getenv|LookupEnv)\("([A-Z][A-Z0-9_]*)"\)`)
+	for _, dir := range []string{filepath.Join("..", "..", "internal"), filepath.Join("..", "..", "cmd")} {
+		err := filepath.WalkDir(dir, func(path string, entry os.DirEntry, err error) error {
+			if err != nil || entry.IsDir() || !strings.HasSuffix(path, ".go") || strings.HasSuffix(path, "_test.go") {
+				return nil
+			}
+			// The test database helper is compiled into the tests only.
+			if strings.Contains(path, string(filepath.Separator)+"testdb"+string(filepath.Separator)) {
+				return nil
+			}
+			body, readErr := os.ReadFile(path)
+			if readErr != nil {
+				return nil
+			}
+			for _, m := range call.FindAllStringSubmatch(string(body), -1) {
+				read[m[1]] = filepath.ToSlash(strings.TrimPrefix(path, filepath.Join("..", "..")+string(filepath.Separator)))
+			}
+			return nil
+		})
+		if err != nil {
+			t.Fatalf("walk %s: %v", dir, err)
+		}
+	}
+	if len(read) < 4 {
+		t.Fatalf("only %d environment variables found in the code; the call shape must have changed", len(read))
+	}
+	for name, file := range read {
+		if !documented[name] {
+			t.Errorf("%s reads %s and the admin guide's table does not list it", file, name)
+		}
+	}
+	for name := range documented {
+		if _, ok := read[name]; !ok {
+			t.Errorf("the admin guide lists %s, which nothing in the code reads", name)
+		}
+	}
+}
+
+// The service settings tables in the admin guide name every key a tab holds
+// and the value a fresh installation starts with. Those defaults live in the
+// migration seeds and, for keys the seeds never wrote, in the screen's own
+// fallback -- so the guide is checked against both, in both directions. It had
+// filed the deleted-evidence retention under the wrong tab when this was
+// written.
+func TestAdminGuideSettingsTablesMatchTheSeedsAndTheScreen(t *testing.T) {
+	// Seeds: the first value a migration writes for a key is the default,
+	// because every later write is `'{...}'::jsonb || value_json`, which only
+	// fills keys that are still missing.
+	files, err := filepath.Glob(filepath.Join("..", "..", "internal", "store", "migrations", "*.sql"))
+	if err != nil || len(files) == 0 {
+		t.Fatalf("no migrations found: %v", err)
+	}
+	sort.Strings(files)
+	seeded := map[string]map[string]any{}
+	insert := regexp.MustCompile(`\('(\w+)',\s*'(\{[^']*\})'::jsonb`)
+	fill := regexp.MustCompile(`UPDATE settings SET value_json = '(\{[^']*\})'::jsonb \|\| value_json WHERE key\s*=\s*'(\w+)'`)
+	remember := func(tab, literal string) {
+		var values map[string]any
+		if err := json.Unmarshal([]byte(literal), &values); err != nil {
+			t.Fatalf("settings seed for %s is not JSON: %v", tab, err)
+		}
+		if seeded[tab] == nil {
+			seeded[tab] = map[string]any{}
+		}
+		for key, value := range values {
+			if _, done := seeded[tab][key]; !done {
+				seeded[tab][key] = value
+			}
+		}
+	}
+	for _, file := range files {
+		body, err := os.ReadFile(file)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, m := range insert.FindAllStringSubmatch(string(body), -1) {
+			remember(m[1], m[2])
+		}
+		for _, m := range fill.FindAllStringSubmatch(string(body), -1) {
+			remember(m[2], m[1])
+		}
+	}
+	if len(seeded) < 5 {
+		t.Fatalf("only %d settings tabs are seeded; the migration shape must have changed", len(seeded))
+	}
+
+	// The screen: which keys each tab edits, and what it shows when the value
+	// has never been saved.
+	screen := repoFile(t, filepath.Join("web", "src", "pages", "Settings.tsx"))
+	onScreen := map[string]map[string]bool{}
+	fallback := map[string]string{}
+	parts := strings.Split(screen, "{tab === '")
+	for _, part := range parts[1:] {
+		tab := part[:strings.Index(part, "'")]
+		onScreen[tab] = map[string]bool{}
+		for _, m := range regexp.MustCompile(`draft\.([a-z_]+)`).FindAllStringSubmatch(part, -1) {
+			onScreen[tab][m[1]] = true
+		}
+		for _, m := range regexp.MustCompile(`draft\.([a-z_]+) (?:\?\?|\|\|) ('[^']*'|\d+)\)`).FindAllStringSubmatch(part, -1) {
+			fallback[m[1]] = strings.Trim(m[2], "'")
+		}
+		for _, m := range regexp.MustCompile(`draft\.([a-z_]+) !== false`).FindAllStringSubmatch(part, -1) {
+			fallback[m[1]] = "true"
+		}
+	}
+	if len(onScreen) < 5 {
+		t.Fatalf("only %d tabs found on the settings screen; its shape must have changed", len(onScreen))
+	}
+
+	// The guide renders a default the way an operator reads it.
+	var render func(value any) string
+	render = func(value any) string {
+		switch v := value.(type) {
+		case string:
+			if v == "" {
+				return "(비어 있음)"
+			}
+			return v
+		case bool:
+			return strconv.FormatBool(v)
+		case float64:
+			return strconv.FormatFloat(v, 'f', -1, 64)
+		case []any:
+			if len(v) == 0 {
+				return "(비어 있음)"
+			}
+			words := make([]string, 0, len(v))
+			for _, item := range v {
+				words = append(words, render(item))
+			}
+			return strings.Join(words, " ")
+		}
+		return ""
+	}
+
+	guide := repoFile(t, filepath.Join("docs", "ADMIN_GUIDE.md"))
+	start := strings.Index(guide, "### 3-2. 서비스 설정 화면")
+	if start < 0 {
+		t.Fatal("docs/ADMIN_GUIDE.md has no service settings section")
+	}
+	section := guide[start:]
+	if end := strings.Index(section, "\n### "); end > 0 {
+		section = section[:end]
+	}
+	heading := regexp.MustCompile("(?m)^\\*\\*[^*]+ \\(`([a-z]+)`\\)\\*\\*")
+	row := regexp.MustCompile("(?m)^\\| [^|]+ \\| ((?:`[a-z_]+`(?: / )?)+) \\| ([^|]*) \\|")
+	documented := map[string]map[string]bool{}
+	marks := heading.FindAllStringSubmatchIndex(section, -1)
+	for i, mark := range marks {
+		tab := section[mark[2]:mark[3]]
+		end := len(section)
+		if i+1 < len(marks) {
+			end = marks[i+1][0]
+		}
+		documented[tab] = map[string]bool{}
+		for _, m := range row.FindAllStringSubmatch(section[mark[1]:end], -1) {
+			keys := regexp.MustCompile("`([a-z_]+)`").FindAllStringSubmatch(m[1], -1)
+			defaults := strings.Split(m[2], " / ")
+			for j, k := range keys {
+				key := k[1]
+				documented[tab][key] = true
+				if _, isSeeded := seeded[tab][key]; !isSeeded && !onScreen[tab][key] {
+					t.Errorf("the guide files %s under the %s tab, and neither the seeds nor the screen put it there", key, tab)
+					continue
+				}
+				expected, known := "", false
+				if value, ok := seeded[tab][key]; ok {
+					expected, known = render(value), true
+				} else if value, ok := fallback[key]; ok {
+					expected, known = render(value), true
+				}
+				if !known {
+					continue
+				}
+				shown := defaults[0]
+				if j < len(defaults) {
+					shown = defaults[j]
+				}
+				shown = strings.Trim(strings.TrimSpace(shown), "`")
+				if shown != expected {
+					t.Errorf("the guide says %s starts as %q, the code says %q", key, shown, expected)
+				}
+			}
+		}
+	}
+	if len(documented) < 5 {
+		t.Fatalf("only %d settings tabs are documented; the guide's shape must have changed", len(documented))
+	}
+	for tab, keys := range seeded {
+		if documented[tab] == nil {
+			continue // Keycloak OIDC is walked through as prose in 3-3.
+		}
+		for key := range keys {
+			if !documented[tab][key] {
+				t.Errorf("the %s tab is seeded with %s and the guide never lists it", tab, key)
+			}
+		}
+	}
+	for tab, keys := range onScreen {
+		if documented[tab] == nil {
+			continue
+		}
+		for key := range keys {
+			if !documented[tab][key] {
+				t.Errorf("the %s tab edits %s and the guide never lists it", tab, key)
+			}
+		}
+	}
+}
+
+// guideSection returns the body of one heading in a guide, up to the next
+// heading of the same or a higher level.
+func guideSection(t *testing.T, guide, heading string) string {
+	t.Helper()
+	start := strings.Index(guide, "\n"+heading)
+	if start < 0 {
+		t.Fatalf("guide has no %q heading", heading)
+	}
+	section := guide[start+1:]
+	level := strings.Index(heading, " ")
+	if end := regexp.MustCompile("\n#{1," + strconv.Itoa(level) + "} ").FindStringIndex(section[len(heading):]); end != nil {
+		section = section[:len(heading)+end[0]]
+	}
+	return section
+}
+
+// walkSources hands every non-test source file under the given roots to fn
+// as (repo-relative path, body).
+func walkSources(t *testing.T, roots []string, suffixes []string, fn func(path, body string)) {
+	t.Helper()
+	for _, root := range roots {
+		err := filepath.WalkDir(filepath.Join("..", "..", root), func(path string, entry os.DirEntry, err error) error {
+			if err != nil || entry.IsDir() || strings.HasSuffix(path, "_test.go") {
+				return nil
+			}
+			ok := false
+			for _, suffix := range suffixes {
+				ok = ok || strings.HasSuffix(path, suffix)
+			}
+			if !ok {
+				return nil
+			}
+			body, readErr := os.ReadFile(path)
+			if readErr != nil {
+				return nil
+			}
+			fn(filepath.ToSlash(strings.TrimPrefix(path, filepath.Join("..", "..")+string(filepath.Separator))), string(body))
+			return nil
+		})
+		if err != nil {
+			t.Fatalf("walk %s: %v", root, err)
+		}
+	}
+}
+
+// The "막혔을 때" table in the user guide quotes the messages people actually
+// see, so that someone can search the guide for the text on their screen.
+// A message that is reworded in the server or the screen without the guide
+// following leaves that search empty-handed. Every quoted phrase has to exist
+// letter for letter somewhere the user can be shown it: a server message
+// literal or a string in the web sources. What the message fills in at
+// runtime is written as `N` before a counter (`N분 후`, `미검토 항목 N건`) or
+// as `<…>` (`허용되지 않은 확장자입니다: <확장자>`), so the phrase is checked
+// around those.
+func TestUserGuideErrorMessagesAreTheOnesTheScreenShows(t *testing.T) {
+	section := guideSection(t, repoFile(t, filepath.Join("docs", "USER_GUIDE.md")), "## 5. 막혔을 때")
+	sources := userFacingSources(t)
+
+	quoted := regexp.MustCompile("`([^`]+)`")
+	rows := 0
+	for _, line := range strings.Split(section, "\n") {
+		if !strings.HasPrefix(line, "| ") || strings.HasPrefix(line, "| :---") || strings.HasPrefix(line, "| 화면에 보이는 메시지") {
+			continue
+		}
+		rows++
+		cell := strings.TrimSpace(strings.SplitN(line[2:], " | ", 2)[0])
+		phrases := quoted.FindAllStringSubmatch(cell, -1)
+		if len(phrases) == 0 {
+			t.Errorf("the row %q quotes no message in backticks; the table is for text the user can search for", cell)
+			continue
+		}
+		for _, m := range phrases {
+			if !phraseIsShown(sources, m[1]) {
+				t.Errorf("the user guide quotes %q and nothing in the server or the screen says it", m[1])
+			}
+		}
+	}
+	if rows < 10 {
+		t.Fatalf("parsed only %d rows from the 막혔을 때 table; its shape must have changed", rows)
+	}
+}
+
+// userFacingSources concatenates every source that can put text in front of
+// a user: the Go server (error messages, notification titles, export sheet
+// names) and the web sources (labels, buttons, filters, badges).
+func userFacingSources(t *testing.T) string {
+	t.Helper()
+	var corpus strings.Builder
+	walkSources(t, []string{"internal", "cmd", filepath.Join("web", "src")}, []string{".go", ".ts", ".tsx"}, func(_, body string) {
+		corpus.WriteString(body)
+		corpus.WriteByte('\n')
+	})
+	return corpus.String()
+}
+
+// phraseIsShown reports whether a phrase the guide quotes in backticks
+// appears letter for letter in the sources. What the screen fills in at
+// runtime is written as `N` before a counter (`N분 후`, `미검토 항목 N건`) or
+// as `<…>` (`허용되지 않은 확장자입니다: <확장자>`), so the phrase is checked
+// around those; a fragment of a single character is not worth checking.
+func phraseIsShown(sources, phrase string) bool {
+	placeholder := regexp.MustCompile("N([분건개회일])|<[^>]+>")
+	for _, fragment := range strings.Split(placeholder.ReplaceAllString(phrase, "\x00$1"), "\x00") {
+		fragment = strings.TrimSpace(fragment)
+		if len([]rune(fragment)) < 2 {
+			continue
+		}
+		if !strings.Contains(sources, fragment) {
+			return false
+		}
+	}
+	return true
+}
+
+// The rest of the user guide names buttons, menus, filters, statuses and
+// badges in backticks so a reader can find them on the screen. The standard
+// asks for those names to match the UI to the letter, and a button that is
+// renamed on the screen without the guide following sends the reader looking
+// for something that is not there. Every backticked phrase in the walkthrough,
+// screen and task sections and the glossary therefore has to exist in the
+// web sources or, for text the server composes (error codes, notification
+// titles, export sheet names), in the Go sources. Values that only look the
+// way they do at runtime -- an example review number, a position counter --
+// are written without backticks, as examples, so the guide keeps the
+// backticks for text that is literally on the screen. The guide had quoted a
+// button as `+ 신규 심의 요청` when the plus is an icon and the text is
+// `신규 심의 요청` before this was written.
+func TestUserGuideScreenNamesAreTheOnesTheScreenShows(t *testing.T) {
+	guide := repoFile(t, filepath.Join("docs", "USER_GUIDE.md"))
+	sources := userFacingSources(t)
+	quoted := regexp.MustCompile("`([^`]+)`")
+	checked := 0
+	for _, heading := range []string{"## 2. 처음 5분", "## 3. 화면별 사용법", "## 4. 자주 하는 작업", "## 6. 용어"} {
+		seen := map[string]bool{}
+		for _, m := range quoted.FindAllStringSubmatch(guideSection(t, guide, heading), -1) {
+			if seen[m[1]] {
+				continue
+			}
+			seen[m[1]] = true
+			checked++
+			if !phraseIsShown(sources, m[1]) {
+				t.Errorf("%s quotes %q and nothing on the screen or in the server says it", heading, m[1])
+			}
+		}
+	}
+	if checked < 100 {
+		t.Fatalf("checked only %d quoted names in the user guide; its sections must have been renamed", checked)
+	}
+}
+
+// storeLogCalls returns every (component, message) pair the code writes to
+// the 서버 로그 screen through Store.Log, plus the set of components alone.
+func storeLogCalls(t *testing.T) (map[string]map[string]bool, map[string]bool) {
+	t.Helper()
+	call := regexp.MustCompile(`\.Log\([^,]+,\s*"[A-Z]+",\s*[^,]+,\s*"([a-z_]+)",\s*("([^"]+)"|[a-zA-Z.]+)`)
+	messages := map[string]map[string]bool{}
+	components := map[string]bool{}
+	walkSources(t, []string{"internal", "cmd"}, []string{".go"}, func(_, body string) {
+		for _, m := range call.FindAllStringSubmatch(body, -1) {
+			components[m[1]] = true
+			if m[3] != "" {
+				if messages[m[1]] == nil {
+					messages[m[1]] = map[string]bool{}
+				}
+				messages[m[1]][m[3]] = true
+			}
+		}
+	})
+	if len(components) < 5 {
+		t.Fatalf("only %d log components found in the code; the Store.Log call shape must have changed", len(components))
+	}
+	return messages, components
+}
+
+// The admin guide's 장애 대응 table tells an operator which line to look for.
+// A line is quoted in one of two places and the test holds each to its
+// source: "로그에 `…`" is a startup failure that only ever reaches the
+// container's standard output, so it must be a string literal somewhere in
+// the Go code; "서버 로그 `component` 의 `…`" is a row on the 서버 로그 screen,
+// so the code must call Store.Log with exactly that component and message --
+// a message the process prints to stderr instead would never appear there.
+// The table had quoted such a stderr line under a screen component when this
+// was written. The component list in 5-3 is held to the code the same way.
+func TestAdminGuideLogPhrasesAreTheOnesTheServerWrites(t *testing.T) {
+	guide := repoFile(t, filepath.Join("docs", "ADMIN_GUIDE.md"))
+	messages, components := storeLogCalls(t)
+
+	listed := guideSection(t, guide, "### 5-3. 로그")
+	m := regexp.MustCompile("`component`\\(((?:`[a-z_]+`(?:, )?)+)\\)").FindStringSubmatch(listed)
+	if m == nil {
+		t.Fatal("5-3 no longer lists the log components after `component`")
+	}
+	documented := map[string]bool{}
+	for _, name := range regexp.MustCompile("`([a-z_]+)`").FindAllStringSubmatch(m[1], -1) {
+		documented[name[1]] = true
+	}
+	for name := range components {
+		if !documented[name] {
+			t.Errorf("the code writes 서버 로그 rows with component %q and 5-3 does not list it", name)
+		}
+	}
+	for name := range documented {
+		if !components[name] {
+			t.Errorf("5-3 lists the log component %q and nothing in the code writes it", name)
+		}
+	}
+
+	var goSources strings.Builder
+	walkSources(t, []string{"internal", "cmd"}, []string{".go"}, func(_, body string) {
+		goSources.WriteString(body)
+		goSources.WriteByte('\n')
+	})
+	table := guideSection(t, guide, "## 6. 장애 대응")
+	stdout := regexp.MustCompile("로그에 `([^`]+)`(?: 또는 `([^`]+)`)?")
+	screen := regexp.MustCompile("서버 로그 `([a-z_]+)` (?:의 ((?:`[^`]+`(?: / )?)+)|\\(((?:`[^`]+`(?:, )?)+) 등\\))")
+	quoted := regexp.MustCompile("`([^`]+)`")
+	seen := 0
+	for _, line := range strings.Split(table, "\n") {
+		if !strings.HasPrefix(line, "| ") || strings.HasPrefix(line, "| :---") || strings.HasPrefix(line, "| 증상") {
+			continue
+		}
+		for _, m := range stdout.FindAllStringSubmatch(line, -1) {
+			for _, phrase := range m[1:] {
+				if phrase == "" {
+					continue
+				}
+				seen++
+				if !strings.Contains(goSources.String(), phrase) {
+					t.Errorf("the admin guide says the log shows %q and nothing in the code prints it", phrase)
+				}
+			}
+		}
+		for _, m := range screen.FindAllStringSubmatch(line, -1) {
+			component := m[1]
+			for _, q := range quoted.FindAllStringSubmatch(m[2]+m[3], -1) {
+				seen++
+				if !messages[component][q[1]] {
+					t.Errorf("the admin guide says 서버 로그 component %q shows %q and no Store.Log call writes that pair", component, q[1])
+				}
+			}
+		}
+	}
+	if seen < 10 {
+		t.Fatalf("recognised only %d quoted log lines in the 장애 대응 table; its wording must have changed", seen)
+	}
+}
+
+// The admin guide's 5-1 table is what an operator wires a load balancer and
+// a monitor to, and its 5-4 table is what they read when a job is stuck. A
+// path listed with the wrong method returns 405 to whoever follows it; a job
+// type the code no longer enqueues, or one it enqueues that the table lacks,
+// leaves the operator with no row to act on. Each 5-1 row is held to the
+// registration in server.go -- method, path, and whether it needs a role or
+// none -- and the 5-4 types are held both ways to the INSERT INTO jobs
+// statements in the Go code.
+func TestAdminGuideStatusEndpointsAndJobTypesAreTheServers(t *testing.T) {
+	guide := repoFile(t, filepath.Join("docs", "ADMIN_GUIDE.md"))
+
+	type route struct {
+		public bool
+		roles  map[string]bool
+	}
+	registered := map[string]route{}
+	handle := regexp.MustCompile(`s\.handle\("(\w+)",\s*"([^"]+)",\s*"[^"]*",\s*"[^"]*",\s*(nil|\[\]string\{[^}]*\}),\s*(true|false),`)
+	for _, m := range handle.FindAllStringSubmatch(repoFile(t, filepath.Join("internal", "web", "server.go")), -1) {
+		r := route{public: m[4] == "true", roles: map[string]bool{}}
+		for _, role := range regexp.MustCompile(`"(\w+)"`).FindAllStringSubmatch(m[3], -1) {
+			r.roles[role[1]] = true
+		}
+		registered[m[1]+" "+m[2]] = r
+	}
+	if len(registered) < 50 {
+		t.Fatalf("parsed only %d routes from server.go; the s.handle shape must have changed", len(registered))
+	}
+
+	endpoints := guideSection(t, guide, "### 5-1. 상태 점검 엔드포인트")
+	row := regexp.MustCompile("(?m)^\\| `(/[^`]*)` \\| (GET|POST|PUT|PATCH|DELETE) \\| ([^|]*) \\|")
+	rows := row.FindAllStringSubmatch(endpoints, -1)
+	if len(rows) < 3 {
+		t.Fatalf("parsed only %d rows from the 5-1 table; its shape must have changed", len(rows))
+	}
+	for _, m := range rows {
+		key := m[2] + " " + m[1]
+		r, known := registered[key]
+		if !known {
+			t.Errorf("5-1 lists %s and server.go does not register it with that method", key)
+			continue
+		}
+		auth := strings.TrimSpace(m[3])
+		if strings.HasPrefix(auth, "없음") || strings.HasPrefix(auth, "기본 없음") {
+			if !r.public {
+				t.Errorf("5-1 says %s needs no credentials and server.go requires a login", key)
+			}
+			continue
+		}
+		for _, role := range regexp.MustCompile("`([A-Z_]+)`").FindAllStringSubmatch(auth, -1) {
+			if !r.roles[role[1]] {
+				t.Errorf("5-1 says %s needs %s and server.go does not require it", key, role[1])
+			}
+		}
+	}
+
+	enqueued := map[string]bool{}
+	insert := regexp.MustCompile(`INSERT INTO jobs\s*\([^)]*\)[\s\S]{0,200}?'([A-Z_]+)'`)
+	walkSources(t, []string{"internal", "cmd"}, []string{".go"}, func(_, body string) {
+		for _, m := range insert.FindAllStringSubmatch(body, -1) {
+			enqueued[m[1]] = true
+		}
+	})
+	if len(enqueued) < 2 {
+		t.Fatalf("found only %d job types enqueued in the code; the INSERT INTO jobs shape must have changed", len(enqueued))
+	}
+	documented := map[string]bool{}
+	for _, m := range regexp.MustCompile("(?m)^\\| `([A-Z_]+)` \\|").FindAllStringSubmatch(guideSection(t, guide, "### 5-4. 작업 큐"), -1) {
+		documented[m[1]] = true
+	}
+	for name := range enqueued {
+		if !documented[name] {
+			t.Errorf("the code enqueues %s jobs and the 5-4 table has no row for it", name)
+		}
+	}
+	for name := range documented {
+		if !enqueued[name] {
+			t.Errorf("the 5-4 table lists %s jobs and nothing in the code enqueues them", name)
+		}
+	}
+}
+
+// The admin guide's 4-1 table is where an operator learns which roles exist
+// and what to call them. The roles themselves are seeded by migration 001,
+// with the Korean name the roles table carries, and the user screen has its
+// own copy of those names; a role added to the seed, or renamed on the
+// screen, without the table following leaves the operator granting a role
+// the guide does not describe. The table is held both ways to the seed and
+// to the screen's names, and every role a route in server.go requires has
+// to be one the seed hands out.
+func TestAdminGuideRoleTableIsTheRoleList(t *testing.T) {
+	seeded := map[string]string{}
+	seed := regexp.MustCompile(`(?s)INSERT INTO roles\s*\(code,name,description\)\s*VALUES(.*?);`).FindStringSubmatch(repoFile(t, filepath.Join("internal", "store", "migrations", "001_baseline.sql")))
+	if seed == nil {
+		t.Fatal("001_baseline.sql has no INSERT INTO roles; the seed shape must have changed")
+	}
+	for _, m := range regexp.MustCompile(`\('([A-Z_]+)','([^']+)','[^']*'\)`).FindAllStringSubmatch(seed[1], -1) {
+		seeded[m[1]] = m[2]
+	}
+	if len(seeded) < 5 {
+		t.Fatalf("parsed only %d roles from the seed; its row shape must have changed", len(seeded))
+	}
+
+	shown := map[string]string{}
+	names := regexp.MustCompile(`const roleNames[^{]*\{([^}]*)\}`).FindStringSubmatch(repoFile(t, filepath.Join("web", "src", "pages", "Users.tsx")))
+	if names == nil {
+		t.Fatal("Users.tsx has no roleNames map; the screen must have changed")
+	}
+	for _, m := range regexp.MustCompile(`([A-Z_]+):\s*'([^']+)'`).FindAllStringSubmatch(names[1], -1) {
+		shown[m[1]] = m[2]
+	}
+
+	documented := map[string]string{}
+	for _, m := range regexp.MustCompile("(?m)^\\| `([A-Z_]+)` \\| ([^|]+) \\| ").FindAllStringSubmatch(guideSection(t, repoFile(t, filepath.Join("docs", "ADMIN_GUIDE.md")), "### 4-1. 역할"), -1) {
+		documented[m[1]] = strings.TrimSpace(m[2])
+	}
+	if len(documented) < 5 {
+		t.Fatalf("parsed only %d rows from the 4-1 table; its shape must have changed", len(documented))
+	}
+
+	for code, name := range seeded {
+		if got, ok := documented[code]; !ok {
+			t.Errorf("migration 001 seeds the %s role and the 4-1 table has no row for it", code)
+		} else if got != name {
+			t.Errorf("the 4-1 table calls %s %q and the roles table calls it %q", code, got, name)
+		}
+		if got, ok := shown[code]; !ok {
+			t.Errorf("migration 001 seeds the %s role and Users.tsx has no name for it", code)
+		} else if got != name {
+			t.Errorf("Users.tsx calls %s %q and the roles table calls it %q", code, got, name)
+		}
+	}
+	for code := range documented {
+		if _, ok := seeded[code]; !ok {
+			t.Errorf("the 4-1 table lists a %s role that migration 001 does not seed", code)
+		}
+	}
+	for code := range shown {
+		if _, ok := seeded[code]; !ok {
+			t.Errorf("Users.tsx offers a %s role that migration 001 does not seed", code)
+		}
+	}
+
+	required := map[string]bool{}
+	for _, m := range regexp.MustCompile(`s\.handle\("\w+",\s*"[^"]+",\s*"[^"]*",\s*"[^"]*",\s*\[\]string\{([^}]*)\}`).FindAllStringSubmatch(repoFile(t, filepath.Join("internal", "web", "server.go")), -1) {
+		for _, role := range regexp.MustCompile(`"([A-Z_]+)"`).FindAllStringSubmatch(m[1], -1) {
+			required[role[1]] = true
+		}
+	}
+	if len(required) < 5 {
+		t.Fatalf("parsed only %d roles from server.go routes; the s.handle shape must have changed", len(required))
+	}
+	for role := range required {
+		if _, ok := seeded[role]; !ok {
+			t.Errorf("server.go requires a %s role for some route and migration 001 does not seed it, so nobody can hold it", role)
+		}
+	}
+}
+
+// The user guide's 3-2 section spells the life of a review as a chain of
+// status names, which is where a requester learns what 승인 대기 means. The
+// server has no single list of review statuses; it partitions them into the
+// ones a requester may still cancel (cancellableStatuses) and the ones that
+// are part of the record (the NOT IN set the list filters use), and every
+// status a handler writes has to be in one of the two. The screen turns each
+// into a label in statusLabel, and the chain in 3-2 has to quote every one
+// of those labels and nothing that is not one.
+func TestUserGuideStatusFlowNamesEveryReviewStatus(t *testing.T) {
+	reviews := repoFile(t, filepath.Join("internal", "web", "reviews.go"))
+	statuses := map[string]bool{}
+	open := regexp.MustCompile(`cancellableStatuses = \[\]string\{([^}]*)\}`).FindStringSubmatch(reviews)
+	if open == nil {
+		t.Fatal("reviews.go has no cancellableStatuses list; the server must have changed")
+	}
+	for _, m := range regexp.MustCompile(`"([A-Z_]+)"`).FindAllStringSubmatch(open[1], -1) {
+		statuses[m[1]] = true
+	}
+	settled := regexp.MustCompile(`review_requests\.status NOT IN \(([^)]*)\)`).FindStringSubmatch(reviews)
+	if settled == nil {
+		t.Fatal("reviews.go has no review_requests.status NOT IN (...) filter; the server must have changed")
+	}
+	for _, m := range regexp.MustCompile(`'([A-Z_]+)'`).FindAllStringSubmatch(settled[1], -1) {
+		statuses[m[1]] = true
+	}
+	if len(statuses) < 8 {
+		t.Fatalf("found only %d review statuses in reviews.go; the two lists must have changed shape", len(statuses))
+	}
+	written := regexp.MustCompile(`UPDATE review_requests SET status='([A-Z_]+)'`)
+	walkSources(t, []string{"internal", "cmd"}, []string{".go"}, func(path, body string) {
+		for _, m := range written.FindAllStringSubmatch(body, -1) {
+			if !statuses[m[1]] {
+				t.Errorf("%s writes review status %s and it is neither cancellable nor settled in reviews.go", path, m[1])
+			}
+		}
+	})
+
+	labels := map[string]string{}
+	label := regexp.MustCompile(`statusLabel: Record<string, string> = \{([^}]*)\}`).FindStringSubmatch(repoFile(t, filepath.Join("web", "src", "components", "ui.tsx")))
+	if label == nil {
+		t.Fatal("ui.tsx has no statusLabel map; the screen must have changed")
+	}
+	for _, m := range regexp.MustCompile(`([A-Z_]+):\s*'([^']+)'`).FindAllStringSubmatch(label[1], -1) {
+		labels[m[1]] = m[2]
+	}
+
+	flow := regexp.MustCompile(`(?m)^- 상태의 뜻: (.*)$`).FindStringSubmatch(guideSection(t, repoFile(t, filepath.Join("docs", "USER_GUIDE.md")), "### 3-2. 내 심의 (심의 목록)"))
+	if flow == nil {
+		t.Fatal("USER_GUIDE 3-2 has no '상태의 뜻' line; its shape must have changed")
+	}
+	quoted := map[string]bool{}
+	for _, m := range regexp.MustCompile("`([^`]+)`").FindAllStringSubmatch(flow[1], -1) {
+		quoted[m[1]] = true
+	}
+
+	byLabel := map[string]string{}
+	for status := range statuses {
+		name, ok := labels[status]
+		if !ok {
+			t.Errorf("the server has a %s review status and statusLabel in ui.tsx has no label for it, so the badge would show the code", status)
+			continue
+		}
+		byLabel[name] = status
+		if !quoted[name] {
+			t.Errorf("review status %s shows as %q and USER_GUIDE 3-2 does not put that in the status chain", status, name)
+		}
+	}
+	for name := range quoted {
+		if _, ok := byLabel[name]; !ok {
+			t.Errorf("USER_GUIDE 3-2 quotes %q in the status chain and no review status shows as that", name)
+		}
+	}
+}
+
+// The admin guide's 5-5 table is keyed by the names the hourly sweep writes
+// into the "retention sweep completed" log line and the last summary on the
+// system page, so an operator reading `"stall_alerts": 1` can look the name
+// up. A step added to Sweep without a row leaves them with nothing to look
+// up; a row for a step the sweep no longer performs sends them looking for
+// a count that never appears. The names are held both ways to the keys the
+// sweep records, and the notification titles the table quotes have to be
+// the ones the worker actually sends.
+func TestAdminGuideHourlyCheckTableIsTheSweep(t *testing.T) {
+	worker := repoFile(t, filepath.Join("internal", "maintenance", "worker.go"))
+	sweep := regexp.MustCompile(`(?s)func \(w \*Worker\) Sweep\(.*?\n\}\n`).FindString(worker)
+	if sweep == "" {
+		t.Fatal("worker.go has no Sweep method; the maintenance worker must have changed")
+	}
+	recorded := map[string]bool{}
+	for _, m := range regexp.MustCompile(`(?m)^\s*(?:removed\[)?"([a-z_]+)"\]?\s*[:=]`).FindAllStringSubmatch(sweep, -1) {
+		recorded[m[1]] = true
+	}
+	if len(recorded) < 10 {
+		t.Fatalf("parsed only %d summary keys from Sweep; its shape must have changed", len(recorded))
+	}
+
+	section := guideSection(t, repoFile(t, filepath.Join("docs", "ADMIN_GUIDE.md")), "### 5-5. 정기 점검 (매시간)")
+	shown := userFacingSources(t)
+	documented := map[string]bool{}
+	for _, m := range regexp.MustCompile("(?m)^\\| `([a-z_]+)` \\| [^|]+ \\| ([^|]*) \\|").FindAllStringSubmatch(section, -1) {
+		documented[m[1]] = true
+		// The last column quotes the title of the notification the step sends
+		// or, for a count that only the system page shows, the row it lands in.
+		for _, title := range regexp.MustCompile("`([^`]+)`").FindAllStringSubmatch(m[2], -1) {
+			if !strings.Contains(worker, `"`+title[1]+`"`) && !phraseIsShown(shown, title[1]) {
+				t.Errorf("5-5 quotes %q for %s and neither worker.go nor a screen shows it", title[1], m[1])
+			}
+		}
+	}
+	if len(documented) < 10 {
+		t.Fatalf("parsed only %d rows from the 5-5 table; its shape must have changed", len(documented))
+	}
+	for name := range recorded {
+		if !documented[name] {
+			t.Errorf("Sweep records %s and the 5-5 table has no row for it", name)
+		}
+	}
+	for name := range documented {
+		if !recorded[name] {
+			t.Errorf("the 5-5 table lists %s and Sweep records no such key", name)
+		}
+	}
+}
+
+// An administrator's first sight of trouble is usually the bell: the sweep,
+// the audit verifier and the lockout code each send a notification to every
+// system administrator, and the person who receives one searches the guide
+// for its title. The 장애 대응 table therefore needs a row whose symptom
+// column quotes each of those titles, and every "`…` 알림" the guide quotes
+// must be a title the code actually sends -- the guide had been quoting the
+// labels of the notification preference screen instead, which never appear
+// on the bell. Administrator alerts are recognised by their recipient: the
+// code names the loop variable `admin` at every such send site, whether it
+// goes through Store.Notify or straight into the notifications table.
+func TestAdminGuideTroubleshootingCoversEveryAdministratorAlert(t *testing.T) {
+	sent := map[string]string{}
+	funcs := regexp.MustCompile(`(?ms)^func .*?^\}$`)
+	literal := regexp.MustCompile(`, admin, (?:"[A-Z_]+", )?"([^"]+)", body`)
+	variable := regexp.MustCompile(`, admin, "[A-Z_]+", title, body`)
+	assigned := regexp.MustCompile(`\btitle :?= "([^"]+)"`)
+	walkSources(t, []string{"internal", "cmd"}, []string{".go"}, func(path, body string) {
+		for _, fn := range funcs.FindAllString(body, -1) {
+			for _, m := range literal.FindAllStringSubmatch(fn, -1) {
+				sent[m[1]] = path
+			}
+			if variable.MatchString(fn) {
+				for _, m := range assigned.FindAllStringSubmatch(fn, -1) {
+					sent[m[1]] = path
+				}
+			}
+		}
+	})
+	if len(sent) < 5 {
+		t.Fatalf("recognised only %d administrator alert titles in the code; the send sites must have changed shape", len(sent))
+	}
+
+	guide := repoFile(t, filepath.Join("docs", "ADMIN_GUIDE.md"))
+	alert := regexp.MustCompile("`([^`]+)` 알림")
+	for _, m := range alert.FindAllStringSubmatch(guide, -1) {
+		if _, ok := sent[m[1]]; !ok {
+			t.Errorf("the admin guide speaks of a %q notification and the code sends no administrator alert with that title", m[1])
+		}
+	}
+
+	table := guideSection(t, guide, "## 6. 장애 대응")
+	symptoms := map[string]bool{}
+	for _, line := range strings.Split(table, "\n") {
+		if !strings.HasPrefix(line, "| ") || strings.HasPrefix(line, "| :---") || strings.HasPrefix(line, "| 증상") {
+			continue
+		}
+		symptom := strings.SplitN(line, " | ", 2)[0]
+		for _, m := range alert.FindAllStringSubmatch(symptom, -1) {
+			symptoms[m[1]] = true
+		}
+	}
+	for title, path := range sent {
+		if !symptoms[title] {
+			t.Errorf("%s sends administrators a %q notification and the 장애 대응 table has no row with it as a symptom", path, title)
+		}
+	}
+}
+
+// The user guide's 3-2 section lists the filter chips and the sort orders
+// of the review list. The wider quotation check only asks that each quoted
+// name exist somewhere in the screens, so a chip added to the list or a
+// sort order renamed would leave the guide silently short. The chips are
+// the aria-pressed buttons of Reviews.tsx and the sort orders its `sorts`
+// table; each is held to the guide's line both ways.
+func TestUserGuideReviewListFiltersAndSortsAreTheScreens(t *testing.T) {
+	screen := repoFile(t, filepath.Join("web", "src", "pages", "Reviews.tsx"))
+	chips := map[string]bool{}
+	for _, m := range regexp.MustCompile(`aria-pressed=.*?>(?:<[A-Za-z]+[^<>]*/>)? ?([^<>]+)</button>`).FindAllStringSubmatch(screen, -1) {
+		chips[strings.TrimSpace(m[1])] = true
+	}
+	sorts := map[string]bool{}
+	table := regexp.MustCompile(`const sorts[^\n]*`).FindString(screen)
+	for _, m := range regexp.MustCompile(`\['[a-z_]+', '([^']+)순'\]`).FindAllStringSubmatch(table, -1) {
+		sorts[m[1]] = true
+	}
+	if len(chips) < 3 || len(sorts) < 3 {
+		t.Fatalf("parsed %d filter chips and %d sort orders from Reviews.tsx; its shape must have changed", len(chips), len(sorts))
+	}
+
+	section := guideSection(t, repoFile(t, filepath.Join("docs", "USER_GUIDE.md")), "### 3-2. 내 심의 (심의 목록)")
+	filterLine := regexp.MustCompile(`(?m)^- \*\*필터\*\*: (.*)$`).FindStringSubmatch(section)
+	sortLine := regexp.MustCompile(`(?m)^- \*\*정렬\*\*: (.*)\.$`).FindStringSubmatch(section)
+	if filterLine == nil || sortLine == nil {
+		t.Fatal("3-2 no longer has the **필터** and **정렬** lines")
+	}
+	quoted := map[string]bool{}
+	for _, m := range regexp.MustCompile("`([^`]+)`").FindAllStringSubmatch(filterLine[1], -1) {
+		quoted[m[1]] = true
+	}
+	for name := range chips {
+		if !quoted[name] {
+			t.Errorf("the review list has a %q filter chip and 3-2 does not list it", name)
+		}
+	}
+	for name := range quoted {
+		if !chips[name] {
+			t.Errorf("3-2 lists a %q filter and the review list has no such chip", name)
+		}
+	}
+	listed := map[string]bool{}
+	for _, name := range strings.Split(sortLine[1], "·") {
+		listed[strings.TrimSpace(name)] = true
+	}
+	for name := range sorts {
+		if !listed[name] {
+			t.Errorf("the review list sorts by %q순 and 3-2 does not list it", name)
+		}
+	}
+	for name := range listed {
+		if !sorts[name] {
+			t.Errorf("3-2 lists sorting by %q and the review list has no such order", name)
+		}
+	}
+}
+
+// notificationSend is what the code does for one notification event: the
+// titles it may put on the bell and the buttons the notification screen will
+// draw under it, which follow from the target the send site names.
+type notificationSend struct {
+	titles  map[string]bool
+	buttons map[string]bool
+}
+
+// notificationSends reads every send site in the Go sources -- the Store.Notify
+// family, the server's add*Notification helpers, notifyReviewer, and the two
+// direct INSERTs the sweep uses so that an alert about the queue does not
+// depend on the queue -- and returns, per event code, the titles and buttons.
+// A title is a string literal in the call, a fmt.Sprintf format with its
+// counter written as N, the callee's default when the call passes "", the
+// `title` assignments of the enclosing function when the call passes the
+// variable, or a `"CODE": "title"` pair of a map literal in a function that
+// sends with a variable event (the approve/reject handler). The button is the
+// one the screen draws for the target: an item send opens the item, a review
+// target opens the review, an audit-log target opens the event.
+func notificationSends(t *testing.T) map[string]*notificationSend {
+	t.Helper()
+	sends := map[string]*notificationSend{}
+	at := func(event string) *notificationSend {
+		if sends[event] == nil {
+			sends[event] = &notificationSend{titles: map[string]bool{}, buttons: map[string]bool{}}
+		}
+		return sends[event]
+	}
+	funcs := regexp.MustCompile(`(?ms)^func .*?^\}$`)
+	name := regexp.MustCompile(`^func (?:\([^)]*\) )?(\w+)\(`)
+	call := regexp.MustCompile(`\.(Notify|NotifyItem|NotifyTx|addNotification|addItemNotification|addTargetedNotification|notifyReviewer)\(`)
+	insert := regexp.MustCompile("event_type,title,body\\) VALUES\\(\\$1,\\$2,'([A-Z_]+)',\\$3,\\$4\\)`,\\s*store\\.NewID\\(\\), [a-z]+, \"([^\"]+)\"")
+	pair := regexp.MustCompile(`"([A-Z_]{3,})": "([^"]+)"`)
+	assigned := regexp.MustCompile(`\btitle :?= "([^"]+)"`)
+	literal := regexp.MustCompile(`^"([A-Z_]{3,})"$`)
+	format := regexp.MustCompile(`^fmt\.Sprintf\("([^"]+)"`)
+
+	var bodies []string
+	defaults := map[string]string{}
+	walkSources(t, []string{"internal", "cmd"}, []string{".go"}, func(_, body string) {
+		for _, fn := range funcs.FindAllString(body, -1) {
+			bodies = append(bodies, fn)
+			if m := name.FindStringSubmatch(fn); m != nil {
+				if d := assigned.FindStringSubmatch(fn); d != nil {
+					defaults[m[1]] = d[1]
+				}
+			}
+		}
+	})
+	for _, fn := range bodies {
+		for _, m := range insert.FindAllStringSubmatch(fn, -1) {
+			at(m[1]).titles[m[2]] = true
+		}
+		var unlabelled []string
+		for _, loc := range call.FindAllStringSubmatchIndex(fn, -1) {
+			callee := fn[loc[2]:loc[3]]
+			args := splitCallArgs(fn[loc[1]:])
+			button := ""
+			switch {
+			case callee == "NotifyItem" || callee == "addItemNotification":
+				button = "해당 항목 열기"
+			case callee == "notifyReviewer" || contains(args, `"REVIEW_REQUEST"`):
+				button = "심의 열기"
+			case contains(args, `"AUDIT_LOG"`):
+				button = "해당 감사 이벤트 열기"
+			}
+			// Every form takes (ctx, recipient, event, title, ...).
+			if len(args) < 4 {
+				t.Fatalf("a %s call has only %d arguments; the send sites must have changed shape", callee, len(args))
+			}
+			m := literal.FindStringSubmatch(args[2])
+			if m == nil {
+				unlabelled = append(unlabelled, button)
+				continue
+			}
+			title := args[3]
+			send := at(m[1])
+			if button != "" {
+				send.buttons[button] = true
+			}
+			switch {
+			case title == `""`:
+				if defaults[callee] == "" {
+					t.Fatalf("%s is called with an empty title and has no default of its own", callee)
+				}
+				send.titles[defaults[callee]] = true
+			case strings.HasPrefix(title, `"`):
+				send.titles[strings.Trim(title, `"`)] = true
+			case format.MatchString(title):
+				send.titles[strings.ReplaceAll(format.FindStringSubmatch(title)[1], "%d", "N")] = true
+			case title == "title":
+				for _, m := range assigned.FindAllStringSubmatch(fn, -1) {
+					send.titles[m[1]] = true
+				}
+			}
+		}
+		if len(unlabelled) > 0 {
+			for _, m := range pair.FindAllStringSubmatch(fn, -1) {
+				send := at(m[1])
+				send.titles[m[2]] = true
+				for _, button := range unlabelled {
+					if button != "" {
+						send.buttons[button] = true
+					}
+				}
+			}
+		}
+	}
+	if len(sends) < 20 {
+		t.Fatalf("recognised only %d notification events in the code; the send sites must have changed shape", len(sends))
+	}
+	return sends
+}
+
+// splitCallArgs returns the top-level arguments of a call whose opening
+// parenthesis has just been consumed, leaving string literals -- which may
+// hold parentheses and commas -- intact.
+func splitCallArgs(rest string) []string {
+	var args []string
+	depth, start := 0, 0
+	var quote byte
+	for i := 0; i < len(rest); i++ {
+		c := rest[i]
+		switch {
+		case quote != 0:
+			if c == '\\' && quote == '"' {
+				i++
+			} else if c == quote {
+				quote = 0
+			}
+		case c == '"' || c == '`':
+			quote = c
+		case c == '(' || c == '[' || c == '{':
+			depth++
+		case c == ')' || c == ']' || c == '}':
+			if depth == 0 {
+				args = append(args, strings.TrimSpace(rest[start:i]))
+				return args
+			}
+			depth--
+		case c == ',' && depth == 0:
+			args = append(args, strings.TrimSpace(rest[start:i]))
+			start = i + 1
+		}
+	}
+	return args
+}
+
+// The notification section of the user guide carries a table of every event
+// type: the name the preference screen and the type filter show, the screen's
+// own description of when it fires, the titles the bell shows for it, and the
+// button the notification screen puts under it. The name and the title are
+// different words for the same event, and nothing else in the product says
+// which is which -- a person who has just read `작업이 재시도를 모두 소진했습니다`
+// on the bell and wants to mute it has to know it is `작업 재시도 소진`. The
+// table is held to account.go's catalogue (names, descriptions, order), to the
+// send sites (titles), and to Notifications.tsx (buttons) in both directions,
+// and every event the code sends has to be in the catalogue, or the preference
+// screen could not mute it and the bell would show the bare code.
+func TestUserGuideNotificationTableIsTheCatalogueAndTheBell(t *testing.T) {
+	type event struct{ code, label, description string }
+	var catalogue []event
+	for _, m := range regexp.MustCompile(`\{"code": "([A-Z_]+)", "label": "([^"]+)", "description": "([^"]+)"\}`).FindAllStringSubmatch(repoFile(t, filepath.Join("internal", "web", "account.go")), -1) {
+		catalogue = append(catalogue, event{m[1], m[2], m[3]})
+	}
+	if len(catalogue) < 20 {
+		t.Fatalf("parsed only %d events from notificationEvents; its shape must have changed", len(catalogue))
+	}
+	screen := repoFile(t, filepath.Join("web", "src", "pages", "Notifications.tsx"))
+	for _, button := range []string{"'해당 항목 열기'", "'심의 열기'", "해당 감사 이벤트 열기"} {
+		if !strings.Contains(screen, button) {
+			t.Fatalf("Notifications.tsx no longer draws a %s button; the screen must have changed", button)
+		}
+	}
+	destination := map[string]string{}
+	for _, m := range regexp.MustCompile(`([A-Z_]+): \{ to: '[^']+', label: '([^']+)' \}`).FindAllStringSubmatch(screen, -1) {
+		destination[m[1]] = m[2]
+	}
+	if len(destination) < 3 {
+		t.Fatalf("parsed only %d destinations from Notifications.tsx; its shape must have changed", len(destination))
+	}
+
+	sends := notificationSends(t)
+	catalogued := map[string]bool{}
+	for _, e := range catalogue {
+		catalogued[e.code] = true
+		if sends[e.code] == nil {
+			t.Errorf("the preference screen offers %s (%s) and nothing in the code sends it", e.code, e.label)
+		}
+	}
+	for code := range sends {
+		if !catalogued[code] {
+			t.Errorf("the code sends %s and notificationEvents does not list it, so it cannot be muted and the bell shows the bare code", code)
+		}
+	}
+
+	section := guideSection(t, repoFile(t, filepath.Join("docs", "USER_GUIDE.md")), "### 3-7. 알림")
+	row := regexp.MustCompile(`^\| ([^|]+) \| ([^|]+) \| ([^|]+) \| ([^|]+) \|$`)
+	quoted := regexp.MustCompile("`([^`]+)`")
+	var rows [][]string
+	for _, line := range strings.Split(section, "\n") {
+		if m := row.FindStringSubmatch(line); m != nil && !strings.HasPrefix(m[1], ":---") && !strings.HasPrefix(m[1], "유형") {
+			rows = append(rows, m[1:])
+		}
+	}
+	if len(rows) != len(catalogue) {
+		t.Fatalf("3-7 lists %d notification types and the preference screen offers %d", len(rows), len(catalogue))
+	}
+	for i, e := range catalogue {
+		label, description, titles, buttons := rows[i][0], rows[i][1], rows[i][2], rows[i][3]
+		if label != e.label {
+			t.Errorf("row %d of 3-7 is %q and the preference screen's %dth type is %q", i+1, label, i+1, e.label)
+			continue
+		}
+		if description != e.description {
+			t.Errorf("3-7 says %s fires %q and the preference screen says %q", label, description, e.description)
+		}
+		send := sends[e.code]
+		if send == nil {
+			continue
+		}
+		listed := map[string]bool{}
+		for _, m := range quoted.FindAllStringSubmatch(titles, -1) {
+			listed[m[1]] = true
+			if !send.titles[m[1]] {
+				t.Errorf("3-7 says %s arrives titled %q and no send site of %s uses that title", label, m[1], e.code)
+			}
+		}
+		for title := range send.titles {
+			if !listed[title] {
+				t.Errorf("%s is sent titled %q and the 3-7 row for %s does not list it", e.code, title, label)
+			}
+		}
+		expected := map[string]bool{}
+		for button := range send.buttons {
+			expected[button] = true
+		}
+		if destination[e.code] != "" {
+			expected[destination[e.code]] = true
+		}
+		shown := map[string]bool{}
+		for _, m := range quoted.FindAllStringSubmatch(buttons, -1) {
+			shown[m[1]] = true
+			if !expected[m[1]] {
+				t.Errorf("3-7 says a %s notification opens with %q and the notification screen draws no such button for it", label, m[1])
+			}
+		}
+		for button := range expected {
+			if !shown[button] {
+				t.Errorf("the notification screen puts %q under a %s notification and the 3-7 row does not mention it", button, label)
+			}
 		}
 	}
 }
