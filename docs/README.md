@@ -11,7 +11,7 @@
 
 ### 🌟 종합 완본 및 시연 영상
 - 🎬 **[SecCheck 3분 서비스 시연 영상 (MP4)](seccheck_overview.mp4)**: 플랫폼 핵심 업무 흐름 및 CRU 시연 (1080p FHD, 3분 06초)
-- 📕 **[SecCheck 종합 기술 매뉴얼 완본 (Complete Manual PDF)](seccheck_complete_manual.pdf)**: 아키텍처, 전체 기능, 사용자 실무, 관리자 운영, API & MCP 가이드가 통합된 종합 기술 완본 (A4 인쇄용)
+- 📕 **[SecCheck 종합 기술 매뉴얼 완본 (Complete Manual PDF)](seccheck_complete_manual.pdf)**: 기능 및 화면 가이드, API & MCP 연계 가이드, 시스템 아키텍처를 한 권으로 묶은 것 (A4 인쇄용). 사용자·관리자 가이드는 아래에 따로 있습니다
 
 ### 1. 사용자 및 기능 가이드
 - 📄 **[기능 및 화면 가이드 (PDF)](seccheck_features_guide.pdf)** (`docs/seccheck_features_guide.pdf`) · [MD](features.md)
@@ -34,6 +34,20 @@
   - REST API 명세, Model Context Protocol(MCP) `2026-07-28` Stateless Streamable HTTP 명세
 - 📄 **[OpenAPI 3.1 명세 (Markdown)](integrations.md)**
   - REST API & MCP 연계 계약 스키마
+
+---
+
+## 🔁 문서 다시 만들기
+
+Markdown 이 정본이고 PDF 는 거기서 굽습니다. 문서를 고쳤으면 PDF 도 같은 커밋에서 다시 만듭니다.
+
+```bash
+scripts/build_docs_pdf.sh                # 전부
+scripts/build_docs_pdf.sh user admin     # 사용자·관리자 가이드만
+```
+
+변환기는 공용 도구(`md2pdf.mjs`)를 쓰며 경로는 `MD2PDF` 환경 변수로 바꿀 수 있습니다. 화면 캡처는
+`scripts/capture_all.js` 로 실제 서버에서 찍습니다 (스크립트 머리말의 필수 환경 변수 참고).
 
 ---
 

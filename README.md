@@ -99,7 +99,7 @@
 | 문서명 | 설명 | PDF 다운로드 / 바로보기 |
 | :--- | :--- | :--- |
 | **🎬 3분 서비스 시연 영상** | 플랫폼 핵심 업무 흐름 및 실시간 CRU 시연 (1080p FHD, 3분 06초) | [**docs/seccheck_overview.mp4**](docs/seccheck_overview.mp4) |
-| **📕 종합 기술 매뉴얼 완본** | 모든 아키텍처·기능·실무·운영·API 통합 기술 완본 (A4 인쇄용) | [**docs/seccheck_complete_manual.pdf**](docs/seccheck_complete_manual.pdf) |
+| **📕 종합 기술 매뉴얼 완본** | 기능·화면 가이드, API & MCP 가이드, 시스템 아키텍처를 한 권으로 (A4 인쇄용) | [**docs/seccheck_complete_manual.pdf**](docs/seccheck_complete_manual.pdf) |
 | **📸 기능 및 화면 가이드** | 전체 메뉴별 화면 가이드와 캡처 스크린샷, CRU 동작 설명 | [**PDF 바로보기**](docs/seccheck_features_guide.pdf) · [MD](docs/features.md) |
 | **👤 사용자 가이드** | 처음 5분, 화면별 사용법(화면 캡처), 자주 하는 작업, 막혔을 때 | [**PDF 바로보기**](docs/USER_GUIDE.pdf) · [MD](docs/USER_GUIDE.md) |
 | **🛠️ 관리자 가이드** | 설치(docker load → compose), 환경 변수·설정 전수 표, 역할, 백업·복구·업그레이드, 장애 대응 | [**PDF 바로보기**](docs/ADMIN_GUIDE.pdf) · [MD](docs/ADMIN_GUIDE.md) |
