@@ -1165,3 +1165,84 @@ func TestAdminGuideLogPhrasesAreTheOnesTheServerWrites(t *testing.T) {
 		t.Fatalf("recognised only %d quoted log lines in the 장애 대응 table; its wording must have changed", seen)
 	}
 }
+
+// The admin guide's 5-1 table is what an operator wires a load balancer and
+// a monitor to, and its 5-4 table is what they read when a job is stuck. A
+// path listed with the wrong method returns 405 to whoever follows it; a job
+// type the code no longer enqueues, or one it enqueues that the table lacks,
+// leaves the operator with no row to act on. Each 5-1 row is held to the
+// registration in server.go -- method, path, and whether it needs a role or
+// none -- and the 5-4 types are held both ways to the INSERT INTO jobs
+// statements in the Go code.
+func TestAdminGuideStatusEndpointsAndJobTypesAreTheServers(t *testing.T) {
+	guide := repoFile(t, filepath.Join("docs", "ADMIN_GUIDE.md"))
+
+	type route struct {
+		public bool
+		roles  map[string]bool
+	}
+	registered := map[string]route{}
+	handle := regexp.MustCompile(`s\.handle\("(\w+)",\s*"([^"]+)",\s*"[^"]*",\s*"[^"]*",\s*(nil|\[\]string\{[^}]*\}),\s*(true|false),`)
+	for _, m := range handle.FindAllStringSubmatch(repoFile(t, filepath.Join("internal", "web", "server.go")), -1) {
+		r := route{public: m[4] == "true", roles: map[string]bool{}}
+		for _, role := range regexp.MustCompile(`"(\w+)"`).FindAllStringSubmatch(m[3], -1) {
+			r.roles[role[1]] = true
+		}
+		registered[m[1]+" "+m[2]] = r
+	}
+	if len(registered) < 50 {
+		t.Fatalf("parsed only %d routes from server.go; the s.handle shape must have changed", len(registered))
+	}
+
+	endpoints := guideSection(t, guide, "### 5-1. 상태 점검 엔드포인트")
+	row := regexp.MustCompile("(?m)^\\| `(/[^`]*)` \\| (GET|POST|PUT|PATCH|DELETE) \\| ([^|]*) \\|")
+	rows := row.FindAllStringSubmatch(endpoints, -1)
+	if len(rows) < 3 {
+		t.Fatalf("parsed only %d rows from the 5-1 table; its shape must have changed", len(rows))
+	}
+	for _, m := range rows {
+		key := m[2] + " " + m[1]
+		r, known := registered[key]
+		if !known {
+			t.Errorf("5-1 lists %s and server.go does not register it with that method", key)
+			continue
+		}
+		auth := strings.TrimSpace(m[3])
+		if strings.HasPrefix(auth, "없음") || strings.HasPrefix(auth, "기본 없음") {
+			if !r.public {
+				t.Errorf("5-1 says %s needs no credentials and server.go requires a login", key)
+			}
+			continue
+		}
+		for _, role := range regexp.MustCompile("`([A-Z_]+)`").FindAllStringSubmatch(auth, -1) {
+			if !r.roles[role[1]] {
+				t.Errorf("5-1 says %s needs %s and server.go does not require it", key, role[1])
+			}
+		}
+	}
+
+	enqueued := map[string]bool{}
+	insert := regexp.MustCompile(`INSERT INTO jobs\s*\([^)]*\)[\s\S]{0,200}?'([A-Z_]+)'`)
+	walkSources(t, []string{"internal", "cmd"}, []string{".go"}, func(_, body string) {
+		for _, m := range insert.FindAllStringSubmatch(body, -1) {
+			enqueued[m[1]] = true
+		}
+	})
+	if len(enqueued) < 2 {
+		t.Fatalf("found only %d job types enqueued in the code; the INSERT INTO jobs shape must have changed", len(enqueued))
+	}
+	documented := map[string]bool{}
+	for _, m := range regexp.MustCompile("(?m)^\\| `([A-Z_]+)` \\|").FindAllStringSubmatch(guideSection(t, guide, "### 5-4. 작업 큐"), -1) {
+		documented[m[1]] = true
+	}
+	for name := range enqueued {
+		if !documented[name] {
+			t.Errorf("the code enqueues %s jobs and the 5-4 table has no row for it", name)
+		}
+	}
+	for name := range documented {
+		if !enqueued[name] {
+			t.Errorf("the 5-4 table lists %s jobs and nothing in the code enqueues them", name)
+		}
+	}
+}
