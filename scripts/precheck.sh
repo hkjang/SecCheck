@@ -57,6 +57,19 @@ fi
 if [ -n "$unused" ]; then
   fail "찍어 두었지만 어느 문서도 싣지 않는 그림입니다 (문서를 고치거나 파일을 지우세요):"; printf '%s\n' "$unused"
 fi
+# The guides are shot at a 1440-wide desktop window (scripts/capture_all.js),
+# and a picture pasted in by hand at some other size stands out on the page
+# next to the rest. The width is the four big-endian bytes at offset 16 of a
+# PNG (the IHDR chunk), which od can read without any image tooling. Only
+# the width: a full-page capture is legitimately taller than 900.
+narrow="$(for f in docs/screenshots/*.png; do
+  [ -f "$f" ] || continue
+  width="$(od -An -tu1 -j16 -N4 "$f" | awk '{print $1*16777216 + $2*65536 + $3*256 + $4}')"
+  [ "$width" = "1440" ] || printf '%s (%s px)\n' "${f#docs/screenshots/}" "$width"
+done)"
+if [ -n "$narrow" ]; then
+  fail "너비가 1440px 이 아닌 그림입니다 (scripts/capture_all.js 로 다시 찍으세요):"; printf '%s\n' "$narrow"
+fi
 
 step "가이드 PDF"
 # The PDFs are committed next to the Markdown they are baked from, and
