@@ -42,6 +42,41 @@ func TestFeatureGuideCoversEveryMenu(t *testing.T) {
 	}
 }
 
+// The user and admin guides are what people are handed, and the standard
+// wants a section with a picture for every screen. A menu that is added
+// without either guide following it ships a screen nobody is told about, so
+// every label in the sidebar has to appear in a section heading or a picture
+// caption of one of the two guides -- the caption, because a screen that is
+// shown gets named the way the menu names it. The guides split the menu by
+// who reads them: the working screens in the user guide, the checklist and
+// administration screens in the admin guide; either counts.
+func TestGuidesPictureEveryMenu(t *testing.T) {
+	nav := repoFile(t, "web/src/components/Layout.tsx")
+	entry := regexp.MustCompile(`\{ to: '([^']+)', label: '([^']+)'`)
+	matches := entry.FindAllStringSubmatch(nav, -1)
+	if len(matches) < 10 {
+		t.Fatalf("parsed only %d nav entries, the Layout.tsx shape must have changed", len(matches))
+	}
+	named := regexp.MustCompile(`(?m)^(###+ |!\[).*$`)
+	var lines []string
+	for _, guide := range []string{"docs/USER_GUIDE.md", "docs/ADMIN_GUIDE.md"} {
+		lines = append(lines, named.FindAllString(repoFile(t, guide), -1)...)
+	}
+	for _, m := range matches {
+		route, label := m[1], m[2]
+		found := false
+		for _, line := range lines {
+			if strings.Contains(line, label) {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Errorf("neither guide has a section heading or picture caption naming the %q menu (%s)", label, route)
+		}
+	}
+}
+
 // Broken image links are worse than no image, and the guide is shipped as a PDF.
 func TestFeatureGuideScreenshotsExist(t *testing.T) {
 	guide := repoFile(t, "docs/features.md")
