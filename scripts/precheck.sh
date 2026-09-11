@@ -41,6 +41,23 @@ else
   printf '건너뜀: web/node_modules가 없습니다 (cd web && npm ci).\n'
 fi
 
+step "가이드 그림"
+# The guides are only as honest as their pictures. A reference to a capture
+# that is not there makes the PDF build fail, but only once someone runs it;
+# a capture nothing references is a screen the guide silently stopped
+# showing after a rename. Both directions are checked, by file name only.
+referenced="$(grep -rhoE 'screenshots/[A-Za-z0-9_./-]+\.png' README.md docs/*.md docs/index.html 2>/dev/null \
+  | sed 's#.*screenshots/##' | sort -u)"
+captured="$(ls docs/screenshots 2>/dev/null | sort)"
+missing="$(comm -23 <(printf '%s\n' "$referenced") <(printf '%s\n' "$captured"))"
+unused="$(comm -13 <(printf '%s\n' "$referenced") <(printf '%s\n' "$captured"))"
+if [ -n "$missing" ]; then
+  fail "문서가 참조하지만 docs/screenshots에 없는 그림입니다 (PDF 생성이 실패합니다):"; printf '%s\n' "$missing"
+fi
+if [ -n "$unused" ]; then
+  fail "찍어 두었지만 어느 문서도 싣지 않는 그림입니다 (문서를 고치거나 파일을 지우세요):"; printf '%s\n' "$unused"
+fi
+
 step "비밀정보 스캔"
 # The scanner and its digest are read from the workflow: a second copy of the
 # pin here would drift, and then this script would be checking something the
