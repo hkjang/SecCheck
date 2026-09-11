@@ -1,5 +1,7 @@
 # SecCheck 관리자 운영 가이드 (Admin Guide)
 
+> **이 문서는 대체되었습니다.** 정본은 [ADMIN_GUIDE.md](ADMIN_GUIDE.md) · [ADMIN_GUIDE.pdf](ADMIN_GUIDE.pdf) 입니다. 아래 내용은 더 이상 갱신하지 않습니다.
+
 `SecCheck`는 오프라인 폐쇄망 및 엔터프라이즈 환경에서 외부 의존성 없이 안정적으로 동작하도록 설계된 보안 검토 플랫폼입니다.
 
 ---

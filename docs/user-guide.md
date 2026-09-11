@@ -1,5 +1,7 @@
 # SecCheck 사용자 실무 가이드 (User Guide)
 
+> **이 문서는 대체되었습니다.** 정본은 [USER_GUIDE.md](USER_GUIDE.md) · [USER_GUIDE.pdf](USER_GUIDE.pdf) 입니다. 아래 내용은 더 이상 갱신하지 않습니다.
+
 `SecCheck`는 심의 요청자, 보안 담당자, 승인자가 하나의 시스템에서 유기적으로 소통하며 보안성 심의를 완결할 수 있도록 지원합니다.
 
 ---

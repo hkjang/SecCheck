@@ -1,335 +1,298 @@
+// Screen captures for docs/USER_GUIDE.md and docs/ADMIN_GUIDE.md.
+//
+// Every picture in the guides is taken here, from a running SecCheck, so the
+// guide never shows a screen that does not exist. The script seeds fake data
+// (demo company, example.com addresses) so nothing real is in the frame.
+//
+// It is meant for a throwaway install. It creates users and reviews it does
+// not delete, and it changes two settings for the duration of the run:
+// workflow.allow_self_review (so the single capture account can both request
+// and review) and security.rate_limit_per_minute (a few dozen page loads in a
+// row would otherwise trip the per-IP limit). Both are read first and put
+// back, field for field, when the run ends -- even on failure.
+//
+// Usage (all four variables are required; none has a default):
+//   SECCHECK_CAPTURE_URL=http://127.0.0.1:8080 \
+//   SECCHECK_CAPTURE_USER=admin \
+//   SECCHECK_CAPTURE_PASSWORD=... \
+//   SECCHECK_CAPTURE_SEED_PASSWORD=... \
+//   PLAYWRIGHT_BROWSERS_PATH=... node scripts/capture_all.js
+//
+// The target must be a loopback address unless SECCHECK_CAPTURE_ALLOW_REMOTE=1
+// is set, so it cannot be pointed at a real deployment by accident.
 const fs = require('fs');
 const path = require('path');
 const { chromium } = require(path.join(__dirname, '..', 'web', 'node_modules', '@playwright', 'test'));
 
 const SCREENSHOT_DIR = path.join(__dirname, '..', 'docs', 'screenshots');
-if (!fs.existsSync(SCREENSHOT_DIR)) {
-  fs.mkdirSync(SCREENSHOT_DIR, { recursive: true });
+
+function required(name) {
+  const value = process.env[name];
+  if (!value) {
+    console.error(`${name} 환경 변수가 필요합니다. 캡처는 버려도 되는 설치에서만 실행하세요.`);
+    process.exit(2);
+  }
+  return value;
 }
 
-async function sleep(ms) {
-  return new Promise((resolve) => setTimeout(resolve, ms));
+const BASE_URL = required('SECCHECK_CAPTURE_URL').replace(/\/+$/, '');
+const USER = required('SECCHECK_CAPTURE_USER');
+const PASSWORD = required('SECCHECK_CAPTURE_PASSWORD');
+const SEED_PASSWORD = required('SECCHECK_CAPTURE_SEED_PASSWORD');
+
+{
+  const host = new URL(BASE_URL).hostname;
+  if (!['127.0.0.1', 'localhost', '::1', '[::1]'].includes(host) && process.env.SECCHECK_CAPTURE_ALLOW_REMOTE !== '1') {
+    console.error(`${BASE_URL} 은 loopback 주소가 아닙니다. 실제 배포를 가리키는 것이 아닌지 확인하고 SECCHECK_CAPTURE_ALLOW_REMOTE=1 로 다시 실행하세요.`);
+    process.exit(2);
+  }
 }
 
-async function capture(page, filename, options = {}) {
-  const filepath = path.join(SCREENSHOT_DIR, filename);
-  await sleep(600);
-  await page.screenshot({ path: filepath, fullPage: options.fullPage ?? false });
-  console.log(`📸 Captured: ${filename}`);
-}
+const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+// A 1x1 PNG used as evidence on items that require an attachment.
+const TINY_PNG = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==', 'base64');
 
 async function main() {
-  console.log('🚀 Starting SecCheck Automated E2E CRU Testing & Screenshot Pipeline...');
-
-  const browser = await chromium.launch({
-    headless: true,
-    args: ['--no-sandbox', '--disable-setuid-sandbox', '--font-render-hinting=none'],
-  });
-
-  const context = await browser.newContext({
-    viewport: { width: 1440, height: 900 },
-    locale: 'ko-KR',
-  });
-
+  fs.mkdirSync(SCREENSHOT_DIR, { recursive: true });
+  const browser = await chromium.launch({ headless: true, args: ['--no-sandbox', '--disable-setuid-sandbox', '--font-render-hinting=none'] });
+  const context = await browser.newContext({ viewport: { width: 1440, height: 900 }, locale: 'ko-KR' });
   const page = await context.newPage();
-  const BASE_URL = 'http://127.0.0.1:8080';
 
-  // 1. Login Page
-  console.log('--- 1. Login Page ---');
+  const capture = async (filename, options = {}) => {
+    await sleep(options.wait ?? 700);
+    await page.screenshot({ path: path.join(SCREENSHOT_DIR, filename), fullPage: options.fullPage ?? false });
+    console.log(`📸 ${filename}`);
+  };
+  const goto = async (route, selector, options) => {
+    await page.goto(`${BASE_URL}${route}`);
+    await page.waitForSelector(selector, { timeout: 15000 });
+    await page.waitForLoadState('networkidle').catch(() => undefined);
+    if (options?.wait) await sleep(options.wait);
+  };
+
+  // ---- Sign in through the real form so the login screen is captured as-is.
   await page.goto(`${BASE_URL}/login`);
   await page.waitForSelector('text=SecCheck');
-  await capture(page, '01_login.png');
-
-  // Perform Login
-  await page.locator('input[autoComplete="username"], input:not([type="password"])').first().fill('admin');
-  await page.locator('input[type="password"]').fill('admin12345678');
+  await capture('login.png');
+  await page.locator('input:not([type="password"])').first().fill(USER);
+  await page.locator('input[type="password"]').fill(PASSWORD);
   await page.click('button:has-text("로그인")');
-  await page.waitForSelector('text=안녕하세요', { timeout: 10000 });
-  await sleep(1000);
+  await page.waitForSelector('text=안녕하세요', { timeout: 15000 });
 
-  // Setup rich initial seed data via API
-  console.log('--- Setting up Seed Data via API ---');
+  // ---- API client on the browser's session.
   const cookies = await context.cookies();
-  const cookieHeader = cookies.map((c) => `${c.name}=${c.value}`).join('; ');
-  const authHeaders = { Cookie: cookieHeader, 'Content-Type': 'application/json' };
+  const headers = { Cookie: cookies.map((c) => `${c.name}=${c.value}`).join('; ') };
+  const me = await (await fetch(`${BASE_URL}/api/v1/me`, { headers })).json();
+  headers['X-CSRF-Token'] = me.csrf_token;
+  const api = async (method, route, body) => {
+    const init = { method, headers: { ...headers } };
+    if (body instanceof FormData) init.body = body;
+    else if (body !== undefined) { init.headers['Content-Type'] = 'application/json'; init.body = JSON.stringify(body); }
+    let res = await fetch(`${BASE_URL}${route}`, init);
+    // The per-IP limit is raised below, but the calls before that -- and the
+    // restore after it -- run at the default. Wait the limit out rather than
+    // fail with the settings half-restored.
+    for (let attempt = 0; res.status === 429 && attempt < 8; attempt++) {
+      await sleep(10000);
+      res = await fetch(`${BASE_URL}${route}`, init);
+    }
+    const text = await res.text();
+    let json = null;
+    try { json = JSON.parse(text); } catch { /* not JSON */ }
+    if (!res.ok) {
+      const err = new Error(`${method} ${route} → ${res.status} ${text.slice(0, 300)}`);
+      err.status = res.status;
+      throw err;
+    }
+    return json;
+  };
+  const tolerate = async (fn) => { try { return await fn(); } catch (e) { if (e.status === 409 || e.status === 422) return null; throw e; } };
 
-  // Fetch CSRF token
-  const meRes = await (await fetch(`${BASE_URL}/api/v1/me`, { headers: authHeaders })).json();
-  const csrfToken = meRes.csrf_token;
-  authHeaders['X-CSRF-Token'] = csrfToken;
+  // ---- Read the settings before touching them; restored in finally.
+  const settings = await api('GET', '/api/v1/admin/settings');
+  const original = Object.fromEntries(['workflow', 'security'].map((key) => [key, settings.find((s) => s.key === key)?.value || {}]));
+  const restoreSettings = async () => {
+    for (const key of Object.keys(original)) await api('PUT', `/api/v1/admin/settings/${key}`, original[key]);
+    console.log('↩ workflow·security 설정을 원래대로 되돌렸습니다.');
+  };
 
-  // Create Review Request 1
-  const review1Res = await (await fetch(`${BASE_URL}/api/v1/review-requests`, {
-    method: 'POST',
-    headers: authHeaders,
-    body: JSON.stringify({
-      service_name: '2026 하반기 신규 AI 대고객 상담 서비스',
-      department: 'AI혁신플랫폼팀',
-      description: '사내 LLM Gateway 및 대고객 모바일 챗봇 인터페이스를 연동하는 2026 핵심 비즈니스 서비스입니다.',
-      service_type: 'EXTERNAL',
-      change_type: 'NEW',
-      builder_id: meRes.user.id,
-      developer_id: meRes.user.id,
-      planned_open_date: '2026-09-30',
-      exposure: 'EXTERNAL',
-      business_criticality: 'CRITICAL',
-      has_admin_page: true,
-      processes_personal_data: true,
-      processes_credit_data: true,
-      external_customer_service: true,
-      uses_cloud: true,
-      uses_docker: true,
-      uses_kubernetes: true,
-      external_integration: true,
-      internet_access: true,
-    }),
-  })).json();
-  const reviewId = review1Res.id;
+  try {
+    await api('PUT', '/api/v1/admin/settings/workflow', { ...original.workflow, allow_self_review: true });
+    await api('PUT', '/api/v1/admin/settings/security', { ...original.security, rate_limit_per_minute: 2000 });
 
-  // Create Review Request 2
-  await fetch(`${BASE_URL}/api/v1/review-requests`, {
-    method: 'POST',
-    headers: authHeaders,
-    body: JSON.stringify({
-      service_name: '엔터프라이즈 클라우드 네이티브 마이크로서비스 인프라',
-      department: '인프라보안운영팀',
-      description: '사내 쿠버네티스 멀티클러스터 기반 코어 백엔드 및 서비스 메시 인프라입니다.',
-      service_type: 'INTERNAL',
-      change_type: 'NEW',
-      builder_id: meRes.user.id,
-      developer_id: meRes.user.id,
-      planned_open_date: '2026-10-15',
-      exposure: 'INTERNAL',
-      business_criticality: 'HIGH',
-      has_admin_page: true,
-      uses_cloud: true,
-      uses_docker: true,
-      uses_kubernetes: true,
-    }),
-  });
+    // ---- Seed users. Names, e-mails and departments are all made up.
+    const users = [
+      { username: 'hong', display_name: '홍길동', email: 'hong@example.com', department: '플랫폼개발팀', roles: ['REQUESTER'] },
+      { username: 'kim', display_name: '김보안', email: 'kim@example.com', department: '정보보호팀', roles: ['SECURITY_REVIEWER', 'TEMPLATE_ADMIN'] },
+      { username: 'lee', display_name: '이승인', email: 'lee@example.com', department: '정보보호팀', roles: ['APPROVER'] },
+      { username: 'park', display_name: '박감사', email: 'park@example.com', department: '감사실', roles: ['AUDITOR'] },
+    ];
+    for (const u of users) await tolerate(() => api('POST', '/api/v1/admin/users', { ...u, password: SEED_PASSWORD }));
+    // The capture account itself should not look like a bare bootstrap login.
+    await api('PATCH', '/api/v1/me', { display_name: '데모 관리자', email: 'admin@example.com', department: '정보보호팀' });
 
-  // Seed response on some checklist items in Review 1
-  if (reviewId) {
-    const items = await (await fetch(`${BASE_URL}/api/v1/review-requests/${reviewId}/items`, { headers: authHeaders })).json();
-    if (Array.isArray(items) && items.length > 0) {
-      // Fill Item 0
-      await fetch(`${BASE_URL}/api/v1/review-requests/${reviewId}/responses/${items[0].id}`, {
-        method: 'PUT',
-        headers: authHeaders,
-        body: JSON.stringify({
-          applicability: 'Y',
-          self_assessment: 'COMPLIANT',
-          current_state: '사내 SSO 및 OAuth2 PKCE 표준 인증 흐름을 적용 완료하였으며 테스트 검증을 완료했습니다.',
-          action_plan: '운영 배포 전 보안 관제 로그 연동 예정',
-          na_reason: '',
-          answer: {},
-        }),
+    // ---- Seed reviews in every state the guide talks about.
+    const base = { builder_id: me.user.id, developer_id: me.user.id, change_type: 'NEW' };
+    const reviews = {
+      approved: await api('POST', '/api/v1/review-requests', { ...base, service_name: '데모 회사 모바일 앱 푸시 서버', department: '모바일플랫폼팀', description: '앱 푸시 발송을 담당하는 내부 서버. 외부 푸시 게이트웨이와 연동합니다.', service_type: 'INTERNAL', exposure: 'INTERNAL', business_criticality: 'MEDIUM', planned_open_date: '2026-10-05', uses_cloud: true, uses_docker: true, external_integration: true }),
+      reviewing: await api('POST', '/api/v1/review-requests', { ...base, service_name: '데모 회사 고객 포털 개편', department: '플랫폼개발팀', description: '대고객 웹 포털을 신규 구축합니다. 회원 가입·로그인, 개인정보 조회, 결제 내역 확인을 제공합니다.', service_type: 'EXTERNAL', exposure: 'EXTERNAL', business_criticality: 'CRITICAL', planned_open_date: '2026-11-02', has_admin_page: true, processes_personal_data: true, processes_credit_data: true, external_customer_service: true, uses_cloud: true, uses_docker: true, uses_kubernetes: true, external_integration: true, internet_access: true }),
+      submitted: await api('POST', '/api/v1/review-requests', { ...base, service_name: '데모 회사 배치 정산 시스템 변경', department: '정산운영팀', description: '월 정산 배치의 데이터 소스를 신규 DW로 변경합니다.', service_type: 'BATCH', change_type: 'CHANGE', exposure: 'INTERNAL', business_criticality: 'HIGH', planned_open_date: '2026-10-20', uses_cloud: true }),
+      draft: await api('POST', '/api/v1/review-requests', { ...base, service_name: '데모 회사 사내 인사 시스템 클라우드 이전', department: '인사기획팀', description: '온프레미스 인사 시스템을 퍼블릭 클라우드로 이전합니다. 임직원 개인정보를 처리합니다.', service_type: 'INTERNAL', change_type: 'CHANGE', exposure: 'INTERNAL', business_criticality: 'HIGH', planned_open_date: '2026-12-01', has_admin_page: true, processes_personal_data: true, uses_cloud: true, uses_kubernetes: true }),
+    };
+
+    const items = async (id) => api('GET', `/api/v1/review-requests/${id}/items`);
+    const fillAll = async (review) => {
+      const list = await items(review.id);
+      await api('POST', `/api/v1/review-requests/${review.id}/responses/bulk`, {
+        item_ids: list.map((i) => i.id), applicability: 'Y', self_assessment: 'COMPLIANT', overwrite: true,
+        current_state: '사내 표준 보안 가이드에 따라 적용했으며 개발 환경에서 검증을 마쳤습니다.', action_plan: '운영 배포 전 보안 관제 로그 연동을 마무리할 예정입니다.',
       });
-
-      // Fill Item 1 (N/A)
-      if (items[1]) {
-        await fetch(`${BASE_URL}/api/v1/review-requests/${reviewId}/responses/${items[1].id}`, {
-          method: 'PUT',
-          headers: authHeaders,
-          body: JSON.stringify({
-            applicability: 'N/A',
-            self_assessment: 'N/A',
-            current_state: '해당 서비스는 신용카드 번호를 직접 저장하지 않고 PG사 토큰 방식을 사용함.',
-            na_reason: 'PG사 토큰 기반 결제로 사내 DB에 신용카드 원문 번호 저장이 불필요함.',
-            action_plan: '',
-            answer: {},
-          }),
-        });
+      for (const item of list.filter((i) => i.evidence_required)) {
+        const form = new FormData();
+        form.append('file', new Blob([TINY_PNG], { type: 'image/png' }), 'security-setting-screenshot.png');
+        form.append('description', '설정 화면 캡처');
+        await api('POST', `/api/v1/review-requests/${review.id}/items/${item.id}/evidences`, form);
       }
+      return list;
+    };
+    const submit = (review) => api('POST', `/api/v1/review-requests/${review.id}/submit`, {});
+
+    // Draft: a few items answered, one N/A, the rest untouched.
+    {
+      const list = await items(reviews.draft.id);
+      await api('POST', `/api/v1/review-requests/${reviews.draft.id}/responses/bulk`, { item_ids: list.slice(0, 4).map((i) => i.id), applicability: 'Y', self_assessment: 'COMPLIANT', current_state: '사내 SSO(OIDC)와 역할 기반 접근 통제를 적용했습니다.', action_plan: '' });
+      await api('PUT', `/api/v1/review-requests/${reviews.draft.id}/responses/${list[4].id}`, { applicability: 'N/A', self_assessment: 'N/A', na_reason: '이 시스템은 결제 정보를 다루지 않아 해당 요건이 적용되지 않습니다.', current_state: '', action_plan: '', answer: {} });
+      await api('POST', `/api/v1/review-requests/${reviews.draft.id}/items/${list[0].id}/comments`, { body: '접근 통제 설계서 v2를 증적으로 첨부했습니다. 확인 부탁드립니다.' }).catch(() => undefined);
     }
-  }
 
-  // 2. Dashboard
-  console.log('--- 2. Dashboard ---');
-  await page.goto(`${BASE_URL}/`);
-  await page.waitForSelector('text=안녕하세요');
-  await sleep(1000);
-  await capture(page, '02_dashboard.png');
+    // Submitted: complete and waiting in the queue.
+    await fillAll(reviews.submitted);
+    await submit(reviews.submitted);
 
-  // 3. Reviews List
-  console.log('--- 3. Reviews List ---');
-  await page.goto(`${BASE_URL}/reviews`);
-  await page.waitForSelector('text=심의 목록');
-  await sleep(1000);
-  await capture(page, '03_reviews_list.png');
+    // Reviewing: submitted, review begun, most items judged, one change request open.
+    {
+      const list = await fillAll(reviews.reviewing);
+      await submit(reviews.reviewing);
+      await api('POST', `/api/v1/review-requests/${reviews.reviewing.id}/begin-review`, {});
+      await api('POST', `/api/v1/review-requests/${reviews.reviewing.id}/review-results/bulk`, { item_ids: list.slice(3).map((i) => i.id), result: 'COMPLIANT', evidence_adequacy: 'ADEQUATE', opinion: '증적으로 적용 사실을 확인했습니다.' });
+      await api('PUT', `/api/v1/review-requests/${reviews.reviewing.id}/review-results/${list[0].id}`, { result: 'CONDITIONAL', evidence_adequacy: 'PARTIAL', opinion: '관리자 페이지 접근이 IP로 제한되어 있으나 2단계 인증이 아직 없습니다.', follow_up: '관리자 계정에 2단계 인증을 적용하고 결과를 보고합니다.', follow_up_due_date: '2026-12-15' });
+      await api('PUT', `/api/v1/review-requests/${reviews.reviewing.id}/review-results/${list[1].id}`, { result: 'INSUFFICIENT', evidence_adequacy: 'INADEQUATE', opinion: '첨부된 캡처만으로는 암호화 알고리즘을 확인할 수 없습니다. 설정 파일 또는 코드 발췌를 첨부하세요.' });
+      await api('POST', `/api/v1/review-requests/${reviews.reviewing.id}/change-requests`, { item_id: list[1].id, reason: '저장 데이터 암호화에 사용한 알고리즘과 키 길이를 확인할 수 있는 증적(설정 파일 발췌)을 추가해 주세요.', due_date: '2026-10-10' });
+    }
 
-  // 4. New Review Form
-  console.log('--- 4. New Review Form ---');
-  await page.goto(`${BASE_URL}/reviews/new`);
-  await page.waitForSelector('text=신규 보안성 심의 요청');
-  await sleep(1000);
-  await capture(page, '04_new_review_form.png');
+    // Approved: the whole path to a decision.
+    {
+      const list = await fillAll(reviews.approved);
+      await submit(reviews.approved);
+      await api('POST', `/api/v1/review-requests/${reviews.approved.id}/begin-review`, {});
+      await api('POST', `/api/v1/review-requests/${reviews.approved.id}/review-results/bulk`, { item_ids: list.map((i) => i.id), result: 'COMPLIANT', evidence_adequacy: 'ADEQUATE', opinion: '적용 사실을 확인했습니다.' });
+      await api('POST', `/api/v1/review-requests/${reviews.approved.id}/complete-review`, { final_result: 'APPROVED', final_opinion: '전 항목 적합. 운영 배포를 승인합니다.' });
+    }
 
-  // 5. Review Detail & Checklist
-  console.log('--- 5. Review Detail & Checklist ---');
-  if (reviewId) {
-    await page.goto(`${BASE_URL}/reviews/${reviewId}`);
-    await page.waitForSelector('.review-layout');
-    await sleep(1500);
-    await capture(page, '05_review_detail_checklist.png');
+    // Keys and a control so the admin screens are not empty.
+    await tolerate(() => api('POST', '/api/v1/me/api-keys', { name: 'CI 파이프라인 연동', scopes: ['read'] }));
+    await tolerate(() => api('POST', '/api/v1/security-controls', { code: 'DEMO-AC-01', title: '관리자 페이지 2단계 인증', description: '관리자 화면 접근 시 비밀번호 외 일회용 코드를 추가로 요구한다.' }));
 
-    // 6. Review Item Editor (Expanded)
-    console.log('--- 6. Review Item Editor ---');
-    const firstItem = page.locator('.checklist-summary').first();
-    await firstItem.click();
-    await sleep(1000);
-    await capture(page, '06_review_item_editor.png');
+    // ---- User screens.
+    await goto('/', 'text=안녕하세요', { wait: 1000 });
+    await capture('dashboard.png');
 
-    // 7. Rule Override Modal
-    console.log('--- 7. Rule Override Modal ---');
-    const ruleBtn = page.locator('button:has-text("자동 배정 조정")').first();
-    if (await ruleBtn.count() > 0) {
-      await ruleBtn.click();
-      await page.waitForSelector('.modal');
-      await capture(page, '09_review_rule_override_modal.png');
+    await goto('/reviews', '.page-title', { wait: 800 });
+    await capture('reviews-list.png');
+
+    await goto('/reviews/new', 'text=신규 보안성 심의 요청', { wait: 800 });
+    await capture('review-new.png');
+
+    await goto(`/reviews/${reviews.draft.id}`, '.review-layout', { wait: 1500 });
+    await capture('review-detail.png');
+    await page.locator('.checklist-summary').first().click();
+    await capture('review-item-editor.png', { wait: 1000 });
+    const precheck = page.locator('button:has-text("제출 전 점검")').first();
+    if (await precheck.count()) {
+      await precheck.click();
+      await page.waitForSelector('.modal', { timeout: 5000 }).catch(() => undefined);
+      await capture('review-precheck.png');
       await page.keyboard.press('Escape');
-      await sleep(500);
     }
+    const ruleButton = page.locator('button:has-text("자동 배정 조정")').first();
+    if (await ruleButton.count()) {
+      await ruleButton.click();
+      await page.waitForSelector('text=자동 배정 결과 조정', { timeout: 5000 }).catch(() => undefined);
+      await capture('review-rule-override.png', { wait: 1000 });
+      await page.keyboard.press('Escape');
+    }
+
+    await goto(`/reviews/${reviews.reviewing.id}`, '.review-layout', { wait: 1500 });
+    await capture('review-detail-reviewing.png');
+    await page.locator('.checklist-summary').nth(1).click();
+    await page.waitForSelector('text=보안 담당자 검토', { timeout: 5000 }).catch(() => undefined);
+    await page.locator('text=보안 담당자 검토').first().scrollIntoViewIfNeeded().catch(() => undefined);
+    await capture('review-item-verdict.png', { wait: 1000 });
+
+    await goto('/security', '.page-title', { wait: 800 });
+    await capture('security-queue.png');
+
+    await goto('/notifications', 'text=알림', { wait: 800 });
+    await capture('notifications.png');
+
+    await goto('/profile', 'text=개인 프로필', { wait: 600 });
+    await capture('profile.png');
+    await goto('/profile/security', 'text=계정 보안', { wait: 600 });
+    await capture('profile-security.png');
+    await goto('/profile/keys', 'text=개인 키 관리', { wait: 600 });
+    await capture('profile-keys.png');
+
+    await goto('/reports', 'text=심의 리포트', { wait: 1200 });
+    await capture('reports.png');
+
+    // ---- Checklist administration.
+    await goto('/templates', '.page-title', { wait: 800 });
+    await capture('templates-list.png');
+    const templates = await api('GET', '/api/v1/templates');
+    const first = Array.isArray(templates) ? templates[0] : templates?.items?.[0];
+    if (first) {
+      await goto(`/templates/${first.id}`, '.page-title', { wait: 1200 });
+      await capture('template-detail.png');
+    }
+    await goto('/templates/import', 'text=Excel', { wait: 800 });
+    await capture('templates-import.png');
+    await goto('/templates/rules', 'text=Rule Engine 시뮬레이터', { wait: 800 });
+    await capture('templates-rules.png');
+    await goto('/controls', 'text=통합 Security Controls', { wait: 800 });
+    await capture('controls.png');
+    await goto('/integrations', 'text=API · MCP 연계', { wait: 800 });
+    await capture('integrations.png');
+
+    // ---- Administration.
+    await goto('/admin/users', 'text=사용자 및 역할', { wait: 800 });
+    await capture('admin-users.png');
+
+    await goto('/admin/settings', 'text=서비스 관리자 설정', { wait: 800 });
+    await capture('admin-settings-general.png');
+    for (const [label, file] of [['검토·승인', 'admin-settings-workflow.png'], ['Keycloak OIDC', 'admin-settings-oidc.png'], ['파일 보안', 'admin-settings-upload.png'], ['접근 보안', 'admin-settings-security.png'], ['알림', 'admin-settings-notification.png']]) {
+      const tab = page.locator(`button.tab:has-text("${label}")`).first();
+      if (await tab.count()) { await tab.click(); await capture(file, { wait: 500 }); }
+    }
+
+    await goto('/admin/audit', 'text=감사로그', { wait: 1000 });
+    await capture('admin-audit.png');
+    await goto('/admin/logs', 'text=서버 로그', { wait: 1000 });
+    await capture('admin-logs.png');
+    await goto('/admin/jobs', 'text=작업 큐', { wait: 800 });
+    await capture('admin-jobs.png');
+    await goto('/admin/api-keys', 'text=API 키', { wait: 800 });
+    await capture('admin-api-keys.png');
+    await goto('/admin/system', 'text=시스템 정보', { wait: 1000 });
+    await capture('admin-system.png');
+  } finally {
+    await restoreSettings().catch((e) => console.error('설정 복원 실패:', e.message));
+    await browser.close();
   }
-
-  // 8. Security Reviews Queue
-  console.log('--- 8. Security Reviews Queue ---');
-  await page.goto(`${BASE_URL}/security`);
-  await page.waitForSelector('text=보안 검토 Queue');
-  await sleep(1000);
-  await capture(page, '10_security_reviews.png');
-
-  // 9. Unified Security Controls
-  console.log('--- 9. Unified Security Controls ---');
-  await page.goto(`${BASE_URL}/controls`);
-  await page.waitForSelector('text=통합 Security Controls');
-  await sleep(1000);
-  await capture(page, '11_controls_catalog.png');
-
-  // 10. Templates List
-  console.log('--- 10. Templates List ---');
-  await page.goto(`${BASE_URL}/templates`);
-  await page.waitForSelector('text=체크리스트 템플릿');
-  await sleep(1000);
-  await capture(page, '12_templates_list.png');
-
-  // 11. Template Detail
-  console.log('--- 11. Template Detail ---');
-  const templates = await (await fetch(`${BASE_URL}/api/v1/templates`, { headers: authHeaders })).json();
-  if (Array.isArray(templates) && templates[0]) {
-    await page.goto(`${BASE_URL}/templates/${templates[0].id}`);
-    await page.waitForSelector('.page-title');
-    await sleep(1200);
-    await capture(page, '13_template_detail.png');
-  }
-
-  // 12. Excel Import Wizard
-  console.log('--- 12. Excel Import Wizard ---');
-  await page.goto(`${BASE_URL}/templates/import`);
-  await page.waitForSelector('text=Excel 가져오기');
-  await sleep(1000);
-  await capture(page, '14_excel_import_wizard.png');
-
-  // 13. Personal Profile
-  console.log('--- 13. Personal Profile ---');
-  await page.goto(`${BASE_URL}/profile`);
-  await page.waitForSelector('text=개인 프로필');
-  await sleep(1000);
-  await capture(page, '15_personal_profile.png');
-
-  // 14. API Keys & Encryption Keys
-  console.log('--- 14. API Keys & Encryption Keys ---');
-  await page.goto(`${BASE_URL}/profile/keys`);
-  await page.waitForSelector('text=개인 키 관리');
-  await sleep(1000);
-  await capture(page, '16_api_keys_and_encryption.png');
-
-  // 15. In-App Notifications
-  console.log('--- 15. In-App Notifications ---');
-  await page.goto(`${BASE_URL}/notifications`);
-  await page.waitForSelector('text=알림');
-  await sleep(1000);
-  await capture(page, '17_notifications.png');
-
-  // 16. Integrations & MCP
-  console.log('--- 16. Integrations & MCP ---');
-  await page.goto(`${BASE_URL}/integrations`);
-  await page.waitForSelector('text=API · MCP 연계');
-  await sleep(1000);
-  await capture(page, '18_integrations_mcp.png');
-
-  // 17. Admin: Users
-  console.log('--- 17. Admin: Users ---');
-  await page.goto(`${BASE_URL}/admin/users`);
-  await page.waitForSelector('text=사용자 및 역할');
-  await sleep(1000);
-  await capture(page, '19_admin_users.png');
-
-  // 18. Admin: Settings (All Tabs)
-  console.log('--- 18. Admin: Settings ---');
-  await page.goto(`${BASE_URL}/admin/settings`);
-  await page.waitForSelector('text=서비스 관리자 설정');
-  await capture(page, '20_admin_settings_general.png');
-
-  // Tab: Workflow
-  const wfTab = page.locator('button.tab:has-text("검토·승인")').first();
-  if (await wfTab.count() > 0) {
-    await wfTab.click();
-    await sleep(500);
-    await capture(page, '23_admin_settings_workflow.png');
-  }
-
-  // Tab: OIDC
-  const oidcTab = page.locator('button.tab:has-text("Keycloak OIDC")').first();
-  if (await oidcTab.count() > 0) {
-    await oidcTab.click();
-    await sleep(500);
-    await capture(page, '21_admin_settings_oidc.png');
-  }
-
-  // Tab: Upload
-  const uploadTab = page.locator('button.tab:has-text("파일 보안")').first();
-  if (await uploadTab.count() > 0) {
-    await uploadTab.click();
-    await sleep(500);
-    await capture(page, '24_admin_settings_upload.png');
-  }
-
-  // Tab: Security
-  const secTab = page.locator('button.tab:has-text("접근 보안")').first();
-  if (await secTab.count() > 0) {
-    await secTab.click();
-    await sleep(500);
-    await capture(page, '22_admin_settings_security.png');
-  }
-
-  // Tab: Notification (SMTP)
-  const notiTab = page.locator('button.tab:has-text("알림")').first();
-  if (await notiTab.count() > 0) {
-    await notiTab.click();
-    await sleep(500);
-    await capture(page, '22_admin_settings_smtp.png');
-  }
-
-  // 19. Admin: Hash Chain Audit Logs
-  console.log('--- 19. Admin: Hash Chain Audit Logs ---');
-  await page.goto(`${BASE_URL}/admin/audit`);
-  await page.waitForSelector('text=감사로그');
-  await sleep(1000);
-  await capture(page, '25_admin_audit_hashchain.png');
-
-  // 20. Admin: Server Logs
-  console.log('--- 20. Admin: Server Logs ---');
-  await page.goto(`${BASE_URL}/admin/logs`);
-  await page.waitForSelector('text=서버 로그');
-  await sleep(1000);
-  await capture(page, '26_admin_logs.png');
-
-  await browser.close();
-  console.log('🎉 SecCheck Full Screenshot Pipeline Completed Successfully!');
+  console.log('🎉 캡처가 끝났습니다:', SCREENSHOT_DIR);
 }
 
 main().catch((err) => {
-  console.error('❌ Automation script failed:', err);
+  console.error('❌ 캡처 실패:', err);
   process.exit(1);
 });

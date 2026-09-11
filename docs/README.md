@@ -16,8 +16,8 @@
 ### 1. 사용자 및 기능 가이드
 - 📄 **[기능 및 화면 가이드 (PDF)](seccheck_features_guide.pdf)** (`docs/seccheck_features_guide.pdf`) · [MD](features.md)
   - 25개 전체 메뉴별 실제 구동 화면 캡처 및 세부 CRU 기능 명세
-- 📄 **[사용자 실무 가이드 (PDF)](seccheck_user_guide.pdf)** (`docs/seccheck_user_guide.pdf`) · [MD](user-guide.md)
-  - 심의 생성, Rule Engine, 체크리스트 작성, N/A 사유, 증적 업로드, 검토/승인 및 내보내기
+- 📄 **[사용자 가이드 (PDF)](USER_GUIDE.pdf)** (`docs/USER_GUIDE.pdf`) · [MD](USER_GUIDE.md)
+  - 처음 5분, 화면별 사용법(실제 화면 캡처), 자주 하는 작업, 막혔을 때, 용어
 
 ### 2. 아키텍처 및 시스템 설계
 - 📄 **[시스템 아키텍처 및 보안 설계 (PDF)](seccheck_architecture.pdf)** (`docs/seccheck_architecture.pdf`) · [MD](architecture.md)
@@ -26,8 +26,8 @@
   - 단일 Docker 이미지 반입 및 패키지 릴리스 가이드
 
 ### 3. 관리자 및 운영 가이드
-- 📄 **[관리자 운영 가이드 (PDF)](seccheck_admin_guide.pdf)** (`docs/seccheck_admin_guide.pdf`) · [MD](admin-guide.md)
-  - 4대 환경변수 부트스트랩, Keycloak OIDC SSO 연동, ClamAV 안티바이러스, RBAC 역할 관리, 체인 검증
+- 📄 **[관리자 가이드 (PDF)](ADMIN_GUIDE.pdf)** (`docs/ADMIN_GUIDE.pdf`) · [MD](ADMIN_GUIDE.md)
+  - 구성 요소, 설치(docker load → compose → 최초 관리자), 환경 변수·설정 전수 표, 역할, 운영(백업·복구·업그레이드), 장애 대응, 보안
 
 ### 4. API & AI / MCP 연동
 - 📄 **[API & MCP 연계 가이드 (PDF)](seccheck_api_guide.pdf)** (`docs/seccheck_api_guide.pdf`) · [MD](api-guide.md)

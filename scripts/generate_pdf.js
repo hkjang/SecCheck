@@ -252,16 +252,8 @@ const DOCS_TO_BUILD = [
     outPdf: path.join(DOCS_DIR, 'seccheck_features_guide.pdf'),
     title: 'SecCheck 기능 및 화면 가이드 (Features & UI Guide)',
   },
-  {
-    src: path.join(DOCS_DIR, 'user-guide.md'),
-    outPdf: path.join(DOCS_DIR, 'seccheck_user_guide.pdf'),
-    title: 'SecCheck 사용자 실무 가이드 (User Guide)',
-  },
-  {
-    src: path.join(DOCS_DIR, 'admin-guide.md'),
-    outPdf: path.join(DOCS_DIR, 'seccheck_admin_guide.pdf'),
-    title: 'SecCheck 관리자 운영 가이드 (Admin Guide)',
-  },
+  // user-guide.md and admin-guide.md are superseded by USER_GUIDE.md and
+  // ADMIN_GUIDE.md, whose PDFs are built with the shared md2pdf tool.
   {
     src: path.join(DOCS_DIR, 'api-guide.md'),
     outPdf: path.join(DOCS_DIR, 'seccheck_api_guide.pdf'),
