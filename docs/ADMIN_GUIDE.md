@@ -55,7 +55,46 @@ CREATE EXTENSION IF NOT EXISTS pg_trgm;   -- 선택. 없으면 경고만 남기�
 
 ### 2-4. compose 로 기동
 
-저장소의 `compose.yaml` 을 그대로 씁니다. 네 개의 환경 변수는 compose 가 읽을 `.env` 파일에 두고, 그 파일은 저장소에 넣지 마십시오.
+릴리즈 자산은 이미지 tar 하나뿐이므로 폐쇄망에서는 저장소의 `compose.yaml` 을 받을 수 없습니다. 아래가 그 파일의 전문입니다 — 이 가이드는 저장소의 `compose.yaml` 과 한 글자도 다르지 않게 유지됩니다(테스트가 대조합니다). 기동할 디렉터리에 `compose.yaml` 이라는 이름으로 그대로 저장하십시오. `image:` 의 태그는 2-2 절에서 적재한 태그와 같아야 합니다.
+
+```yaml
+services:
+  seccheck:
+    image: seccheck:v1.0.144
+    container_name: seccheck
+    restart: unless-stopped
+    stop_grace_period: 25s
+    pids_limit: 256
+    ports:
+      - "8080:8080"
+    environment:
+      POSTGRES_DSN: ${POSTGRES_DSN:?required}
+      BOOTSTRAP_ADMIN: ${BOOTSTRAP_ADMIN:?required}
+      BOOTSTRAP_ADMIN_PASSWORD: ${BOOTSTRAP_ADMIN_PASSWORD:?required}
+      ENCRYPTION_KEY: ${ENCRYPTION_KEY:?required}
+    volumes:
+      - seccheck-data:/app/data
+    read_only: true
+    tmpfs:
+      - /tmp:size=128m,noexec,nosuid,nodev
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    healthcheck:
+      test: ["CMD", "/app/seccheck", "healthcheck"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+
+volumes:
+  seccheck-data:
+```
+
+`ports` 의 앞 숫자(호스트 포트)와 Reverse Proxy 뒤에서만 받을 때의 `127.0.0.1:8080:8080` 같은 바인딩 외에는 바꾸지 않는 것을 권장합니다. `read_only`·`cap_drop`·`no-new-privileges` 는 7 절의 보안 기본값이고, `:?required` 는 네 변수 중 하나라도 비어 있으면 compose 가 기동 전에 멈추게 합니다.
+
+네 개의 환경 변수는 같은 디렉터리의 `.env` 파일에 두고, 그 파일은 저장소에 넣지 마십시오.
 
 ```bash
 cat > .env <<'EOF'
@@ -369,10 +408,10 @@ docker compose exec seccheck /app/seccheck verify-evidence --sample 50   # 전�
 
 1. `CHANGELOG.md` 에서 대상 버전까지의 **스키마**·**설정** 항목을 읽습니다. 인덱스 추가 마이그레이션은 쓰기 잠금을 잡으므로 데이터가 많은 설치는 점검 시간에 합니다.
 2. 5-6 절대로 백업합니다. 마이그레이션은 되돌리지 않으므로 **되돌리는 방법은 백업 복구**입니다.
-3. 새 이미지를 적재하고 compose 의 `image:` 태그를 바꿉니다.
+3. 새 이미지를 적재하고 `compose.yaml` 의 `image:` 태그를 새 태그로 바꿉니다. 2-4 절에 실은 본문은 이 가이드가 쓰인 버전의 것이므로, 새 릴리즈의 가이드에 실린 본문과 달라졌는지도 함께 봅니다.
    ```bash
-   docker load -i seccheck-v1.0.145.tar.gz
-   sed -i 's/seccheck:v1.0.144/seccheck:v1.0.145/' compose.yaml
+   docker load -i seccheck-<새 태그>.tar.gz
+   sed -i 's/seccheck:v1.0.144/seccheck:<새 태그>/' compose.yaml
    docker compose up -d
    ```
 4. 기동 로그에서 `SecCheck started` 를 확인하고 `/ready` 가 200 인지, `시스템 정보` 의 버전과 스키마 버전이 기대와 같은지 봅니다.

@@ -222,15 +222,16 @@ func TestPinnedActionsDoNotClaimTheProductVersion(t *testing.T) {
 	}
 }
 
-// The release version lives in five files that are bumped by hand. A bump that
+// The release version lives in six files that are bumped by hand. A bump that
 // misses one ships an image tagged as the previous release, or a README that
-// tells an operator to pull a tag that was never built.
+// tells an operator to pull a tag that was never built. The admin guide names
+// the archive an offline site is handed, so it is one of the six.
 func TestReleaseVersionIsTheSameEverywhere(t *testing.T) {
 	version := strings.TrimSpace(repoFile(t, "VERSION"))
-	for _, file := range []string{"compose.yaml", "README.md", filepath.Join(".github", "workflows", "ci.yml"), filepath.Join("web", "package.json")} {
+	for _, file := range []string{"compose.yaml", "README.md", filepath.Join(".github", "workflows", "ci.yml"), filepath.Join("web", "package.json"), filepath.Join("docs", "ADMIN_GUIDE.md")} {
 		body := repoFile(t, file)
 		found := false
-		for _, m := range regexp.MustCompile(`(?:seccheck:v|Release-v|VERSION=|"version": ")(\d+\.\d+\.\d+)`).FindAllStringSubmatch(body, -1) {
+		for _, m := range regexp.MustCompile(`(?:seccheck:v|seccheck-v|Release-v|VERSION=|"version": ")(\d+\.\d+\.\d+)`).FindAllStringSubmatch(body, -1) {
 			found = true
 			if m[1] != version {
 				t.Errorf("%s names version %s but VERSION says %s", file, m[1], version)
@@ -240,6 +241,26 @@ func TestReleaseVersionIsTheSameEverywhere(t *testing.T) {
 			t.Errorf("%s no longer carries the release version -- the guard cannot see a missed bump", file)
 		}
 	}
+}
+
+// The only release asset is the image archive, so an operator on a closed
+// network has no way to fetch compose.yaml from the repository. The admin
+// guide's install section carries the file in full instead -- and a copy that
+// is not the file is worse than a link, because the guide promises it can be
+// saved and started as is.
+func TestAdminGuideCarriesTheComposeFile(t *testing.T) {
+	guide := repoFile(t, filepath.Join("docs", "ADMIN_GUIDE.md"))
+	blocks := regexp.MustCompile("(?s)```yaml\n(.*?)```").FindAllStringSubmatch(guide, -1)
+	if len(blocks) == 0 {
+		t.Fatal("docs/ADMIN_GUIDE.md has no yaml block; the install section no longer carries compose.yaml")
+	}
+	compose := repoFile(t, "compose.yaml")
+	for _, block := range blocks {
+		if block[1] == compose {
+			return
+		}
+	}
+	t.Errorf("no yaml block in docs/ADMIN_GUIDE.md matches compose.yaml -- paste the file into section 2-4 again")
 }
 
 // A release that changes how an installation behaves carries a 주의 section in
