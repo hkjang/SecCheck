@@ -237,6 +237,13 @@ func TestAdministratorsAreAlertedWhenTheQueueStopsDraining(t *testing.T) {
 	if !strings.Contains(body, "40분째") {
 		t.Errorf("the alert does not say how long the queue has been stuck: %s", body)
 	}
+	// The body points the reader at the 서버 로그 components to search; it
+	// once named "notify", which no Store.Log call has ever written.
+	for _, component := range []string{"notification", "scanner"} {
+		if !strings.Contains(body, component) {
+			t.Errorf("the alert does not name the %s log component: %s", component, body)
+		}
+	}
 
 	// An outage lasting days must not refill the inbox on every sweep.
 	worker.Sweep(ctx)
