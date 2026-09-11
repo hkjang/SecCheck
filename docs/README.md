@@ -49,6 +49,10 @@ scripts/build_docs_pdf.sh user admin     # 사용자·관리자 가이드만
 변환기는 공용 도구(`md2pdf.mjs`)를 쓰며 경로는 `MD2PDF` 환경 변수로 바꿀 수 있습니다. 화면 캡처는
 `scripts/capture_all.js` 로 실제 서버에서 찍습니다 (스크립트 머리말의 필수 환경 변수 참고).
 
+`scripts/precheck.sh` 는 원고(Markdown 과 거기 실린 그림)가 PDF 를 마지막으로 구운 뒤에 바뀌었는지
+git 으로 확인해, PDF 를 다시 굽지 않은 채로 푸시하는 것을 막습니다. 어느 문서가 어느 PDF 가 되는지는
+`scripts/build_docs_pdf.sh --list` 로 볼 수 있습니다.
+
 ---
 
 ## 🚀 빠른 시작 (Quick Start)

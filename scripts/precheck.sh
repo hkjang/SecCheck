@@ -58,6 +58,36 @@ if [ -n "$unused" ]; then
   fail "찍어 두었지만 어느 문서도 싣지 않는 그림입니다 (문서를 고치거나 파일을 지우세요):"; printf '%s\n' "$unused"
 fi
 
+step "가이드 PDF"
+# The PDFs are committed next to the Markdown they are baked from, and
+# nothing rebuilds them on its own: features.md was re-pointed at new
+# captures while its PDF kept the old ones until someone opened it. md2pdf is
+# not available everywhere, so this does not rebuild anything -- it only asks
+# git whether a document (or a picture it embeds) changed after its PDF was
+# last baked, in the working tree or in history. The mapping comes from the
+# build script so the two cannot disagree.
+while read -r name pdf sources; do
+  # shellcheck disable=SC2086  # sources is a space-separated list of paths
+  inputs="$sources $(grep -hoE 'screenshots/[A-Za-z0-9_./-]+\.png' $sources 2>/dev/null | sed 's#^#docs/#' | sort -u | tr '\n' ' ')"
+  if [ ! -f "$pdf" ]; then
+    fail "$name: $pdf 가 없습니다. scripts/build_docs_pdf.sh $name 으로 만드세요."
+    continue
+  fi
+  # A PDF that is itself modified was just rebuilt; nothing to say.
+  [ -n "$(git status --porcelain -- "$pdf")" ] && continue
+  # shellcheck disable=SC2086
+  if [ -n "$(git status --porcelain --untracked-files=all -- $inputs)" ]; then
+    fail "$name: 원고를 고쳤지만 $pdf 는 그대로입니다. scripts/build_docs_pdf.sh $name 으로 다시 구우세요."
+    continue
+  fi
+  # shellcheck disable=SC2086
+  src_commit="$(git log -1 --format=%H -- $inputs)"
+  pdf_commit="$(git log -1 --format=%H -- "$pdf")"
+  if [ -n "$src_commit" ] && [ -n "$pdf_commit" ] && ! git merge-base --is-ancestor "$src_commit" "$pdf_commit"; then
+    fail "$name: $pdf 를 마지막으로 구운 커밋($(git rev-parse --short "$pdf_commit")) 뒤에 원고가 바뀌었습니다($(git rev-parse --short "$src_commit")). scripts/build_docs_pdf.sh $name 으로 다시 구우세요."
+  fi
+done < <(bash scripts/build_docs_pdf.sh --list)
+
 step "비밀정보 스캔"
 # The scanner and its digest are read from the workflow: a second copy of the
 # pin here would drift, and then this script would be checking something the
