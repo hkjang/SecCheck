@@ -1281,3 +1281,154 @@ func TestAdminGuideStatusEndpointsAndJobTypesAreTheServers(t *testing.T) {
 		}
 	}
 }
+
+// The admin guide's 4-1 table is where an operator learns which roles exist
+// and what to call them. The roles themselves are seeded by migration 001,
+// with the Korean name the roles table carries, and the user screen has its
+// own copy of those names; a role added to the seed, or renamed on the
+// screen, without the table following leaves the operator granting a role
+// the guide does not describe. The table is held both ways to the seed and
+// to the screen's names, and every role a route in server.go requires has
+// to be one the seed hands out.
+func TestAdminGuideRoleTableIsTheRoleList(t *testing.T) {
+	seeded := map[string]string{}
+	seed := regexp.MustCompile(`(?s)INSERT INTO roles\s*\(code,name,description\)\s*VALUES(.*?);`).FindStringSubmatch(repoFile(t, filepath.Join("internal", "store", "migrations", "001_baseline.sql")))
+	if seed == nil {
+		t.Fatal("001_baseline.sql has no INSERT INTO roles; the seed shape must have changed")
+	}
+	for _, m := range regexp.MustCompile(`\('([A-Z_]+)','([^']+)','[^']*'\)`).FindAllStringSubmatch(seed[1], -1) {
+		seeded[m[1]] = m[2]
+	}
+	if len(seeded) < 5 {
+		t.Fatalf("parsed only %d roles from the seed; its row shape must have changed", len(seeded))
+	}
+
+	shown := map[string]string{}
+	names := regexp.MustCompile(`const roleNames[^{]*\{([^}]*)\}`).FindStringSubmatch(repoFile(t, filepath.Join("web", "src", "pages", "Users.tsx")))
+	if names == nil {
+		t.Fatal("Users.tsx has no roleNames map; the screen must have changed")
+	}
+	for _, m := range regexp.MustCompile(`([A-Z_]+):\s*'([^']+)'`).FindAllStringSubmatch(names[1], -1) {
+		shown[m[1]] = m[2]
+	}
+
+	documented := map[string]string{}
+	for _, m := range regexp.MustCompile("(?m)^\\| `([A-Z_]+)` \\| ([^|]+) \\| ").FindAllStringSubmatch(guideSection(t, repoFile(t, filepath.Join("docs", "ADMIN_GUIDE.md")), "### 4-1. 역할"), -1) {
+		documented[m[1]] = strings.TrimSpace(m[2])
+	}
+	if len(documented) < 5 {
+		t.Fatalf("parsed only %d rows from the 4-1 table; its shape must have changed", len(documented))
+	}
+
+	for code, name := range seeded {
+		if got, ok := documented[code]; !ok {
+			t.Errorf("migration 001 seeds the %s role and the 4-1 table has no row for it", code)
+		} else if got != name {
+			t.Errorf("the 4-1 table calls %s %q and the roles table calls it %q", code, got, name)
+		}
+		if got, ok := shown[code]; !ok {
+			t.Errorf("migration 001 seeds the %s role and Users.tsx has no name for it", code)
+		} else if got != name {
+			t.Errorf("Users.tsx calls %s %q and the roles table calls it %q", code, got, name)
+		}
+	}
+	for code := range documented {
+		if _, ok := seeded[code]; !ok {
+			t.Errorf("the 4-1 table lists a %s role that migration 001 does not seed", code)
+		}
+	}
+	for code := range shown {
+		if _, ok := seeded[code]; !ok {
+			t.Errorf("Users.tsx offers a %s role that migration 001 does not seed", code)
+		}
+	}
+
+	required := map[string]bool{}
+	for _, m := range regexp.MustCompile(`s\.handle\("\w+",\s*"[^"]+",\s*"[^"]*",\s*"[^"]*",\s*\[\]string\{([^}]*)\}`).FindAllStringSubmatch(repoFile(t, filepath.Join("internal", "web", "server.go")), -1) {
+		for _, role := range regexp.MustCompile(`"([A-Z_]+)"`).FindAllStringSubmatch(m[1], -1) {
+			required[role[1]] = true
+		}
+	}
+	if len(required) < 5 {
+		t.Fatalf("parsed only %d roles from server.go routes; the s.handle shape must have changed", len(required))
+	}
+	for role := range required {
+		if _, ok := seeded[role]; !ok {
+			t.Errorf("server.go requires a %s role for some route and migration 001 does not seed it, so nobody can hold it", role)
+		}
+	}
+}
+
+// The user guide's 3-2 section spells the life of a review as a chain of
+// status names, which is where a requester learns what 승인 대기 means. The
+// server has no single list of review statuses; it partitions them into the
+// ones a requester may still cancel (cancellableStatuses) and the ones that
+// are part of the record (the NOT IN set the list filters use), and every
+// status a handler writes has to be in one of the two. The screen turns each
+// into a label in statusLabel, and the chain in 3-2 has to quote every one
+// of those labels and nothing that is not one.
+func TestUserGuideStatusFlowNamesEveryReviewStatus(t *testing.T) {
+	reviews := repoFile(t, filepath.Join("internal", "web", "reviews.go"))
+	statuses := map[string]bool{}
+	open := regexp.MustCompile(`cancellableStatuses = \[\]string\{([^}]*)\}`).FindStringSubmatch(reviews)
+	if open == nil {
+		t.Fatal("reviews.go has no cancellableStatuses list; the server must have changed")
+	}
+	for _, m := range regexp.MustCompile(`"([A-Z_]+)"`).FindAllStringSubmatch(open[1], -1) {
+		statuses[m[1]] = true
+	}
+	settled := regexp.MustCompile(`review_requests\.status NOT IN \(([^)]*)\)`).FindStringSubmatch(reviews)
+	if settled == nil {
+		t.Fatal("reviews.go has no review_requests.status NOT IN (...) filter; the server must have changed")
+	}
+	for _, m := range regexp.MustCompile(`'([A-Z_]+)'`).FindAllStringSubmatch(settled[1], -1) {
+		statuses[m[1]] = true
+	}
+	if len(statuses) < 8 {
+		t.Fatalf("found only %d review statuses in reviews.go; the two lists must have changed shape", len(statuses))
+	}
+	written := regexp.MustCompile(`UPDATE review_requests SET status='([A-Z_]+)'`)
+	walkSources(t, []string{"internal", "cmd"}, []string{".go"}, func(path, body string) {
+		for _, m := range written.FindAllStringSubmatch(body, -1) {
+			if !statuses[m[1]] {
+				t.Errorf("%s writes review status %s and it is neither cancellable nor settled in reviews.go", path, m[1])
+			}
+		}
+	})
+
+	labels := map[string]string{}
+	label := regexp.MustCompile(`statusLabel: Record<string, string> = \{([^}]*)\}`).FindStringSubmatch(repoFile(t, filepath.Join("web", "src", "components", "ui.tsx")))
+	if label == nil {
+		t.Fatal("ui.tsx has no statusLabel map; the screen must have changed")
+	}
+	for _, m := range regexp.MustCompile(`([A-Z_]+):\s*'([^']+)'`).FindAllStringSubmatch(label[1], -1) {
+		labels[m[1]] = m[2]
+	}
+
+	flow := regexp.MustCompile(`(?m)^- 상태의 뜻: (.*)$`).FindStringSubmatch(guideSection(t, repoFile(t, filepath.Join("docs", "USER_GUIDE.md")), "### 3-2. 내 심의 (심의 목록)"))
+	if flow == nil {
+		t.Fatal("USER_GUIDE 3-2 has no '상태의 뜻' line; its shape must have changed")
+	}
+	quoted := map[string]bool{}
+	for _, m := range regexp.MustCompile("`([^`]+)`").FindAllStringSubmatch(flow[1], -1) {
+		quoted[m[1]] = true
+	}
+
+	byLabel := map[string]string{}
+	for status := range statuses {
+		name, ok := labels[status]
+		if !ok {
+			t.Errorf("the server has a %s review status and statusLabel in ui.tsx has no label for it, so the badge would show the code", status)
+			continue
+		}
+		byLabel[name] = status
+		if !quoted[name] {
+			t.Errorf("review status %s shows as %q and USER_GUIDE 3-2 does not put that in the status chain", status, name)
+		}
+	}
+	for name := range quoted {
+		if _, ok := byLabel[name]; !ok {
+			t.Errorf("USER_GUIDE 3-2 quotes %q in the status chain and no review status shows as that", name)
+		}
+	}
+}
