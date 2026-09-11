@@ -36,7 +36,10 @@ fi
 
 step "프런트엔드"
 if [ -d web/node_modules ]; then
-  (cd web && npx tsc --noEmit && npm run build >/dev/null) || fail "프런트엔드 타입체크 또는 빌드 실패"
+  # The vitest suite reads the request bodies the screens write out and holds
+  # them against internal/web/payloads.go -- a Go change that renames a field
+  # is caught here, not by the person whose dialog starts answering 400.
+  (cd web && npx tsc --noEmit && npm test --silent && npm run build >/dev/null) || fail "프런트엔드 타입체크·테스트 또는 빌드 실패"
 else
   printf '건너뜀: web/node_modules가 없습니다 (cd web && npm ci).\n'
 fi
