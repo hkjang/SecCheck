@@ -21,6 +21,12 @@
 //
 // The target must be a loopback address unless SECCHECK_CAPTURE_ALLOW_REMOTE=1
 // is set, so it cannot be pointed at a real deployment by accident.
+//
+// SECCHECK_CAPTURE_ONLY=review-copy-result.png,search-command.png writes only
+// the named files. The whole run still happens -- the seed data and the order
+// of the screens is what makes each picture what it is -- but the pictures
+// already in the guide are left byte for byte alone, so adding one screen does
+// not re-shoot the other forty.
 const fs = require('fs');
 const path = require('path');
 const { chromium } = require(path.join(__dirname, '..', 'web', 'node_modules', '@playwright', 'test'));
@@ -40,6 +46,7 @@ const BASE_URL = required('SECCHECK_CAPTURE_URL').replace(/\/+$/, '');
 const USER = required('SECCHECK_CAPTURE_USER');
 const PASSWORD = required('SECCHECK_CAPTURE_PASSWORD');
 const SEED_PASSWORD = required('SECCHECK_CAPTURE_SEED_PASSWORD');
+const ONLY = new Set((process.env.SECCHECK_CAPTURE_ONLY || '').split(',').map((s) => s.trim()).filter(Boolean));
 
 {
   const host = new URL(BASE_URL).hostname;
@@ -62,6 +69,7 @@ async function main() {
 
   const capture = async (filename, options = {}) => {
     await sleep(options.wait ?? 700);
+    if (ONLY.size && !ONLY.has(filename)) { console.log(`   ${filename} (건너뜀)`); return; }
     await page.screenshot({ path: path.join(SCREENSHOT_DIR, filename), fullPage: options.fullPage ?? false });
     console.log(`📸 ${filename}`);
   };
@@ -221,6 +229,17 @@ async function main() {
       await api('POST', `/api/v1/review-requests/${reviews.rejected.id}/reject`, { comment: '평문 전송은 허용할 수 없습니다. SFTP 또는 HTTPS 로 전환한 뒤 재심의를 요청하세요.' });
     }
 
+    // Participants on the draft: one who may write, one who may only read, so
+    // the card shows both kinds side by side.
+    {
+      const directory = await api('GET', '/api/v1/admin/users?limit=200');
+      const idOf = (username) => (directory.items || []).find((u) => u.username === username)?.id;
+      for (const [username, role] of [['hong', 'CONTRIBUTOR'], ['park', 'VIEWER']]) {
+        const userID = idOf(username);
+        if (userID) await api('POST', `/api/v1/review-requests/${reviews.draft.id}/participants`, { user_id: userID, role });
+      }
+    }
+
     // Keys and a control so the admin screens are not empty.
     await tolerate(() => api('POST', '/api/v1/me/api-keys', { name: 'CI 파이프라인 연동', scopes: ['read'] }));
     await tolerate(() => api('POST', '/api/v1/security-controls', { code: 'DEMO-AC-01', title: '관리자 페이지 2단계 인증', description: '관리자 화면 접근 시 비밀번호 외 일회용 코드를 추가로 요구한다.' }));
@@ -228,6 +247,15 @@ async function main() {
     // ---- User screens.
     await goto('/', 'text=안녕하세요', { wait: 1000 });
     await capture('dashboard.png');
+
+    // Ctrl+K from anywhere: the palette lists the menu until two characters
+    // are typed, then reviews, items and evidence that match.
+    await page.keyboard.press('Control+k');
+    await page.waitForSelector('.command-input', { timeout: 5000 });
+    await page.locator('.command-input').fill('푸시');
+    await page.waitForSelector('.command-item:has-text("푸시")', { timeout: 5000 }).catch(() => undefined);
+    await capture('search-command.png', { wait: 800 });
+    await page.keyboard.press('Escape');
 
     await goto('/reviews', '.page-title', { wait: 800 });
     await capture('reviews-list.png');
@@ -237,6 +265,12 @@ async function main() {
 
     await goto(`/reviews/${reviews.draft.id}`, '.review-layout', { wait: 1500 });
     await capture('review-detail.png');
+    const participants = page.locator('.card-header:has-text("참여자")').first();
+    if (await participants.count()) {
+      await participants.scrollIntoViewIfNeeded();
+      await capture('review-participants.png', { wait: 500 });
+      await page.evaluate(() => window.scrollTo(0, 0));
+    }
     await page.locator('.checklist-summary').first().click();
     await capture('review-item-editor.png', { wait: 1000 });
     const precheck = page.locator('button:has-text("제출 전 점검")').first();
@@ -284,6 +318,22 @@ async function main() {
     const outcome = page.locator('text=심의 결론').first();
     if (await outcome.count()) await outcome.scrollIntoViewIfNeeded();
     await capture('review-detail-rejected.png', { wait: 500 });
+
+    // The yearly re-review: copy the approved one and catch the notice that
+    // says how much of it survived today's templates, with the carried-over
+    // badges still on every item. This adds a draft to the list, so it comes
+    // after the list screens.
+    await goto(`/reviews/${reviews.approved.id}`, '.review-layout', { wait: 1000 });
+    const copyButton = page.locator('button:has-text("재심의 복사")').first();
+    if (await copyButton.count()) {
+      await copyButton.click();
+      // The notice is a toast that lives about four seconds, so nothing here
+      // may wait on something that is not going to appear.
+      await page.waitForSelector('.toast:has-text("복사했습니다")', { timeout: 15000 });
+      await page.waitForURL((url) => !url.pathname.endsWith(reviews.approved.id), { timeout: 15000 });
+      await page.waitForSelector('.checklist-card .badge:has-text("이월 답변")', { timeout: 5000 }).catch(() => undefined);
+      await capture('review-copy-result.png', { wait: 300 });
+    }
 
     await goto('/security', '.page-title', { wait: 800 });
     await capture('security-queue.png');
