@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"net/url"
 	"runtime"
 	"sort"
 	"strconv"
@@ -177,6 +178,130 @@ func (s *Store) appliedMigrations(ctx context.Context) (map[int]bool, error) {
 		applied[version] = true
 	}
 	return applied, rows.Err()
+}
+
+// PendingMigrations lists the versions this build carries that the database
+// has not recorded. A running server applies them at startup, so anything left
+// here means the database was never migrated by this build.
+func (s *Store) PendingMigrations(ctx context.Context) ([]int, error) {
+	files, err := MigrationFiles()
+	if err != nil {
+		return nil, err
+	}
+	applied, err := s.appliedMigrations(ctx)
+	if err != nil {
+		return nil, err
+	}
+	var pending []int
+	for _, file := range files {
+		if !applied[file.Version] {
+			pending = append(pending, file.Version)
+		}
+	}
+	return pending, nil
+}
+
+// SchemaShape lists everything about the connected schema that the
+// application depends on: every table and column with its type, nullability
+// and default, every index, and every function. Sequence defaults name the
+// schema they live in, so that prefix is folded away and two schemas of the
+// same database can be compared directly.
+func (s *Store) SchemaShape(ctx context.Context) ([]string, error) {
+	rows, err := s.Pool.Query(ctx, `
+                SELECT 'column '||table_name||'.'||column_name||' '||data_type||' null='||is_nullable||
+                       ' default='||replace(COALESCE(column_default,'-'), current_schema()||'.', '')
+                FROM information_schema.columns WHERE table_schema=current_schema()
+                UNION ALL
+                SELECT 'index '||indexname FROM pg_indexes WHERE schemaname=current_schema()
+                UNION ALL
+                SELECT 'routine '||routine_name FROM information_schema.routines WHERE routine_schema=current_schema()
+                ORDER BY 1`)
+	if err != nil {
+		return nil, fmt.Errorf("read schema shape: %w", err)
+	}
+	defer rows.Close()
+	var out []string
+	for rows.Next() {
+		var line string
+		if err = rows.Scan(&line); err != nil {
+			return nil, fmt.Errorf("read schema shape: %w", err)
+		}
+		out = append(out, line)
+	}
+	return out, rows.Err()
+}
+
+// SchemaDrift answers the question an operator has no other way to ask: does
+// this database actually match the build that is about to run against it? A
+// migration recorded as applied is a promise, not a fact -- a hand-edited
+// table, a restored dump, or a baseline that a database was never eligible to
+// receive all leave a schema that passes startup and fails at the first query
+// that needs the missing column.
+//
+// The expected schema is built by applying every migration into a scratch
+// schema of the same database, so the answer comes from this build's own
+// migration files rather than from a checked-in description that could itself
+// drift. The scratch schema is dropped again before returning.
+func (s *Store) SchemaDrift(ctx context.Context, dsn string) (missing, unexpected []string, err error) {
+	live, err := s.SchemaShape(ctx)
+	if err != nil {
+		return nil, nil, err
+	}
+	scratch := "seccheck_expected_" + NewID()[:12]
+	if _, err = s.Pool.Exec(ctx, `CREATE SCHEMA `+scratch); err != nil {
+		return nil, nil, fmt.Errorf("create a scratch schema to build the expected one in: %w", err)
+	}
+	defer func() {
+		if _, dropErr := s.Pool.Exec(context.WithoutCancel(ctx), `DROP SCHEMA IF EXISTS `+scratch+` CASCADE`); dropErr != nil && err == nil {
+			err = fmt.Errorf("drop the scratch schema %s: %w", scratch, dropErr)
+		}
+	}()
+	expectedStore, err := Open(ctx, WithSearchPath(dsn, scratch))
+	if err != nil {
+		return nil, nil, fmt.Errorf("connect to the scratch schema: %w", err)
+	}
+	defer expectedStore.Close()
+	if err = expectedStore.Migrate(ctx); err != nil {
+		return nil, nil, fmt.Errorf("build the expected schema: %w", err)
+	}
+	expected, err := expectedStore.SchemaShape(ctx)
+	if err != nil {
+		return nil, nil, err
+	}
+
+	inLive := map[string]bool{}
+	for _, line := range live {
+		inLive[line] = true
+	}
+	inExpected := map[string]bool{}
+	for _, line := range expected {
+		inExpected[line] = true
+		if !inLive[line] {
+			missing = append(missing, line)
+		}
+	}
+	for _, line := range live {
+		if !inExpected[line] {
+			unexpected = append(unexpected, line)
+		}
+	}
+	return missing, unexpected, nil
+}
+
+// WithSearchPath points a DSN at one schema of the same database.
+func WithSearchPath(dsn, schema string) string {
+	parsed, err := url.Parse(dsn)
+	if err != nil {
+		separator := "?"
+		if strings.Contains(dsn, "?") {
+			separator = "&"
+		}
+		return dsn + separator + "search_path=" + schema
+	}
+	q := parsed.Query()
+	q.Set("search_path", schema)
+	parsed.RawQuery = q.Encode()
+	return parsed.String()
 }
 
 // SchemaVersion reports the highest applied migration, for /api/v1/admin/system

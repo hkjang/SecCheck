@@ -8,7 +8,6 @@ package testdb
 import (
 	"context"
 	"fmt"
-	"net/url"
 	"os"
 	"strings"
 	"sync/atomic"
@@ -52,7 +51,7 @@ func open(t *testing.T, migrate bool) *store.Store {
 		t.Fatalf("create schema %s: %v", schema, err)
 	}
 
-	scoped, err := store.Open(ctx, withSearchPath(dsn, schema))
+	scoped, err := store.Open(ctx, store.WithSearchPath(dsn, schema))
 	if err != nil {
 		_, _ = admin.Pool.Exec(ctx, `DROP SCHEMA `+schema+` CASCADE`)
 		admin.Close()
@@ -96,21 +95,6 @@ func migrateIf(migrate bool, ctx context.Context, s *store.Store) error {
 		return nil
 	}
 	return s.Migrate(ctx)
-}
-
-func withSearchPath(dsn, schema string) string {
-	parsed, err := url.Parse(dsn)
-	if err != nil {
-		separator := "?"
-		if strings.Contains(dsn, "?") {
-			separator = "&"
-		}
-		return dsn + separator + "search_path=" + schema
-	}
-	q := parsed.Query()
-	q.Set("search_path", schema)
-	parsed.RawQuery = q.Encode()
-	return parsed.String()
 }
 
 // Bare creates an isolated empty schema and returns a Store bound to it with

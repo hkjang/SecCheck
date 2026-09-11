@@ -38,6 +38,8 @@ func main() {
 			return
 		case "verify-evidence":
 			os.Exit(verifyEvidence(os.Args[2:]))
+		case "verify-schema":
+			os.Exit(verifySchema(os.Args[2:]))
 		case "admin-recover":
 			os.Exit(runAdminRecover(os.Args[2:]))
 		case "selftest":
@@ -46,7 +48,7 @@ func main() {
 			fmt.Println(version)
 			return
 		default:
-			fmt.Fprintf(os.Stderr, "unknown command %q; expected admin-recover, healthcheck, selftest, verify-evidence or version\n", os.Args[1])
+			fmt.Fprintf(os.Stderr, "unknown command %q; expected admin-recover, healthcheck, selftest, verify-evidence, verify-schema or version\n", os.Args[1])
 			os.Exit(2)
 		}
 	}

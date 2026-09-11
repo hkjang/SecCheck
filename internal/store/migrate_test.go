@@ -175,38 +175,15 @@ func TestAuditChainCheckpointColumnsExist(t *testing.T) {
 	}
 }
 
-// shape lists everything about a schema that the application depends on:
-// which tables and columns exist, with what type and default, and which
-// indexes back them. Sequence defaults name the schema they live in, so that
-// prefix is folded away before comparing two schemas.
+// shape reads the schema through the same query the operator's verify-schema
+// check uses, so the guard below and that command cannot disagree.
 func shape(t *testing.T, s *store.Store) []string {
 	t.Helper()
-	ctx := context.Background()
-	rows, err := s.Pool.Query(ctx, `
-                SELECT 'column '||table_name||'.'||column_name||' '||data_type||' null='||is_nullable||
-                       ' default='||replace(COALESCE(column_default,'-'), current_schema()||'.', '')
-                FROM information_schema.columns WHERE table_schema=current_schema()
-                UNION ALL
-                SELECT 'index '||indexname FROM pg_indexes WHERE schemaname=current_schema()
-                UNION ALL
-                SELECT 'routine '||routine_name FROM information_schema.routines WHERE routine_schema=current_schema()
-                ORDER BY 1`)
+	lines, err := s.SchemaShape(context.Background())
 	if err != nil {
 		t.Fatalf("read schema shape: %v", err)
 	}
-	defer rows.Close()
-	var out []string
-	for rows.Next() {
-		var line string
-		if err := rows.Scan(&line); err != nil {
-			t.Fatalf("scan shape: %v", err)
-		}
-		out = append(out, line)
-	}
-	if err := rows.Err(); err != nil {
-		t.Fatalf("read schema shape: %v", err)
-	}
-	return out
+	return lines
 }
 
 // The baseline is version 1, and version 1 is also the number the very first
@@ -263,5 +240,76 @@ func TestUpgradingTheFirstReleaseReachesTheSameSchema(t *testing.T) {
 	}
 	if _, err = legacy.Pool.Exec(ctx, `UPDATE users SET failed_login_count=failed_login_count+1,locked_until=now() WHERE id='u-legacy'`); err != nil {
 		t.Errorf("an upgraded first-release database still cannot record a login attempt: %v", err)
+	}
+}
+
+func contains(lines []string, want string) bool {
+	for _, line := range lines {
+		if strings.Contains(line, want) {
+			return true
+		}
+	}
+	return false
+}
+
+// A recorded migration is a promise, not a fact: the database an operator is
+// about to run against may be missing something the build needs, and until
+// verify-schema there was no way to ask. The comparison has to come from this
+// build's own migration files, so it stays true as they change.
+func TestVerifyingTheSchemaReportsWhatTheBuildIsMissing(t *testing.T) {
+	ctx := context.Background()
+	s := testdb.New(t)
+
+	missing, unexpected, err := s.SchemaDrift(ctx, testdb.DSN())
+	if err != nil {
+		t.Fatalf("compare a freshly migrated database: %v", err)
+	}
+	if len(missing) > 0 || len(unexpected) > 0 {
+		t.Fatalf("a freshly migrated database already differs from itself: missing %v, unexpected %v", missing, unexpected)
+	}
+	if pending, err := s.PendingMigrations(ctx); err != nil || len(pending) > 0 {
+		t.Fatalf("pending migrations %v (%v) on a freshly migrated database", pending, err)
+	}
+
+	// The shape of the failure this exists for: the column that broke sign-in,
+	// an index, and a version the database never applied.
+	for _, sql := range []string{
+		`ALTER TABLE users DROP COLUMN failed_login_count`,
+		`DROP INDEX idx_sessions_last_seen`,
+		`ALTER TABLE users ADD COLUMN hand_added text`,
+		`DELETE FROM schema_migrations WHERE version=2`,
+	} {
+		if _, err = s.Pool.Exec(ctx, sql); err != nil {
+			t.Fatalf("%s: %v", sql, err)
+		}
+	}
+
+	missing, unexpected, err = s.SchemaDrift(ctx, testdb.DSN())
+	if err != nil {
+		t.Fatalf("compare a drifted database: %v", err)
+	}
+	for _, want := range []string{"column users.failed_login_count", "index idx_sessions_last_seen"} {
+		if !contains(missing, want) {
+			t.Errorf("%q is gone from the database but not reported: %v", want, missing)
+		}
+	}
+	if !contains(unexpected, "column users.hand_added") {
+		t.Errorf("a hand-added column is not reported: %v", unexpected)
+	}
+	pending, err := s.PendingMigrations(ctx)
+	if err != nil {
+		t.Fatalf("read pending migrations: %v", err)
+	}
+	if len(pending) != 1 || pending[0] != 2 {
+		t.Errorf("pending migrations = %v, want [2]", pending)
+	}
+
+	// The comparison leaves nothing behind in the database it borrowed.
+	var scratch int
+	if err = s.Pool.QueryRow(ctx, `SELECT count(*) FROM information_schema.schemata WHERE schema_name LIKE 'seccheck_expected_%'`).Scan(&scratch); err != nil {
+		t.Fatalf("look for scratch schemas: %v", err)
+	}
+	if scratch != 0 {
+		t.Errorf("the check left %d scratch schemas behind", scratch)
 	}
 }
