@@ -367,7 +367,7 @@ SECCHECK_SELFTEST_PASSWORD='<관리자 비밀번호>' docker compose exec secche
 - 필터: 이벤트 유형(앞부분만 입력해도 매칭), 사용자명 또는 IP, 기간, 결과(`FAILURE` 만 보기), 이벤트 ID, 대상.
 - 배지를 누르면 변경 전후 값, 요청 ID, 이전 해시와 이벤트 해시가 보입니다. `더 보기` 로 200건씩 이어 읽습니다.
 - `CSV 내보내기` 는 현재 필터로 최대 50,000행. 내보내기 자체가 `EXPORT_AUDIT` 로 남습니다. `=` `+` `-` `@` 로 시작하는 값은 작은따옴표를 앞에 붙여 Excel 수식 해석을 막습니다.
-- `체인 검증` 은 마지막 검증 지점 이후를, `전체 재검증` 은 처음부터 다시 확인합니다. 서비스도 **매시간 자동**으로 검증하며 실패하면 활성 시스템 관리자 전원에게 `감사로그 무결성 실패` 알림이 갑니다(6시간에 한 번으로 제한).
+- `체인 검증` 은 마지막 검증 지점 이후를, `전체 재검증` 은 처음부터 다시 확인합니다. 서비스도 **매시간 자동**으로 검증하며 실패하면 활성 시스템 관리자 전원에게 `감사로그 체인 검증 실패` 알림이 갑니다(6시간에 한 번으로 제한).
 
 ### 5-4. 작업 큐
 
@@ -378,7 +378,7 @@ SECCHECK_SELFTEST_PASSWORD='<관리자 비밀번호>' docker compose exec secche
 | `SEND_EMAIL` | 인앱 알림의 이메일 발송 | SMTP 오류는 5회 재시도 후 `FAILED`. 수신자 이메일이 없거나 발송이 꺼진 경우처럼 재시도로 해결되지 않는 것은 재시도 없이 `COMPLETED` 로 끝내고 사유를 `마지막 오류` 에 남김 |
 | `SCAN_EVIDENCE` | 증적 악성코드 검사 | 5회 재시도 후 `FAILED`, 증적은 `ERROR`. 재시도하면 `PENDING` 으로 복귀 |
 
-상태 필터와 `10초 자동 새로고침`, 개별 재시도와 실패 전체 재시도가 있습니다. `검사 대기 증적` 카드가 줄지 않으면 clamd 연결을 먼저 확인하십시오. 재시작으로 `RUNNING` 에 남은 작업은 매시간 정기 점검이 15분 이상 된 것을 큐에 되돌립니다. 재시도를 모두 소진한 작업이 생기면 시스템 관리자에게 `작업 재시도 소진` 알림이 옵니다.
+상태 필터와 `10초 자동 새로고침`, 개별 재시도와 실패 전체 재시도가 있습니다. `검사 대기 증적` 카드가 줄지 않으면 clamd 연결을 먼저 확인하십시오. 재시작으로 `RUNNING` 에 남은 작업은 매시간 정기 점검이 15분 이상 된 것을 큐에 되돌립니다. 재시도를 모두 소진한 작업이 생기면 시스템 관리자에게 `작업이 재시도를 모두 소진했습니다` 알림이 옵니다.
 
 ### 5-5. 정기 점검 (매시간)
 
@@ -397,11 +397,11 @@ SECCHECK_SELFTEST_PASSWORD='<관리자 비밀번호>' docker compose exec secche
 | `stalled_reviews` | 3일 이상 움직이지 않은 심의를 기다리게 하는 사람에게 알림. 담당자가 없는 심의는 보안 담당자 전원에게 | `심의가 멈춰 있습니다` · `담당자 없는 심의가 대기 중입니다` |
 | `open_date_reminders` | 오픈 예정일 3일 전부터, 그리고 지난 뒤에 알림 | `오픈 예정일이 다가왔습니다` · `오픈 예정일이 지났습니다` |
 | `stall_alerts` | 실행 시각이 15분 넘게 지난 작업이 대기 중이면 관리자에게 알림 (6시간에 한 번) | `작업 큐가 처리되지 않고 있습니다` |
-| `failure_alerts` | 재시도를 모두 소진한 작업이 있으면 관리자에게 알림 | `작업이 재시도를 모두 소진했습니다` |
-| `storage_alerts` | 증적 볼륨의 남은 공간이 10% 또는 2GB 아래이거나 쓸 수 없으면 관리자에게 알림 | `증적 저장 공간이 부족합니다` · `증적 볼륨에 쓸 수 없습니다` |
+| `failure_alerts` | 최근 6시간 안에 재시도를 모두 소진한 작업이 있으면 관리자에게 알림 (6시간에 한 번) | `작업이 재시도를 모두 소진했습니다` |
+| `storage_alerts` | 증적 볼륨의 남은 공간이 10% 또는 2GB 아래이거나 쓸 수 없으면 관리자에게 알림 (6시간에 한 번) | `증적 저장 공간이 부족합니다` · `증적 볼륨에 쓸 수 없습니다` |
 | `requeued_jobs` | 15분 이상 `RUNNING` 인 작업을 대기로 되돌림 | — |
-| `evidence_checked` | 가장 오래 확인하지 않은 증적 20건을 저장소에서 되읽어 기록과 대조 | `증적 무결성 확인 실패` |
-| `audit_chain_checked` | 감사로그 해시 체인을 지난 검증 이후 분량만 증분 검증 | `감사로그 체인 검증 실패` |
+| `evidence_checked` | 가장 오래 확인하지 않은 증적 20건을 저장소에서 되읽어 기록과 대조 | `증적 무결성 확인 실패` (6시간에 한 번) |
+| `audit_chain_checked` | 감사로그 해시 체인을 지난 검증 이후 분량만 증분 검증 | `감사로그 체인 검증 실패` (6시간에 한 번) |
 | `api_key_reminders` | 만료 7일 전 API 키의 소유자에게 알림 | `API 키 만료 임박` |
 | `purged_evidence_files` | `deleted_evidence_retention_days` 지난 삭제 증적의 암호문 파기 (기록 행은 남음) | — |
 | `orphan_evidence_files` | 데이터베이스에 기록이 없는 증적 파일 수. 지우지는 않음 | `시스템 정보` 의 `고아 증적 파일` 행. 최대 20,000 파일까지 세고 하루 안에 쓰인 파일은 제외 |
@@ -463,15 +463,17 @@ docker compose exec seccheck /app/seccheck verify-evidence --sample 50   # 전�
 | 사용자 화면에 500, 서버 로그 `component=api` 에 `fields.error` | `서버 로그` 에서 요청 ID 로 검색 | `fields.code`·`fields.error` 의 원인(대개 데이터베이스)에 따라 조치 |
 | 증적이 `검사 중` 에서 안 움직임. `검사 대기 증적` 이 줄지 않음 | `작업 큐`, `서비스 설정 > 파일 보안` 의 `연결 테스트`, 서버 로그 `scanner` 의 `evidence scan failed` | clamd 주소·기동 확인. 검사를 쓰지 않을 거면 `ClamAV 악성코드 검사` 를 끕니다. `FAILED` 작업은 재시도 |
 | 알림 메일이 안 옴 | `작업 큐` 의 `SEND_EMAIL` 마지막 오류, 서버 로그 `notification` 의 `email notification failed` / `digest delivery failed` | `테스트 메일 보내기` 로 SMTP 경로 확인. 수신자에게 이메일이 없거나 `이메일 알림 활성화` 가 꺼져 있으면 재시도 없이 `COMPLETED` 로 끝납니다 |
-| `감사로그 무결성 실패` 알림, 서버 로그 `audit` 의 `audit chain verification failed` | `감사로그` 화면(알림의 링크가 멈춘 이벤트로 이동), 데이터베이스 직접 조작 이력 | 원인을 확인하고 백업과 대조한 뒤 `전체 재검증`. 데이터베이스를 직접 고친 적이 있는지부터 확인 |
-| `증적 무결성 확인 실패` 알림, `seccheck_evidence_unreadable > 0` | `시스템 정보 > 증적 무결성` 의 파일명·심의번호·사유 | 볼륨 백업에서 해당 파일 복구. `verify-evidence` 로 전체 확인 |
-| 서버 로그 `maintenance` 의 `evidence volume is running out`, `seccheck_storage_writable == 0` | `시스템 정보 > 증적 저장소` | 볼륨 확장. `삭제 증적 보관(일)` 을 줄이면 파기가 빨라집니다 |
+| `감사로그 체인 검증 실패` 알림, 서버 로그 `audit` 의 `audit chain verification failed` | `감사로그` 화면(알림의 링크가 멈춘 이벤트로 이동), 데이터베이스 직접 조작 이력 | 원인을 확인하고 백업과 대조한 뒤 `전체 재검증`. 데이터베이스를 직접 고친 적이 있는지부터 확인 |
+| `증적 무결성 확인 실패` 알림(`시스템 정보 열기`), `seccheck_evidence_unreadable > 0` | `시스템 정보 > 증적 무결성` 의 파일명·심의번호·사유 | 볼륨 백업에서 해당 파일 복구. `verify-evidence` 로 전체 확인 |
+| `증적 저장 공간이 부족합니다` 알림(`시스템 정보 열기`), 서버 로그 `maintenance` 의 `evidence volume is running out` | `시스템 정보 > 증적 저장소` 의 남은 공간 | 남은 공간이 10% 또는 2GB 아래입니다. 볼륨 확장. `삭제 증적 보관(일)` 을 줄이면 파기가 빨라집니다. 알림은 6시간에 한 번만 오므로 조치 뒤에는 화면으로 확인 |
+| `증적 볼륨에 쓸 수 없습니다` 알림, `seccheck_storage_writable == 0` | 알림 본문의 볼륨 경로와 파일을 만들지 못한 이유, `시스템 정보 > 증적 저장소` 의 쓰기 가능 여부 | 볼륨 마운트의 권한·읽기 전용 여부·디스크 상태를 확인합니다. 풀릴 때까지 증적 업로드가 모두 실패합니다 |
 | `정기 점검` 배지가 붉음 / `seccheck_maintenance_last_run_seconds` 증가 | 서버 로그 `maintenance` (`could not record the sweep`, `audit chain verification failed to run` 등) | 대개 데이터베이스 문제. 해결 뒤 다음 시간에 자동 재개 |
-| `작업 재시도 소진` 알림, 서버 로그 `maintenance` 의 `jobs exhausted their retries` / `job queue is not draining` | `작업 큐` | 마지막 오류를 읽고 원인(SMTP·clamd) 제거 후 재시도 |
+| `작업 큐가 처리되지 않고 있습니다` 알림(`작업 큐 열기`), 서버 로그 `maintenance` 의 `job queue is not draining` | `작업 큐` 의 상태 필터 `대기`, 서버 로그 `notification` 의 `job claim failed`, 서버 로그 `scanner` 의 `scan job claim failed` | 실행 시각이 15분 넘게 지난 작업이 대기 중입니다. 발송·검사 워커는 서버 프로세스 안에서 돌므로 대개 데이터베이스 연결 문제나 SMTP·clamd 응답 지연입니다. 원인을 제거해도 줄지 않으면 컨테이너를 재시작합니다. 이메일 발송이 함께 멈춘 상황이므로 이 알림은 종으로만 옵니다 |
+| `작업이 재시도를 모두 소진했습니다` 알림(`작업 큐 열기`), 서버 로그 `maintenance` 의 `jobs exhausted their retries` | `작업 큐` 의 상태 필터 `실패` 와 `마지막 오류` 열 | 원인(SMTP·clamd)을 제거한 뒤 재시도. 큐가 비어 보여도 알림 메일·증적 검사가 조용히 멈춘 상태일 수 있습니다 |
 | 컨테이너 로그에 `audit event could not be recorded`, 서버 로그 `audit` 의 `감사 이벤트를 기록하지 못했습니다.`(데이터베이스가 그 줄은 받아 줄 때만 남습니다), `seccheck_audit_write_failures > 0` | 데이터베이스 상태 | 기록 없이 수행된 행위가 있다는 뜻입니다. 즉시 조사 |
 | 감사로그의 접속 IP 가 전부 같은 값 | `서비스 설정 > 접근 보안 > 신뢰 Reverse Proxy` | Proxy IP/CIDR 을 등록합니다. 그 전까지는 요청 제한도 조직 전체로 묶입니다 |
 | SSO 로그인이 실패하고 화면에 코드가 보임 | 감사로그 `LOGIN_FAIL`(`target_type=OIDC`), 서버 로그 `oidc` | `Discovery 연결 테스트`, Callback URL 과 Keycloak Redirect URI 일치 여부. 역할이 안 붙으면 `directory groups received` 로 그룹이 오는지 확인 |
-| 관리자 계정이 잠기거나 비활성화됨 | `사용자·역할` 의 `잠금 해제`, 비활성 필터 | 다른 관리자가 풀거나 `admin-recover --username <id> --unlock`(잠금 해제와 재활성화를 함께 합니다). 장기 미접속으로 비활성화된 것이면 `inactive_admin_lock_days` 를 검토 |
+| 관리자 계정이 잠기거나 비활성화됨, `권한 계정 자동 잠금` 알림 | `사용자·역할` 의 `잠금 해제`, 비활성 필터 | 다른 관리자가 풀거나 `admin-recover --username <id> --unlock`(잠금 해제와 재활성화를 함께 합니다). 장기 미접속으로 비활성화된 것이면 `inactive_admin_lock_days` 를 검토 |
 
 ---
 

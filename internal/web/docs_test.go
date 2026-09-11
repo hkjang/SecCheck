@@ -1482,3 +1482,61 @@ func TestAdminGuideHourlyCheckTableIsTheSweep(t *testing.T) {
 		}
 	}
 }
+
+// An administrator's first sight of trouble is usually the bell: the sweep,
+// the audit verifier and the lockout code each send a notification to every
+// system administrator, and the person who receives one searches the guide
+// for its title. The 장애 대응 table therefore needs a row whose symptom
+// column quotes each of those titles, and every "`…` 알림" the guide quotes
+// must be a title the code actually sends -- the guide had been quoting the
+// labels of the notification preference screen instead, which never appear
+// on the bell. Administrator alerts are recognised by their recipient: the
+// code names the loop variable `admin` at every such send site, whether it
+// goes through Store.Notify or straight into the notifications table.
+func TestAdminGuideTroubleshootingCoversEveryAdministratorAlert(t *testing.T) {
+	sent := map[string]string{}
+	funcs := regexp.MustCompile(`(?ms)^func .*?^\}$`)
+	literal := regexp.MustCompile(`, admin, (?:"[A-Z_]+", )?"([^"]+)", body`)
+	variable := regexp.MustCompile(`, admin, "[A-Z_]+", title, body`)
+	assigned := regexp.MustCompile(`\btitle :?= "([^"]+)"`)
+	walkSources(t, []string{"internal", "cmd"}, []string{".go"}, func(path, body string) {
+		for _, fn := range funcs.FindAllString(body, -1) {
+			for _, m := range literal.FindAllStringSubmatch(fn, -1) {
+				sent[m[1]] = path
+			}
+			if variable.MatchString(fn) {
+				for _, m := range assigned.FindAllStringSubmatch(fn, -1) {
+					sent[m[1]] = path
+				}
+			}
+		}
+	})
+	if len(sent) < 5 {
+		t.Fatalf("recognised only %d administrator alert titles in the code; the send sites must have changed shape", len(sent))
+	}
+
+	guide := repoFile(t, filepath.Join("docs", "ADMIN_GUIDE.md"))
+	alert := regexp.MustCompile("`([^`]+)` 알림")
+	for _, m := range alert.FindAllStringSubmatch(guide, -1) {
+		if _, ok := sent[m[1]]; !ok {
+			t.Errorf("the admin guide speaks of a %q notification and the code sends no administrator alert with that title", m[1])
+		}
+	}
+
+	table := guideSection(t, guide, "## 6. 장애 대응")
+	symptoms := map[string]bool{}
+	for _, line := range strings.Split(table, "\n") {
+		if !strings.HasPrefix(line, "| ") || strings.HasPrefix(line, "| :---") || strings.HasPrefix(line, "| 증상") {
+			continue
+		}
+		symptom := strings.SplitN(line, " | ", 2)[0]
+		for _, m := range alert.FindAllStringSubmatch(symptom, -1) {
+			symptoms[m[1]] = true
+		}
+	}
+	for title, path := range sent {
+		if !symptoms[title] {
+			t.Errorf("%s sends administrators a %q notification and the 장애 대응 table has no row with it as a symptom", path, title)
+		}
+	}
+}
