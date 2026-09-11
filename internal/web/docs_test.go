@@ -1597,3 +1597,258 @@ func TestUserGuideReviewListFiltersAndSortsAreTheScreens(t *testing.T) {
 		}
 	}
 }
+
+// notificationSend is what the code does for one notification event: the
+// titles it may put on the bell and the buttons the notification screen will
+// draw under it, which follow from the target the send site names.
+type notificationSend struct {
+	titles  map[string]bool
+	buttons map[string]bool
+}
+
+// notificationSends reads every send site in the Go sources -- the Store.Notify
+// family, the server's add*Notification helpers, notifyReviewer, and the two
+// direct INSERTs the sweep uses so that an alert about the queue does not
+// depend on the queue -- and returns, per event code, the titles and buttons.
+// A title is a string literal in the call, a fmt.Sprintf format with its
+// counter written as N, the callee's default when the call passes "", the
+// `title` assignments of the enclosing function when the call passes the
+// variable, or a `"CODE": "title"` pair of a map literal in a function that
+// sends with a variable event (the approve/reject handler). The button is the
+// one the screen draws for the target: an item send opens the item, a review
+// target opens the review, an audit-log target opens the event.
+func notificationSends(t *testing.T) map[string]*notificationSend {
+	t.Helper()
+	sends := map[string]*notificationSend{}
+	at := func(event string) *notificationSend {
+		if sends[event] == nil {
+			sends[event] = &notificationSend{titles: map[string]bool{}, buttons: map[string]bool{}}
+		}
+		return sends[event]
+	}
+	funcs := regexp.MustCompile(`(?ms)^func .*?^\}$`)
+	name := regexp.MustCompile(`^func (?:\([^)]*\) )?(\w+)\(`)
+	call := regexp.MustCompile(`\.(Notify|NotifyItem|NotifyTx|addNotification|addItemNotification|addTargetedNotification|notifyReviewer)\(`)
+	insert := regexp.MustCompile("event_type,title,body\\) VALUES\\(\\$1,\\$2,'([A-Z_]+)',\\$3,\\$4\\)`,\\s*store\\.NewID\\(\\), [a-z]+, \"([^\"]+)\"")
+	pair := regexp.MustCompile(`"([A-Z_]{3,})": "([^"]+)"`)
+	assigned := regexp.MustCompile(`\btitle :?= "([^"]+)"`)
+	literal := regexp.MustCompile(`^"([A-Z_]{3,})"$`)
+	format := regexp.MustCompile(`^fmt\.Sprintf\("([^"]+)"`)
+
+	var bodies []string
+	defaults := map[string]string{}
+	walkSources(t, []string{"internal", "cmd"}, []string{".go"}, func(_, body string) {
+		for _, fn := range funcs.FindAllString(body, -1) {
+			bodies = append(bodies, fn)
+			if m := name.FindStringSubmatch(fn); m != nil {
+				if d := assigned.FindStringSubmatch(fn); d != nil {
+					defaults[m[1]] = d[1]
+				}
+			}
+		}
+	})
+	for _, fn := range bodies {
+		for _, m := range insert.FindAllStringSubmatch(fn, -1) {
+			at(m[1]).titles[m[2]] = true
+		}
+		var unlabelled []string
+		for _, loc := range call.FindAllStringSubmatchIndex(fn, -1) {
+			callee := fn[loc[2]:loc[3]]
+			args := splitCallArgs(fn[loc[1]:])
+			button := ""
+			switch {
+			case callee == "NotifyItem" || callee == "addItemNotification":
+				button = "해당 항목 열기"
+			case callee == "notifyReviewer" || contains(args, `"REVIEW_REQUEST"`):
+				button = "심의 열기"
+			case contains(args, `"AUDIT_LOG"`):
+				button = "해당 감사 이벤트 열기"
+			}
+			// Every form takes (ctx, recipient, event, title, ...).
+			if len(args) < 4 {
+				t.Fatalf("a %s call has only %d arguments; the send sites must have changed shape", callee, len(args))
+			}
+			m := literal.FindStringSubmatch(args[2])
+			if m == nil {
+				unlabelled = append(unlabelled, button)
+				continue
+			}
+			title := args[3]
+			send := at(m[1])
+			if button != "" {
+				send.buttons[button] = true
+			}
+			switch {
+			case title == `""`:
+				if defaults[callee] == "" {
+					t.Fatalf("%s is called with an empty title and has no default of its own", callee)
+				}
+				send.titles[defaults[callee]] = true
+			case strings.HasPrefix(title, `"`):
+				send.titles[strings.Trim(title, `"`)] = true
+			case format.MatchString(title):
+				send.titles[strings.ReplaceAll(format.FindStringSubmatch(title)[1], "%d", "N")] = true
+			case title == "title":
+				for _, m := range assigned.FindAllStringSubmatch(fn, -1) {
+					send.titles[m[1]] = true
+				}
+			}
+		}
+		if len(unlabelled) > 0 {
+			for _, m := range pair.FindAllStringSubmatch(fn, -1) {
+				send := at(m[1])
+				send.titles[m[2]] = true
+				for _, button := range unlabelled {
+					if button != "" {
+						send.buttons[button] = true
+					}
+				}
+			}
+		}
+	}
+	if len(sends) < 20 {
+		t.Fatalf("recognised only %d notification events in the code; the send sites must have changed shape", len(sends))
+	}
+	return sends
+}
+
+// splitCallArgs returns the top-level arguments of a call whose opening
+// parenthesis has just been consumed, leaving string literals -- which may
+// hold parentheses and commas -- intact.
+func splitCallArgs(rest string) []string {
+	var args []string
+	depth, start := 0, 0
+	var quote byte
+	for i := 0; i < len(rest); i++ {
+		c := rest[i]
+		switch {
+		case quote != 0:
+			if c == '\\' && quote == '"' {
+				i++
+			} else if c == quote {
+				quote = 0
+			}
+		case c == '"' || c == '`':
+			quote = c
+		case c == '(' || c == '[' || c == '{':
+			depth++
+		case c == ')' || c == ']' || c == '}':
+			if depth == 0 {
+				args = append(args, strings.TrimSpace(rest[start:i]))
+				return args
+			}
+			depth--
+		case c == ',' && depth == 0:
+			args = append(args, strings.TrimSpace(rest[start:i]))
+			start = i + 1
+		}
+	}
+	return args
+}
+
+// The notification section of the user guide carries a table of every event
+// type: the name the preference screen and the type filter show, the screen's
+// own description of when it fires, the titles the bell shows for it, and the
+// button the notification screen puts under it. The name and the title are
+// different words for the same event, and nothing else in the product says
+// which is which -- a person who has just read `작업이 재시도를 모두 소진했습니다`
+// on the bell and wants to mute it has to know it is `작업 재시도 소진`. The
+// table is held to account.go's catalogue (names, descriptions, order), to the
+// send sites (titles), and to Notifications.tsx (buttons) in both directions,
+// and every event the code sends has to be in the catalogue, or the preference
+// screen could not mute it and the bell would show the bare code.
+func TestUserGuideNotificationTableIsTheCatalogueAndTheBell(t *testing.T) {
+	type event struct{ code, label, description string }
+	var catalogue []event
+	for _, m := range regexp.MustCompile(`\{"code": "([A-Z_]+)", "label": "([^"]+)", "description": "([^"]+)"\}`).FindAllStringSubmatch(repoFile(t, filepath.Join("internal", "web", "account.go")), -1) {
+		catalogue = append(catalogue, event{m[1], m[2], m[3]})
+	}
+	if len(catalogue) < 20 {
+		t.Fatalf("parsed only %d events from notificationEvents; its shape must have changed", len(catalogue))
+	}
+	screen := repoFile(t, filepath.Join("web", "src", "pages", "Notifications.tsx"))
+	for _, button := range []string{"'해당 항목 열기'", "'심의 열기'", "해당 감사 이벤트 열기"} {
+		if !strings.Contains(screen, button) {
+			t.Fatalf("Notifications.tsx no longer draws a %s button; the screen must have changed", button)
+		}
+	}
+	destination := map[string]string{}
+	for _, m := range regexp.MustCompile(`([A-Z_]+): \{ to: '[^']+', label: '([^']+)' \}`).FindAllStringSubmatch(screen, -1) {
+		destination[m[1]] = m[2]
+	}
+	if len(destination) < 3 {
+		t.Fatalf("parsed only %d destinations from Notifications.tsx; its shape must have changed", len(destination))
+	}
+
+	sends := notificationSends(t)
+	catalogued := map[string]bool{}
+	for _, e := range catalogue {
+		catalogued[e.code] = true
+		if sends[e.code] == nil {
+			t.Errorf("the preference screen offers %s (%s) and nothing in the code sends it", e.code, e.label)
+		}
+	}
+	for code := range sends {
+		if !catalogued[code] {
+			t.Errorf("the code sends %s and notificationEvents does not list it, so it cannot be muted and the bell shows the bare code", code)
+		}
+	}
+
+	section := guideSection(t, repoFile(t, filepath.Join("docs", "USER_GUIDE.md")), "### 3-7. 알림")
+	row := regexp.MustCompile(`^\| ([^|]+) \| ([^|]+) \| ([^|]+) \| ([^|]+) \|$`)
+	quoted := regexp.MustCompile("`([^`]+)`")
+	var rows [][]string
+	for _, line := range strings.Split(section, "\n") {
+		if m := row.FindStringSubmatch(line); m != nil && !strings.HasPrefix(m[1], ":---") && !strings.HasPrefix(m[1], "유형") {
+			rows = append(rows, m[1:])
+		}
+	}
+	if len(rows) != len(catalogue) {
+		t.Fatalf("3-7 lists %d notification types and the preference screen offers %d", len(rows), len(catalogue))
+	}
+	for i, e := range catalogue {
+		label, description, titles, buttons := rows[i][0], rows[i][1], rows[i][2], rows[i][3]
+		if label != e.label {
+			t.Errorf("row %d of 3-7 is %q and the preference screen's %dth type is %q", i+1, label, i+1, e.label)
+			continue
+		}
+		if description != e.description {
+			t.Errorf("3-7 says %s fires %q and the preference screen says %q", label, description, e.description)
+		}
+		send := sends[e.code]
+		if send == nil {
+			continue
+		}
+		listed := map[string]bool{}
+		for _, m := range quoted.FindAllStringSubmatch(titles, -1) {
+			listed[m[1]] = true
+			if !send.titles[m[1]] {
+				t.Errorf("3-7 says %s arrives titled %q and no send site of %s uses that title", label, m[1], e.code)
+			}
+		}
+		for title := range send.titles {
+			if !listed[title] {
+				t.Errorf("%s is sent titled %q and the 3-7 row for %s does not list it", e.code, title, label)
+			}
+		}
+		expected := map[string]bool{}
+		for button := range send.buttons {
+			expected[button] = true
+		}
+		if destination[e.code] != "" {
+			expected[destination[e.code]] = true
+		}
+		shown := map[string]bool{}
+		for _, m := range quoted.FindAllStringSubmatch(buttons, -1) {
+			shown[m[1]] = true
+			if !expected[m[1]] {
+				t.Errorf("3-7 says a %s notification opens with %q and the notification screen draws no such button for it", label, m[1])
+			}
+		}
+		for button := range expected {
+			if !shown[button] {
+				t.Errorf("the notification screen puts %q under a %s notification and the 3-7 row does not mention it", button, label)
+			}
+		}
+	}
+}
