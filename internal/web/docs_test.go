@@ -1432,3 +1432,53 @@ func TestUserGuideStatusFlowNamesEveryReviewStatus(t *testing.T) {
 		}
 	}
 }
+
+// The admin guide's 5-5 table is keyed by the names the hourly sweep writes
+// into the "retention sweep completed" log line and the last summary on the
+// system page, so an operator reading `"stall_alerts": 1` can look the name
+// up. A step added to Sweep without a row leaves them with nothing to look
+// up; a row for a step the sweep no longer performs sends them looking for
+// a count that never appears. The names are held both ways to the keys the
+// sweep records, and the notification titles the table quotes have to be
+// the ones the worker actually sends.
+func TestAdminGuideHourlyCheckTableIsTheSweep(t *testing.T) {
+	worker := repoFile(t, filepath.Join("internal", "maintenance", "worker.go"))
+	sweep := regexp.MustCompile(`(?s)func \(w \*Worker\) Sweep\(.*?\n\}\n`).FindString(worker)
+	if sweep == "" {
+		t.Fatal("worker.go has no Sweep method; the maintenance worker must have changed")
+	}
+	recorded := map[string]bool{}
+	for _, m := range regexp.MustCompile(`(?m)^\s*(?:removed\[)?"([a-z_]+)"\]?\s*[:=]`).FindAllStringSubmatch(sweep, -1) {
+		recorded[m[1]] = true
+	}
+	if len(recorded) < 10 {
+		t.Fatalf("parsed only %d summary keys from Sweep; its shape must have changed", len(recorded))
+	}
+
+	section := guideSection(t, repoFile(t, filepath.Join("docs", "ADMIN_GUIDE.md")), "### 5-5. 정기 점검 (매시간)")
+	shown := userFacingSources(t)
+	documented := map[string]bool{}
+	for _, m := range regexp.MustCompile("(?m)^\\| `([a-z_]+)` \\| [^|]+ \\| ([^|]*) \\|").FindAllStringSubmatch(section, -1) {
+		documented[m[1]] = true
+		// The last column quotes the title of the notification the step sends
+		// or, for a count that only the system page shows, the row it lands in.
+		for _, title := range regexp.MustCompile("`([^`]+)`").FindAllStringSubmatch(m[2], -1) {
+			if !strings.Contains(worker, `"`+title[1]+`"`) && !phraseIsShown(shown, title[1]) {
+				t.Errorf("5-5 quotes %q for %s and neither worker.go nor a screen shows it", title[1], m[1])
+			}
+		}
+	}
+	if len(documented) < 10 {
+		t.Fatalf("parsed only %d rows from the 5-5 table; its shape must have changed", len(documented))
+	}
+	for name := range recorded {
+		if !documented[name] {
+			t.Errorf("Sweep records %s and the 5-5 table has no row for it", name)
+		}
+	}
+	for name := range documented {
+		if !recorded[name] {
+			t.Errorf("the 5-5 table lists %s and Sweep records no such key", name)
+		}
+	}
+}
