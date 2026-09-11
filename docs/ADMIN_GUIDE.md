@@ -354,7 +354,7 @@ SECCHECK_SELFTEST_PASSWORD='<관리자 비밀번호>' docker compose exec secche
 
 | 로그 | 어디에 | 무엇 |
 | :--- | :--- | :--- |
-| 서버 로그 | `서버 로그` 화면 (DB 저장) | 요청 ID 기반 구조화 로그. `component`(`api`, `auth`, `audit`, `maintenance`, `notification`, `scanner`, `oidc`)와 필드로 검색 |
+| 서버 로그 | `서버 로그` 화면 (DB 저장) | 요청 ID 기반 구조화 로그. `component`(`admin`, `api`, `audit`, `auth`, `bootstrap`, `evidence`, `export`, `maintenance`, `notification`, `oidc`, `review`, `scanner`)와 필드로 검색 |
 | 컨테이너 표준 출력 | `docker compose logs seccheck` | 기동·종료, 그리고 **DB 에 기록할 수 없을 때** 밀려 나오는 줄. 로그 수집기가 함께 모으도록 구성 |
 | 감사로그 | `감사로그` 화면 | 해시 체인으로 묶인 주요 행위. 자동 삭제하지 않음 |
 
@@ -452,7 +452,7 @@ docker compose exec seccheck /app/seccheck verify-evidence --sample 50   # 전�
 | 서버 로그 `maintenance` 의 `evidence volume is running out`, `seccheck_storage_writable == 0` | `시스템 정보 > 증적 저장소` | 볼륨 확장. `삭제 증적 보관(일)` 을 줄이면 파기가 빨라집니다 |
 | `정기 점검` 배지가 붉음 / `seccheck_maintenance_last_run_seconds` 증가 | 서버 로그 `maintenance` (`could not record the sweep`, `audit chain verification failed to run` 등) | 대개 데이터베이스 문제. 해결 뒤 다음 시간에 자동 재개 |
 | `작업 재시도 소진` 알림, 서버 로그 `maintenance` 의 `jobs exhausted their retries` / `job queue is not draining` | `작업 큐` | 마지막 오류를 읽고 원인(SMTP·clamd) 제거 후 재시도 |
-| 서버 로그 `audit` 의 `audit event could not be recorded`, `seccheck_audit_write_failures > 0` | 데이터베이스 상태 | 기록 없이 수행된 행위가 있다는 뜻입니다. 즉시 조사 |
+| 컨테이너 로그에 `audit event could not be recorded`, 서버 로그 `audit` 의 `감사 이벤트를 기록하지 못했습니다.`(데이터베이스가 그 줄은 받아 줄 때만 남습니다), `seccheck_audit_write_failures > 0` | 데이터베이스 상태 | 기록 없이 수행된 행위가 있다는 뜻입니다. 즉시 조사 |
 | 감사로그의 접속 IP 가 전부 같은 값 | `서비스 설정 > 접근 보안 > 신뢰 Reverse Proxy` | Proxy IP/CIDR 을 등록합니다. 그 전까지는 요청 제한도 조직 전체로 묶입니다 |
 | SSO 로그인이 실패하고 화면에 코드가 보임 | 감사로그 `LOGIN_FAIL`(`target_type=OIDC`), 서버 로그 `oidc` | `Discovery 연결 테스트`, Callback URL 과 Keycloak Redirect URI 일치 여부. 역할이 안 붙으면 `directory groups received` 로 그룹이 오는지 확인 |
 | 관리자 계정이 잠기거나 비활성화됨 | `사용자·역할` 의 `잠금 해제`, 비활성 필터 | 다른 관리자가 풀거나 `admin-recover --username <id> --unlock`(잠금 해제와 재활성화를 함께 합니다). 장기 미접속으로 비활성화된 것이면 `inactive_admin_lock_days` 를 검토 |

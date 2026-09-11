@@ -918,3 +918,195 @@ func TestAdminGuideSettingsTablesMatchTheSeedsAndTheScreen(t *testing.T) {
 		}
 	}
 }
+
+// guideSection returns the body of one heading in a guide, up to the next
+// heading of the same or a higher level.
+func guideSection(t *testing.T, guide, heading string) string {
+	t.Helper()
+	start := strings.Index(guide, "\n"+heading)
+	if start < 0 {
+		t.Fatalf("guide has no %q heading", heading)
+	}
+	section := guide[start+1:]
+	level := strings.Index(heading, " ")
+	if end := regexp.MustCompile("\n#{1," + strconv.Itoa(level) + "} ").FindStringIndex(section[len(heading):]); end != nil {
+		section = section[:len(heading)+end[0]]
+	}
+	return section
+}
+
+// walkSources hands every non-test source file under the given roots to fn
+// as (repo-relative path, body).
+func walkSources(t *testing.T, roots []string, suffixes []string, fn func(path, body string)) {
+	t.Helper()
+	for _, root := range roots {
+		err := filepath.WalkDir(filepath.Join("..", "..", root), func(path string, entry os.DirEntry, err error) error {
+			if err != nil || entry.IsDir() || strings.HasSuffix(path, "_test.go") {
+				return nil
+			}
+			ok := false
+			for _, suffix := range suffixes {
+				ok = ok || strings.HasSuffix(path, suffix)
+			}
+			if !ok {
+				return nil
+			}
+			body, readErr := os.ReadFile(path)
+			if readErr != nil {
+				return nil
+			}
+			fn(filepath.ToSlash(strings.TrimPrefix(path, filepath.Join("..", "..")+string(filepath.Separator))), string(body))
+			return nil
+		})
+		if err != nil {
+			t.Fatalf("walk %s: %v", root, err)
+		}
+	}
+}
+
+// The "막혔을 때" table in the user guide quotes the messages people actually
+// see, so that someone can search the guide for the text on their screen.
+// A message that is reworded in the server or the screen without the guide
+// following leaves that search empty-handed. Every quoted phrase has to exist
+// letter for letter somewhere the user can be shown it: a server message
+// literal or a string in the web sources. What the message fills in at
+// runtime is written as `N` before a counter (`N분 후`, `미검토 항목 N건`) or
+// as `<…>` (`허용되지 않은 확장자입니다: <확장자>`), so the phrase is checked
+// around those.
+func TestUserGuideErrorMessagesAreTheOnesTheScreenShows(t *testing.T) {
+	section := guideSection(t, repoFile(t, filepath.Join("docs", "USER_GUIDE.md")), "## 5. 막혔을 때")
+	var corpus strings.Builder
+	walkSources(t, []string{"internal", "cmd", filepath.Join("web", "src")}, []string{".go", ".ts", ".tsx"}, func(_, body string) {
+		corpus.WriteString(body)
+		corpus.WriteByte('\n')
+	})
+	sources := corpus.String()
+
+	quoted := regexp.MustCompile("`([^`]+)`")
+	placeholder := regexp.MustCompile("N([분건개회일])|<[^>]+>")
+	rows := 0
+	for _, line := range strings.Split(section, "\n") {
+		if !strings.HasPrefix(line, "| ") || strings.HasPrefix(line, "| :---") || strings.HasPrefix(line, "| 화면에 보이는 메시지") {
+			continue
+		}
+		rows++
+		cell := strings.TrimSpace(strings.SplitN(line[2:], " | ", 2)[0])
+		phrases := quoted.FindAllStringSubmatch(cell, -1)
+		if len(phrases) == 0 {
+			t.Errorf("the row %q quotes no message in backticks; the table is for text the user can search for", cell)
+			continue
+		}
+		for _, m := range phrases {
+			for _, fragment := range strings.Split(placeholder.ReplaceAllString(m[1], "\x00$1"), "\x00") {
+				fragment = strings.TrimSpace(fragment)
+				if len([]rune(fragment)) < 2 {
+					continue
+				}
+				if !strings.Contains(sources, fragment) {
+					t.Errorf("the user guide quotes %q and nothing in the server or the screen says it", m[1])
+					break
+				}
+			}
+		}
+	}
+	if rows < 10 {
+		t.Fatalf("parsed only %d rows from the 막혔을 때 table; its shape must have changed", rows)
+	}
+}
+
+// storeLogCalls returns every (component, message) pair the code writes to
+// the 서버 로그 screen through Store.Log, plus the set of components alone.
+func storeLogCalls(t *testing.T) (map[string]map[string]bool, map[string]bool) {
+	t.Helper()
+	call := regexp.MustCompile(`\.Log\([^,]+,\s*"[A-Z]+",\s*[^,]+,\s*"([a-z_]+)",\s*("([^"]+)"|[a-zA-Z.]+)`)
+	messages := map[string]map[string]bool{}
+	components := map[string]bool{}
+	walkSources(t, []string{"internal", "cmd"}, []string{".go"}, func(_, body string) {
+		for _, m := range call.FindAllStringSubmatch(body, -1) {
+			components[m[1]] = true
+			if m[3] != "" {
+				if messages[m[1]] == nil {
+					messages[m[1]] = map[string]bool{}
+				}
+				messages[m[1]][m[3]] = true
+			}
+		}
+	})
+	if len(components) < 5 {
+		t.Fatalf("only %d log components found in the code; the Store.Log call shape must have changed", len(components))
+	}
+	return messages, components
+}
+
+// The admin guide's 장애 대응 table tells an operator which line to look for.
+// A line is quoted in one of two places and the test holds each to its
+// source: "로그에 `…`" is a startup failure that only ever reaches the
+// container's standard output, so it must be a string literal somewhere in
+// the Go code; "서버 로그 `component` 의 `…`" is a row on the 서버 로그 screen,
+// so the code must call Store.Log with exactly that component and message --
+// a message the process prints to stderr instead would never appear there.
+// The table had quoted such a stderr line under a screen component when this
+// was written. The component list in 5-3 is held to the code the same way.
+func TestAdminGuideLogPhrasesAreTheOnesTheServerWrites(t *testing.T) {
+	guide := repoFile(t, filepath.Join("docs", "ADMIN_GUIDE.md"))
+	messages, components := storeLogCalls(t)
+
+	listed := guideSection(t, guide, "### 5-3. 로그")
+	m := regexp.MustCompile("`component`\\(((?:`[a-z_]+`(?:, )?)+)\\)").FindStringSubmatch(listed)
+	if m == nil {
+		t.Fatal("5-3 no longer lists the log components after `component`")
+	}
+	documented := map[string]bool{}
+	for _, name := range regexp.MustCompile("`([a-z_]+)`").FindAllStringSubmatch(m[1], -1) {
+		documented[name[1]] = true
+	}
+	for name := range components {
+		if !documented[name] {
+			t.Errorf("the code writes 서버 로그 rows with component %q and 5-3 does not list it", name)
+		}
+	}
+	for name := range documented {
+		if !components[name] {
+			t.Errorf("5-3 lists the log component %q and nothing in the code writes it", name)
+		}
+	}
+
+	var goSources strings.Builder
+	walkSources(t, []string{"internal", "cmd"}, []string{".go"}, func(_, body string) {
+		goSources.WriteString(body)
+		goSources.WriteByte('\n')
+	})
+	table := guideSection(t, guide, "## 6. 장애 대응")
+	stdout := regexp.MustCompile("로그에 `([^`]+)`(?: 또는 `([^`]+)`)?")
+	screen := regexp.MustCompile("서버 로그 `([a-z_]+)` (?:의 ((?:`[^`]+`(?: / )?)+)|\\(((?:`[^`]+`(?:, )?)+) 등\\))")
+	quoted := regexp.MustCompile("`([^`]+)`")
+	seen := 0
+	for _, line := range strings.Split(table, "\n") {
+		if !strings.HasPrefix(line, "| ") || strings.HasPrefix(line, "| :---") || strings.HasPrefix(line, "| 증상") {
+			continue
+		}
+		for _, m := range stdout.FindAllStringSubmatch(line, -1) {
+			for _, phrase := range m[1:] {
+				if phrase == "" {
+					continue
+				}
+				seen++
+				if !strings.Contains(goSources.String(), phrase) {
+					t.Errorf("the admin guide says the log shows %q and nothing in the code prints it", phrase)
+				}
+			}
+		}
+		for _, m := range screen.FindAllStringSubmatch(line, -1) {
+			component := m[1]
+			for _, q := range quoted.FindAllStringSubmatch(m[2]+m[3], -1) {
+				seen++
+				if !messages[component][q[1]] {
+					t.Errorf("the admin guide says 서버 로그 component %q shows %q and no Store.Log call writes that pair", component, q[1])
+				}
+			}
+		}
+	}
+	if seen < 10 {
+		t.Fatalf("recognised only %d quoted log lines in the 장애 대응 table; its wording must have changed", seen)
+	}
+}
