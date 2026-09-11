@@ -1540,3 +1540,60 @@ func TestAdminGuideTroubleshootingCoversEveryAdministratorAlert(t *testing.T) {
 		}
 	}
 }
+
+// The user guide's 3-2 section lists the filter chips and the sort orders
+// of the review list. The wider quotation check only asks that each quoted
+// name exist somewhere in the screens, so a chip added to the list or a
+// sort order renamed would leave the guide silently short. The chips are
+// the aria-pressed buttons of Reviews.tsx and the sort orders its `sorts`
+// table; each is held to the guide's line both ways.
+func TestUserGuideReviewListFiltersAndSortsAreTheScreens(t *testing.T) {
+	screen := repoFile(t, filepath.Join("web", "src", "pages", "Reviews.tsx"))
+	chips := map[string]bool{}
+	for _, m := range regexp.MustCompile(`aria-pressed=.*?>(?:<[A-Za-z]+[^<>]*/>)? ?([^<>]+)</button>`).FindAllStringSubmatch(screen, -1) {
+		chips[strings.TrimSpace(m[1])] = true
+	}
+	sorts := map[string]bool{}
+	table := regexp.MustCompile(`const sorts[^\n]*`).FindString(screen)
+	for _, m := range regexp.MustCompile(`\['[a-z_]+', '([^']+)순'\]`).FindAllStringSubmatch(table, -1) {
+		sorts[m[1]] = true
+	}
+	if len(chips) < 3 || len(sorts) < 3 {
+		t.Fatalf("parsed %d filter chips and %d sort orders from Reviews.tsx; its shape must have changed", len(chips), len(sorts))
+	}
+
+	section := guideSection(t, repoFile(t, filepath.Join("docs", "USER_GUIDE.md")), "### 3-2. 내 심의 (심의 목록)")
+	filterLine := regexp.MustCompile(`(?m)^- \*\*필터\*\*: (.*)$`).FindStringSubmatch(section)
+	sortLine := regexp.MustCompile(`(?m)^- \*\*정렬\*\*: (.*)\.$`).FindStringSubmatch(section)
+	if filterLine == nil || sortLine == nil {
+		t.Fatal("3-2 no longer has the **필터** and **정렬** lines")
+	}
+	quoted := map[string]bool{}
+	for _, m := range regexp.MustCompile("`([^`]+)`").FindAllStringSubmatch(filterLine[1], -1) {
+		quoted[m[1]] = true
+	}
+	for name := range chips {
+		if !quoted[name] {
+			t.Errorf("the review list has a %q filter chip and 3-2 does not list it", name)
+		}
+	}
+	for name := range quoted {
+		if !chips[name] {
+			t.Errorf("3-2 lists a %q filter and the review list has no such chip", name)
+		}
+	}
+	listed := map[string]bool{}
+	for _, name := range strings.Split(sortLine[1], "·") {
+		listed[strings.TrimSpace(name)] = true
+	}
+	for name := range sorts {
+		if !listed[name] {
+			t.Errorf("the review list sorts by %q순 and 3-2 does not list it", name)
+		}
+	}
+	for name := range listed {
+		if !sorts[name] {
+			t.Errorf("3-2 lists sorting by %q and the review list has no such order", name)
+		}
+	}
+}
