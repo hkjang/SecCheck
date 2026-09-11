@@ -6,10 +6,11 @@
 //
 // It is meant for a throwaway install. It creates users and reviews it does
 // not delete, and it changes two settings for the duration of the run:
-// workflow.allow_self_review (so the single capture account can both request
-// and review) and security.rate_limit_per_minute (a few dozen page loads in a
-// row would otherwise trip the per-IP limit). Both are read first and put
-// back, field for field, when the run ends -- even on failure.
+// workflow.allow_self_review and workflow.approval_enabled (so the single
+// capture account can request, review and sign, and so the approval screens
+// exist to be captured) and security.rate_limit_per_minute (a few dozen page
+// loads in a row would otherwise trip the per-IP limit). Both are read first
+// and put back, field for field, when the run ends -- even on failure.
 //
 // Usage (all four variables are required; none has a default):
 //   SECCHECK_CAPTURE_URL=http://127.0.0.1:8080 \
@@ -118,7 +119,7 @@ async function main() {
   };
 
   try {
-    await api('PUT', '/api/v1/admin/settings/workflow', { ...original.workflow, allow_self_review: true });
+    await api('PUT', '/api/v1/admin/settings/workflow', { ...original.workflow, allow_self_review: true, approval_enabled: true });
     await api('PUT', '/api/v1/admin/settings/security', { ...original.security, rate_limit_per_minute: 2000 });
 
     // ---- Seed users. Names, e-mails and departments are all made up.
@@ -132,13 +133,17 @@ async function main() {
     // The capture account itself should not look like a bare bootstrap login.
     await api('PATCH', '/api/v1/me', { display_name: '데모 관리자', email: 'admin@example.com', department: '정보보호팀' });
 
-    // ---- Seed reviews in every state the guide talks about.
-    const base = { builder_id: me.user.id, developer_id: me.user.id, change_type: 'NEW' };
+    // ---- Seed reviews in every state the guide talks about. Approval is on,
+    // so every review needs a named approver before it can be submitted; the
+    // capture account takes that seat too (allowed by allow_self_review).
+    const base = { builder_id: me.user.id, developer_id: me.user.id, approver_id: me.user.id, change_type: 'NEW' };
     const reviews = {
       approved: await api('POST', '/api/v1/review-requests', { ...base, service_name: '데모 회사 모바일 앱 푸시 서버', department: '모바일플랫폼팀', description: '앱 푸시 발송을 담당하는 내부 서버. 외부 푸시 게이트웨이와 연동합니다.', service_type: 'INTERNAL', exposure: 'INTERNAL', business_criticality: 'MEDIUM', planned_open_date: '2026-10-05', uses_cloud: true, uses_docker: true, external_integration: true }),
       reviewing: await api('POST', '/api/v1/review-requests', { ...base, service_name: '데모 회사 고객 포털 개편', department: '플랫폼개발팀', description: '대고객 웹 포털을 신규 구축합니다. 회원 가입·로그인, 개인정보 조회, 결제 내역 확인을 제공합니다.', service_type: 'EXTERNAL', exposure: 'EXTERNAL', business_criticality: 'CRITICAL', planned_open_date: '2026-11-02', has_admin_page: true, processes_personal_data: true, processes_credit_data: true, external_customer_service: true, uses_cloud: true, uses_docker: true, uses_kubernetes: true, external_integration: true, internet_access: true }),
       submitted: await api('POST', '/api/v1/review-requests', { ...base, service_name: '데모 회사 배치 정산 시스템 변경', department: '정산운영팀', description: '월 정산 배치의 데이터 소스를 신규 DW로 변경합니다.', service_type: 'BATCH', change_type: 'CHANGE', exposure: 'INTERNAL', business_criticality: 'HIGH', planned_open_date: '2026-10-20', uses_cloud: true }),
       draft: await api('POST', '/api/v1/review-requests', { ...base, service_name: '데모 회사 사내 인사 시스템 클라우드 이전', department: '인사기획팀', description: '온프레미스 인사 시스템을 퍼블릭 클라우드로 이전합니다. 임직원 개인정보를 처리합니다.', service_type: 'INTERNAL', change_type: 'CHANGE', exposure: 'INTERNAL', business_criticality: 'HIGH', planned_open_date: '2026-12-01', has_admin_page: true, processes_personal_data: true, uses_cloud: true, uses_kubernetes: true }),
+      pending: await api('POST', '/api/v1/review-requests', { ...base, service_name: '데모 회사 파트너 정산 API', department: '제휴사업팀', description: '제휴 파트너사에 정산 내역을 제공하는 대외 API 입니다. 파트너별 API 키로 인증합니다.', service_type: 'EXTERNAL', exposure: 'EXTERNAL', business_criticality: 'HIGH', planned_open_date: '2026-10-28', external_customer_service: true, uses_cloud: true, uses_docker: true, external_integration: true, internet_access: true }),
+      rejected: await api('POST', '/api/v1/review-requests', { ...base, service_name: '데모 회사 협력사 파일 전송 게이트웨이', department: '구매지원팀', description: '협력사와 견적·계약 문서를 주고받는 파일 전송 서비스입니다.', service_type: 'EXTERNAL', exposure: 'EXTERNAL', business_criticality: 'MEDIUM', planned_open_date: '2026-10-15', external_customer_service: true, external_integration: true, internet_access: true }),
     };
 
     const items = async (id) => api('GET', `/api/v1/review-requests/${id}/items`);
@@ -181,13 +186,39 @@ async function main() {
       await api('POST', `/api/v1/review-requests/${reviews.reviewing.id}/change-requests`, { item_id: list[1].id, reason: '저장 데이터 암호화에 사용한 알고리즘과 키 길이를 확인할 수 있는 증적(설정 파일 발췌)을 추가해 주세요.', due_date: '2026-10-10' });
     }
 
-    // Approved: the whole path to a decision.
+    // Approved: the whole path to a decision. With approval_enabled on,
+    // complete-review parks the review at APPROVAL_PENDING and the approver's
+    // signature ends it.
     {
       const list = await fillAll(reviews.approved);
       await submit(reviews.approved);
       await api('POST', `/api/v1/review-requests/${reviews.approved.id}/begin-review`, {});
       await api('POST', `/api/v1/review-requests/${reviews.approved.id}/review-results/bulk`, { item_ids: list.map((i) => i.id), result: 'COMPLIANT', evidence_adequacy: 'ADEQUATE', opinion: '적용 사실을 확인했습니다.' });
       await api('POST', `/api/v1/review-requests/${reviews.approved.id}/complete-review`, { final_result: 'APPROVED', final_opinion: '전 항목 적합. 운영 배포를 승인합니다.' });
+      await api('POST', `/api/v1/review-requests/${reviews.approved.id}/approve`, { comment: '검토 결과를 확인했습니다. 운영 배포를 승인합니다.' });
+    }
+
+    // Pending: reviewed with two conditions, waiting on the approver's desk.
+    {
+      const list = await fillAll(reviews.pending);
+      await submit(reviews.pending);
+      await api('POST', `/api/v1/review-requests/${reviews.pending.id}/begin-review`, {});
+      await api('POST', `/api/v1/review-requests/${reviews.pending.id}/review-results/bulk`, { item_ids: list.slice(2).map((i) => i.id), result: 'COMPLIANT', evidence_adequacy: 'ADEQUATE', opinion: '적용 사실을 확인했습니다.' });
+      await api('PUT', `/api/v1/review-requests/${reviews.pending.id}/review-results/${list[0].id}`, { result: 'CONDITIONAL', evidence_adequacy: 'PARTIAL', opinion: '파트너 API 키에 만료 기한이 없습니다.', follow_up: 'API 키에 유효기간(최대 1년)을 두고 만료 전 갱신 절차를 마련합니다.', follow_up_due_date: '2026-12-31' });
+      await api('PUT', `/api/v1/review-requests/${reviews.pending.id}/review-results/${list[1].id}`, { result: 'CONDITIONAL', evidence_adequacy: 'PARTIAL', opinion: '정산 조회 API 의 호출 횟수 제한이 아직 적용되지 않았습니다.', follow_up: '파트너별 분당 호출 제한을 적용하고 초과 시 감사로그를 남깁니다.', follow_up_due_date: '2026-11-30' });
+      await api('POST', `/api/v1/review-requests/${reviews.pending.id}/complete-review`, { final_result: 'CONDITIONAL', final_opinion: '조건부 승인. API 키 유효기간과 호출 제한을 기한 내 적용하는 조건입니다.' });
+    }
+
+    // Rejected: the approver sent it back.
+    {
+      const list = await fillAll(reviews.rejected);
+      await submit(reviews.rejected);
+      await api('POST', `/api/v1/review-requests/${reviews.rejected.id}/begin-review`, {});
+      await api('POST', `/api/v1/review-requests/${reviews.rejected.id}/review-results/bulk`, { item_ids: list.slice(2).map((i) => i.id), result: 'COMPLIANT', evidence_adequacy: 'ADEQUATE', opinion: '적용 사실을 확인했습니다.' });
+      await api('PUT', `/api/v1/review-requests/${reviews.rejected.id}/review-results/${list[0].id}`, { result: 'NON_COMPLIANT', evidence_adequacy: 'INADEQUATE', opinion: '전송 구간이 평문 FTP 입니다. 협력사 문서에는 계약 금액이 포함됩니다.' });
+      await api('PUT', `/api/v1/review-requests/${reviews.rejected.id}/review-results/${list[1].id}`, { result: 'INSUFFICIENT', evidence_adequacy: 'INADEQUATE', opinion: '업로드 파일에 대한 악성코드 검사 증적이 없습니다.' });
+      await api('POST', `/api/v1/review-requests/${reviews.rejected.id}/complete-review`, { final_result: 'REJECTED', final_opinion: '전송 구간 암호화와 업로드 파일 검사가 확인되지 않아 반려합니다.' });
+      await api('POST', `/api/v1/review-requests/${reviews.rejected.id}/reject`, { comment: '평문 전송은 허용할 수 없습니다. SFTP 또는 HTTPS 로 전환한 뒤 재심의를 요청하세요.' });
     }
 
     // Keys and a control so the admin screens are not empty.
@@ -229,6 +260,30 @@ async function main() {
     await page.waitForSelector('text=보안 담당자 검토', { timeout: 5000 }).catch(() => undefined);
     await page.locator('text=보안 담당자 검토').first().scrollIntoViewIfNeeded().catch(() => undefined);
     await capture('review-item-verdict.png', { wait: 1000 });
+
+    // ---- The approver's desk: waiting, the brief above the two buttons, the
+    // signature dialog, and what a rejection leaves behind.
+    await goto(`/reviews/${reviews.pending.id}`, '.review-layout', { wait: 1500 });
+    await capture('review-approval-pending.png');
+    const brief = page.locator('text=결재 전 확인').first();
+    if (await brief.count()) {
+      await brief.scrollIntoViewIfNeeded();
+      await capture('review-approval-brief.png', { wait: 500 });
+      await page.evaluate(() => window.scrollTo(0, 0));
+    }
+    const approveButton = page.locator('button:has-text("최종 승인")').first();
+    if (await approveButton.count()) {
+      await approveButton.click();
+      await page.waitForSelector('.modal', { timeout: 5000 }).catch(() => undefined);
+      await page.locator('.modal textarea').first().fill('후속조치 기한을 확인했습니다. 조건부로 승인합니다.').catch(() => undefined);
+      await capture('review-approval-modal.png', { wait: 500 });
+      await page.keyboard.press('Escape');
+    }
+
+    await goto(`/reviews/${reviews.rejected.id}`, '.review-layout', { wait: 1500 });
+    const outcome = page.locator('text=심의 결론').first();
+    if (await outcome.count()) await outcome.scrollIntoViewIfNeeded();
+    await capture('review-detail-rejected.png', { wait: 500 });
 
     await goto('/security', '.page-title', { wait: 800 });
     await capture('security-queue.png');

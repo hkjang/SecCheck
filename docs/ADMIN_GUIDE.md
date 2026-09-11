@@ -139,7 +139,7 @@ SECCHECK_SELFTEST_PASSWORD='<관리자 비밀번호>' docker compose exec secche
 
 | 화면 이름 | 키 | 기본값 | 설명 |
 | :--- | :--- | :--- | :--- |
-| 팀장/승인자 최종 승인 프로세스 | `approval_enabled` | `false` | 켜면 검토 완료 후 `승인 대기` 를 거쳐 승인자가 결재 |
+| 팀장/승인자 최종 승인 프로세스 | `approval_enabled` | `false` | 켜면 검토 완료 후 `승인 대기` 를 거쳐 승인자가 결재. 승인자가 지정되지 않은 심의는 제출되지 않음 |
 | 검토자 배정 필수 | `require_reviewer_assignment` | `false` | 심의 생성 시 보안 담당자 지정을 요구 |
 | 본인이 신청한 심의를 본인이 검토·승인 허용 | `allow_self_review` | `false` | 1인 운영용 예외. 켜면 `SELF_REVIEW_FORBIDDEN`·`SELF_APPROVAL_FORBIDDEN` 이 풀림 |
 
