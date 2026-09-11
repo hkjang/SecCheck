@@ -1,9 +1,11 @@
 package web
 
 import (
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"regexp"
+	"sort"
 	"strconv"
 	"strings"
 	"testing"
@@ -681,6 +683,238 @@ func TestThePrePushScriptUsesThePipelinesOwnScanner(t *testing.T) {
 	for name, body := range map[string]string{"ci.yml": string(workflow), "precheck.sh": string(script)} {
 		if strings.Contains(body, "gitleaks") && !strings.Contains(body, "--no-git") {
 			t.Errorf("%s scans a commit rather than the tree that will be shipped", name)
+		}
+	}
+}
+
+// The admin guide says its environment-variable table is everything the
+// runtime reads, and an operator on a closed network has nowhere else to look
+// it up. A variable the code reads but the table omits is one nobody sets; a
+// variable the table names but nothing reads is one somebody sets in vain.
+func TestAdminGuideEnvVarTableIsEverythingTheCodeReads(t *testing.T) {
+	guide := repoFile(t, filepath.Join("docs", "ADMIN_GUIDE.md"))
+	start := strings.Index(guide, "### 3-1. 환경 변수")
+	if start < 0 {
+		t.Fatal("docs/ADMIN_GUIDE.md has no environment variable section")
+	}
+	section := guide[start:]
+	if end := strings.Index(section, "\n### "); end > 0 {
+		section = section[:end]
+	}
+	documented := map[string]bool{}
+	for _, m := range regexp.MustCompile("(?m)^\\| `([A-Z][A-Z0-9_]*)` \\|").FindAllStringSubmatch(section, -1) {
+		documented[m[1]] = true
+	}
+	if len(documented) < 4 {
+		t.Fatalf("parsed only %d rows from the environment variable table; its shape must have changed", len(documented))
+	}
+	read := map[string]string{}
+	call := regexp.MustCompile(`os\.(?:Getenv|LookupEnv)\("([A-Z][A-Z0-9_]*)"\)`)
+	for _, dir := range []string{filepath.Join("..", "..", "internal"), filepath.Join("..", "..", "cmd")} {
+		err := filepath.WalkDir(dir, func(path string, entry os.DirEntry, err error) error {
+			if err != nil || entry.IsDir() || !strings.HasSuffix(path, ".go") || strings.HasSuffix(path, "_test.go") {
+				return nil
+			}
+			// The test database helper is compiled into the tests only.
+			if strings.Contains(path, string(filepath.Separator)+"testdb"+string(filepath.Separator)) {
+				return nil
+			}
+			body, readErr := os.ReadFile(path)
+			if readErr != nil {
+				return nil
+			}
+			for _, m := range call.FindAllStringSubmatch(string(body), -1) {
+				read[m[1]] = filepath.ToSlash(strings.TrimPrefix(path, filepath.Join("..", "..")+string(filepath.Separator)))
+			}
+			return nil
+		})
+		if err != nil {
+			t.Fatalf("walk %s: %v", dir, err)
+		}
+	}
+	if len(read) < 4 {
+		t.Fatalf("only %d environment variables found in the code; the call shape must have changed", len(read))
+	}
+	for name, file := range read {
+		if !documented[name] {
+			t.Errorf("%s reads %s and the admin guide's table does not list it", file, name)
+		}
+	}
+	for name := range documented {
+		if _, ok := read[name]; !ok {
+			t.Errorf("the admin guide lists %s, which nothing in the code reads", name)
+		}
+	}
+}
+
+// The service settings tables in the admin guide name every key a tab holds
+// and the value a fresh installation starts with. Those defaults live in the
+// migration seeds and, for keys the seeds never wrote, in the screen's own
+// fallback -- so the guide is checked against both, in both directions. It had
+// filed the deleted-evidence retention under the wrong tab when this was
+// written.
+func TestAdminGuideSettingsTablesMatchTheSeedsAndTheScreen(t *testing.T) {
+	// Seeds: the first value a migration writes for a key is the default,
+	// because every later write is `'{...}'::jsonb || value_json`, which only
+	// fills keys that are still missing.
+	files, err := filepath.Glob(filepath.Join("..", "..", "internal", "store", "migrations", "*.sql"))
+	if err != nil || len(files) == 0 {
+		t.Fatalf("no migrations found: %v", err)
+	}
+	sort.Strings(files)
+	seeded := map[string]map[string]any{}
+	insert := regexp.MustCompile(`\('(\w+)',\s*'(\{[^']*\})'::jsonb`)
+	fill := regexp.MustCompile(`UPDATE settings SET value_json = '(\{[^']*\})'::jsonb \|\| value_json WHERE key\s*=\s*'(\w+)'`)
+	remember := func(tab, literal string) {
+		var values map[string]any
+		if err := json.Unmarshal([]byte(literal), &values); err != nil {
+			t.Fatalf("settings seed for %s is not JSON: %v", tab, err)
+		}
+		if seeded[tab] == nil {
+			seeded[tab] = map[string]any{}
+		}
+		for key, value := range values {
+			if _, done := seeded[tab][key]; !done {
+				seeded[tab][key] = value
+			}
+		}
+	}
+	for _, file := range files {
+		body, err := os.ReadFile(file)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, m := range insert.FindAllStringSubmatch(string(body), -1) {
+			remember(m[1], m[2])
+		}
+		for _, m := range fill.FindAllStringSubmatch(string(body), -1) {
+			remember(m[2], m[1])
+		}
+	}
+	if len(seeded) < 5 {
+		t.Fatalf("only %d settings tabs are seeded; the migration shape must have changed", len(seeded))
+	}
+
+	// The screen: which keys each tab edits, and what it shows when the value
+	// has never been saved.
+	screen := repoFile(t, filepath.Join("web", "src", "pages", "Settings.tsx"))
+	onScreen := map[string]map[string]bool{}
+	fallback := map[string]string{}
+	parts := strings.Split(screen, "{tab === '")
+	for _, part := range parts[1:] {
+		tab := part[:strings.Index(part, "'")]
+		onScreen[tab] = map[string]bool{}
+		for _, m := range regexp.MustCompile(`draft\.([a-z_]+)`).FindAllStringSubmatch(part, -1) {
+			onScreen[tab][m[1]] = true
+		}
+		for _, m := range regexp.MustCompile(`draft\.([a-z_]+) (?:\?\?|\|\|) ('[^']*'|\d+)\)`).FindAllStringSubmatch(part, -1) {
+			fallback[m[1]] = strings.Trim(m[2], "'")
+		}
+		for _, m := range regexp.MustCompile(`draft\.([a-z_]+) !== false`).FindAllStringSubmatch(part, -1) {
+			fallback[m[1]] = "true"
+		}
+	}
+	if len(onScreen) < 5 {
+		t.Fatalf("only %d tabs found on the settings screen; its shape must have changed", len(onScreen))
+	}
+
+	// The guide renders a default the way an operator reads it.
+	var render func(value any) string
+	render = func(value any) string {
+		switch v := value.(type) {
+		case string:
+			if v == "" {
+				return "(비어 있음)"
+			}
+			return v
+		case bool:
+			return strconv.FormatBool(v)
+		case float64:
+			return strconv.FormatFloat(v, 'f', -1, 64)
+		case []any:
+			if len(v) == 0 {
+				return "(비어 있음)"
+			}
+			words := make([]string, 0, len(v))
+			for _, item := range v {
+				words = append(words, render(item))
+			}
+			return strings.Join(words, " ")
+		}
+		return ""
+	}
+
+	guide := repoFile(t, filepath.Join("docs", "ADMIN_GUIDE.md"))
+	start := strings.Index(guide, "### 3-2. 서비스 설정 화면")
+	if start < 0 {
+		t.Fatal("docs/ADMIN_GUIDE.md has no service settings section")
+	}
+	section := guide[start:]
+	if end := strings.Index(section, "\n### "); end > 0 {
+		section = section[:end]
+	}
+	heading := regexp.MustCompile("(?m)^\\*\\*[^*]+ \\(`([a-z]+)`\\)\\*\\*")
+	row := regexp.MustCompile("(?m)^\\| [^|]+ \\| ((?:`[a-z_]+`(?: / )?)+) \\| ([^|]*) \\|")
+	documented := map[string]map[string]bool{}
+	marks := heading.FindAllStringSubmatchIndex(section, -1)
+	for i, mark := range marks {
+		tab := section[mark[2]:mark[3]]
+		end := len(section)
+		if i+1 < len(marks) {
+			end = marks[i+1][0]
+		}
+		documented[tab] = map[string]bool{}
+		for _, m := range row.FindAllStringSubmatch(section[mark[1]:end], -1) {
+			keys := regexp.MustCompile("`([a-z_]+)`").FindAllStringSubmatch(m[1], -1)
+			defaults := strings.Split(m[2], " / ")
+			for j, k := range keys {
+				key := k[1]
+				documented[tab][key] = true
+				if _, isSeeded := seeded[tab][key]; !isSeeded && !onScreen[tab][key] {
+					t.Errorf("the guide files %s under the %s tab, and neither the seeds nor the screen put it there", key, tab)
+					continue
+				}
+				expected, known := "", false
+				if value, ok := seeded[tab][key]; ok {
+					expected, known = render(value), true
+				} else if value, ok := fallback[key]; ok {
+					expected, known = render(value), true
+				}
+				if !known {
+					continue
+				}
+				shown := defaults[0]
+				if j < len(defaults) {
+					shown = defaults[j]
+				}
+				shown = strings.Trim(strings.TrimSpace(shown), "`")
+				if shown != expected {
+					t.Errorf("the guide says %s starts as %q, the code says %q", key, shown, expected)
+				}
+			}
+		}
+	}
+	if len(documented) < 5 {
+		t.Fatalf("only %d settings tabs are documented; the guide's shape must have changed", len(documented))
+	}
+	for tab, keys := range seeded {
+		if documented[tab] == nil {
+			continue // Keycloak OIDC is walked through as prose in 3-3.
+		}
+		for key := range keys {
+			if !documented[tab][key] {
+				t.Errorf("the %s tab is seeded with %s and the guide never lists it", tab, key)
+			}
+		}
+	}
+	for tab, keys := range onScreen {
+		if documented[tab] == nil {
+			continue
+		}
+		for key := range keys {
+			if !documented[tab][key] {
+				t.Errorf("the %s tab edits %s and the guide never lists it", tab, key)
+			}
 		}
 	}
 }

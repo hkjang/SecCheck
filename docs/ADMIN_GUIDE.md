@@ -165,12 +165,11 @@ SECCHECK_SELFTEST_PASSWORD='<관리자 비밀번호>' docker compose exec secche
 
 | 화면 이름 | 키 | 기본값 | 설명 |
 | :--- | :--- | :--- | :--- |
-| 서비스명 | `service_name` | `SecCheck` | 로그인 화면과 메일에 표시 |
+| 서비스명 | `service_name` | `SecCheck` | 로그인 화면과 메일에 표시. 화면에서는 고정값으로 보이며 바꿀 수 없습니다 |
 | 서비스 주소 | `base_url` | (비어 있음) | 알림 메일에 넣을 링크의 주소. 비우면 링크 없이 발송 |
 | 표시 시간대 | `timezone` | `Asia/Seoul` | 화면·내보내기·기한 판정·요약 메일·심의번호 연도에 모두 적용. IANA 이름 |
 | 세션 시간(분) | `session_minutes` | `480` | 15~10080 |
 | 보존 기간(일) | `retention_days` | `1825` | 서버 로그와 인앱 알림 보존. 감사로그는 삭제하지 않음 |
-| 삭제 증적 보관(일) | `deleted_evidence_retention_days` | `90` | 논리 삭제된 증적 파일을 볼륨에서 실제로 지우기까지의 기간 |
 
 ![서비스 관리자 설정 — 검토·승인: 승인 프로세스, 검토자 배정 필수, 본인 심의 처리 허용](screenshots/admin-settings-workflow.png)
 
@@ -184,7 +183,20 @@ SECCHECK_SELFTEST_PASSWORD='<관리자 비밀번호>' docker compose exec secche
 
 ![서비스 관리자 설정 — Keycloak OIDC: Issuer, Client, Callback, Claim 과 그룹 → 역할 매핑](screenshots/admin-settings-oidc.png)
 
-**Keycloak OIDC (`oidc`)** — 3-3 절.
+**Keycloak OIDC (`oidc`)** — 연동 절차는 3-3 절.
+
+| 화면 이름 | 키 | 기본값 | 설명 |
+| :--- | :--- | :--- | :--- |
+| Keycloak / OIDC SSO 활성화 | `enabled` | `false` | 켜면 로그인 화면에 `사내 SSO로 로그인` 이 생김. `issuer`·`client_id`·`redirect_url` 이 비어 있으면 저장이 거부됨(`OIDC 활성화 시 issuer, client_id, redirect_url이 필요합니다.`) |
+| Issuer URL | `issuer` | (비어 있음) | Realm 주소. `Discovery 연결 테스트` 가 여기의 `.well-known/openid-configuration` 을 읽음 |
+| Client ID | `client_id` | (비어 있음) | |
+| Client Secret | `client_secret` | (비어 있음) | 마스터 키로 암호화 저장되며 다시 표시되지 않음 |
+| Callback URL | `redirect_url` | (비어 있음) | `https://<seccheck-host>/api/v1/auth/oidc/callback`. Keycloak 의 Valid Redirect URIs 와 같아야 함 |
+| (화면에 없음) | `scopes` | `openid profile email` | 인가 요청의 `scope`. API 로만 바꿀 수 있음 |
+| 사용자명 Claim | `username_claim` | `preferred_username` | 토큰에서 아이디로 쓸 claim |
+| 그룹 Claim | `groups_claim` | (비어 있음) | 비우면 `groups` |
+| 신규 사용자 기본 역할 | `default_role` | `REQUESTER` | 그룹 매핑에 해당하지 않는 사용자에게 부여. `REQUESTER`·`CONTRIBUTOR`·`AUDITOR` 중 하나 |
+| 그룹 → 역할 매핑 | `role_mappings` | (비어 있음) | `[{"group": "...", "role": "..."}]`. 하나라도 있으면 로그인마다 역할을 다시 맞춤. `SYSTEM_ADMIN` 은 매핑 불가 |
 
 ![서비스 관리자 설정 — 파일 보안: 허용 확장자, 최대 크기, ClamAV](screenshots/admin-settings-upload.png)
 
@@ -196,6 +208,7 @@ SECCHECK_SELFTEST_PASSWORD='<관리자 비밀번호>' docker compose exec secche
 | 허용 확장자 | `allowed_extensions` | `pdf png jpg jpeg xlsx xls docx zip txt json` | 확장자와 파일 내용(Magic/MIME)을 교차 검증 |
 | ClamAV 악성코드 검사 | `clamav_enabled` | `false` | 켜면 업로드 후 비동기 검사. 검사 전에는 내려받기·제출 제한 |
 | ClamAV 주소 | `clamav_address` | (비어 있음) | `clamav:3310` 형식. 옆의 `연결 테스트` 가 clamd 에 `PING` 을 보냅니다. **켜기 전에 반드시 확인** — 주소가 틀리면 모든 증적이 `검사 중` 에 머물러 제출이 막힙니다 |
+| 삭제 증적 보관(일) | `deleted_evidence_retention_days` | `90` | 논리 삭제된 증적 파일을 볼륨에서 실제로 지우기까지의 기간. 메타데이터와 감사 기록은 남음 |
 
 ![서비스 관리자 설정 — 접근 보안: 요청 제한, 계정 잠금, 유휴 만료, 신뢰 Proxy, TOTP 강제](screenshots/admin-settings-security.png)
 
