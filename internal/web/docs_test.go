@@ -975,15 +975,9 @@ func walkSources(t *testing.T, roots []string, suffixes []string, fn func(path, 
 // around those.
 func TestUserGuideErrorMessagesAreTheOnesTheScreenShows(t *testing.T) {
 	section := guideSection(t, repoFile(t, filepath.Join("docs", "USER_GUIDE.md")), "## 5. 막혔을 때")
-	var corpus strings.Builder
-	walkSources(t, []string{"internal", "cmd", filepath.Join("web", "src")}, []string{".go", ".ts", ".tsx"}, func(_, body string) {
-		corpus.WriteString(body)
-		corpus.WriteByte('\n')
-	})
-	sources := corpus.String()
+	sources := userFacingSources(t)
 
 	quoted := regexp.MustCompile("`([^`]+)`")
-	placeholder := regexp.MustCompile("N([분건개회일])|<[^>]+>")
 	rows := 0
 	for _, line := range strings.Split(section, "\n") {
 		if !strings.HasPrefix(line, "| ") || strings.HasPrefix(line, "| :---") || strings.HasPrefix(line, "| 화면에 보이는 메시지") {
@@ -997,20 +991,81 @@ func TestUserGuideErrorMessagesAreTheOnesTheScreenShows(t *testing.T) {
 			continue
 		}
 		for _, m := range phrases {
-			for _, fragment := range strings.Split(placeholder.ReplaceAllString(m[1], "\x00$1"), "\x00") {
-				fragment = strings.TrimSpace(fragment)
-				if len([]rune(fragment)) < 2 {
-					continue
-				}
-				if !strings.Contains(sources, fragment) {
-					t.Errorf("the user guide quotes %q and nothing in the server or the screen says it", m[1])
-					break
-				}
+			if !phraseIsShown(sources, m[1]) {
+				t.Errorf("the user guide quotes %q and nothing in the server or the screen says it", m[1])
 			}
 		}
 	}
 	if rows < 10 {
 		t.Fatalf("parsed only %d rows from the 막혔을 때 table; its shape must have changed", rows)
+	}
+}
+
+// userFacingSources concatenates every source that can put text in front of
+// a user: the Go server (error messages, notification titles, export sheet
+// names) and the web sources (labels, buttons, filters, badges).
+func userFacingSources(t *testing.T) string {
+	t.Helper()
+	var corpus strings.Builder
+	walkSources(t, []string{"internal", "cmd", filepath.Join("web", "src")}, []string{".go", ".ts", ".tsx"}, func(_, body string) {
+		corpus.WriteString(body)
+		corpus.WriteByte('\n')
+	})
+	return corpus.String()
+}
+
+// phraseIsShown reports whether a phrase the guide quotes in backticks
+// appears letter for letter in the sources. What the screen fills in at
+// runtime is written as `N` before a counter (`N분 후`, `미검토 항목 N건`) or
+// as `<…>` (`허용되지 않은 확장자입니다: <확장자>`), so the phrase is checked
+// around those; a fragment of a single character is not worth checking.
+func phraseIsShown(sources, phrase string) bool {
+	placeholder := regexp.MustCompile("N([분건개회일])|<[^>]+>")
+	for _, fragment := range strings.Split(placeholder.ReplaceAllString(phrase, "\x00$1"), "\x00") {
+		fragment = strings.TrimSpace(fragment)
+		if len([]rune(fragment)) < 2 {
+			continue
+		}
+		if !strings.Contains(sources, fragment) {
+			return false
+		}
+	}
+	return true
+}
+
+// The rest of the user guide names buttons, menus, filters, statuses and
+// badges in backticks so a reader can find them on the screen. The standard
+// asks for those names to match the UI to the letter, and a button that is
+// renamed on the screen without the guide following sends the reader looking
+// for something that is not there. Every backticked phrase in the walkthrough,
+// screen and task sections and the glossary therefore has to exist in the
+// web sources or, for text the server composes (error codes, notification
+// titles, export sheet names), in the Go sources. Values that only look the
+// way they do at runtime -- an example review number, a position counter --
+// are written without backticks, as examples, so the guide keeps the
+// backticks for text that is literally on the screen. The guide had quoted a
+// button as `+ 신규 심의 요청` when the plus is an icon and the text is
+// `신규 심의 요청` before this was written.
+func TestUserGuideScreenNamesAreTheOnesTheScreenShows(t *testing.T) {
+	guide := repoFile(t, filepath.Join("docs", "USER_GUIDE.md"))
+	sources := userFacingSources(t)
+	quoted := regexp.MustCompile("`([^`]+)`")
+	checked := 0
+	for _, heading := range []string{"## 2. 처음 5분", "## 3. 화면별 사용법", "## 4. 자주 하는 작업", "## 6. 용어"} {
+		seen := map[string]bool{}
+		for _, m := range quoted.FindAllStringSubmatch(guideSection(t, guide, heading), -1) {
+			if seen[m[1]] {
+				continue
+			}
+			seen[m[1]] = true
+			checked++
+			if !phraseIsShown(sources, m[1]) {
+				t.Errorf("%s quotes %q and nothing on the screen or in the server says it", heading, m[1])
+			}
+		}
+	}
+	if checked < 100 {
+		t.Fatalf("checked only %d quoted names in the user guide; its sections must have been renamed", checked)
 	}
 }
 
