@@ -66,6 +66,10 @@ Authorization: Bearer sck_a1b2c3d4_xxxxxxxxxxxxxxxxxxxxxxxxxxxx
 | `GET` | `/admin/users/{id}/open-work` | 계정이 아직 맡고 있는 진행 중 심의·미이행 후속조치 수 | `SYSTEM_ADMIN` |
 | `GET` | `/admin/api-keys` | 설치 전체의 API 키와 소유자·마지막 사용 시각 | `SYSTEM_ADMIN` |
 | `POST` | `/admin/api-keys/{id}/revoke` | 다른 사용자의 API 키 폐기 | `SYSTEM_ADMIN` |
+| `GET` | `/admin/analytics/violations` | 방문 추적이 켜진 뒤 콘텐츠 보안 정책이 차단한 출처 목록(`origin`, `directive`, `page`, `count`, `allowed`) | `SYSTEM_ADMIN` |
+| `DELETE` | `/admin/analytics/violations` | 차단된 출처 목록 비우기 | `SYSTEM_ADMIN` |
+| `POST` | `/admin/analytics/allow` | 차단된 출처 하나(`origin`)를 방문 추적 설정의 `allowed_hosts` 에 추가 | `SYSTEM_ADMIN` |
+| `POST` | `/api/v1/analytics/csp-report` | 브라우저의 콘텐츠 보안 정책 위반 신고(`application/csp-report`). 방문 추적이 켜진 동안만 기록하며 항상 204 | 없음 |
 | `GET` | `/security-controls` | 통합 Security Control 목록 및 영향 통계 | 전체 |
 | `GET` | `/security-controls/{id}/impact` | 연결된 체크리스트와 영향 심의 범위, 그리고 이 Control의 판정 이력(`{items, outcomes}`) |
 | `GET` | `/templates` | 체크리스트 템플릿 목록 및 게시 버전 조회 | 전체 |

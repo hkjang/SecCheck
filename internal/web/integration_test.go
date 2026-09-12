@@ -37,6 +37,9 @@ type harness struct {
 	// dataDir is where evidence ciphertext lands, so a test can take a file
 	// away the way a partly restored volume would.
 	dataDir string
+	// webDir is what the SPA serves; a test that needs a page writes an
+	// index.html there.
+	webDir string
 }
 
 type client struct {
@@ -53,11 +56,11 @@ func newHarness(t *testing.T) *harness {
 	if err != nil {
 		t.Fatal(err)
 	}
-	dataDir := t.TempDir()
-	handler := api.NewServer(api.Options{Store: db, Auth: auth.New(db, box), Box: box, Version: "test", WebDir: t.TempDir(), DataDir: dataDir})
+	dataDir, webDir := t.TempDir(), t.TempDir()
+	handler := api.NewServer(api.Options{Store: db, Auth: auth.New(db, box), Box: box, Version: "test", WebDir: webDir, DataDir: dataDir})
 	server := httptest.NewServer(handler)
 	t.Cleanup(server.Close)
-	h := &harness{t: t, server: server, db: db, dataDir: dataDir}
+	h := &harness{t: t, server: server, db: db, dataDir: dataDir, webDir: webDir}
 	// Publish the baseline workbook so the Rule Engine has something to assign,
 	// exactly as the service does on first start.
 	owner := testdb.Bootstrap(t, db, "seed-owner")
