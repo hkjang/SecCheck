@@ -7,7 +7,7 @@ require (
 	github.com/jackc/pgx/v5 v5.9.2
 	github.com/phpdave11/gofpdf v1.4.3
 	github.com/xuri/excelize/v2 v2.11.0
-	golang.org/x/crypto v0.55.0
+	golang.org/x/crypto v0.56.0
 )
 
 require (
