@@ -21,7 +21,13 @@ LABEL org.opencontainers.image.title="SecCheck" \
       org.opencontainers.image.version="${VERSION}" \
       org.opencontainers.image.source="https://github.com/hkjang/SecCheck" \
       org.opencontainers.image.description="Offline-capable security review checklist platform"
+# upgrade, not just install. The base image carries whatever Debian had built
+# into it on the day it was tagged, and the vulnerability gate rejects anything
+# fixable — libpcre2-8-0 shipped at 10.42-1 with two HIGH holes already patched
+# in 10.42-1+deb12u1. Installing only the packages named below leaves the rest at
+# the version the tag froze, and the build fails on a hole that apt can close.
 RUN apt-get update \
+    && apt-get upgrade -y --no-install-recommends \
     && apt-get install -y --no-install-recommends ca-certificates tzdata fonts-nanum \
     && rm -rf /var/lib/apt/lists/* \
     && groupadd --system --gid 10001 seccheck \
