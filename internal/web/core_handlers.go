@@ -74,7 +74,9 @@ func (s *Server) publicConfig(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		cfg = auth.OIDCSettings{}
 	}
-	jsonResponse(w, 200, map[string]any{"service_name": "SecCheck", "version": s.Version, "oidc_enabled": cfg.Enabled, "oidc_issuer": cfg.Issuer, "timezone": s.Store.Location(r.Context()).String()})
+	// oidc_auto_login tells the browser whether to try signing in silently
+	// before it shows the login screen. It is only ever true with SSO on.
+	jsonResponse(w, 200, map[string]any{"service_name": "SecCheck", "version": s.Version, "oidc_enabled": cfg.Enabled, "oidc_issuer": cfg.Issuer, "oidc_auto_login": cfg.Enabled && cfg.AutoLogin, "timezone": s.Store.Location(r.Context()).String()})
 }
 
 func (s *Server) login(w http.ResponseWriter, r *http.Request) {
@@ -145,8 +147,15 @@ func (s *Server) logout(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
+// silentRefusals are the answers a provider gives to prompt=none when it
+// would have had to show something: no session, a consent screen, a second
+// factor. Each means "come back with a screen", never "something broke".
+var silentRefusals = map[string]bool{"login_required": true, "interaction_required": true, "consent_required": true}
+
 func (s *Server) oidcStart(w http.ResponseWriter, r *http.Request) {
-	destination, err := s.Auth.BeginOIDC(r.Context(), r.URL.Query().Get("return_to"))
+	// prompt=none is only honoured when auto_login is on; BeginOIDC drops it
+	// otherwise, so the address bar cannot change the flow on its own.
+	destination, err := s.Auth.BeginOIDC(r.Context(), r.URL.Query().Get("return_to"), r.URL.Query().Get("prompt") == "none")
 	if err != nil {
 		// The sign-in button is a link, so the browser navigates here. A JSON
 		// problem document left the person staring at machine output on a page
@@ -161,6 +170,20 @@ func (s *Server) oidcStart(w http.ResponseWriter, r *http.Request) {
 }
 func (s *Server) oidcCallback(w http.ResponseWriter, r *http.Request) {
 	if e := r.URL.Query().Get("error"); e != "" {
+		silent, returnTo := s.Auth.AbandonOIDC(r.Context(), r.URL.Query().Get("state"))
+		if silent && silentRefusals[e] {
+			// No provider session: the ordinary answer to prompt=none, not a
+			// failure. The login screen gets a marker in its address so the
+			// browser does not ask again even if its storage was wiped, and
+			// keeps the place the person was going so a later sign-in lands
+			// there.
+			target := "/login?sso=none"
+			if returnTo != "/" {
+				target += "&return_to=" + url.QueryEscape(returnTo)
+			}
+			http.Redirect(w, r, target, http.StatusFound)
+			return
+		}
 		http.Redirect(w, r, "/login?error="+url.QueryEscape(e), http.StatusFound)
 		return
 	}

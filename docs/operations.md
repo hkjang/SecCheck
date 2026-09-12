@@ -392,6 +392,7 @@ docker compose exec seccheck /app/seccheck selftest --username admin --password 
 | 032 | 재심의 복사 연결(`review_requests.copied_from`)과 `review_lineage()` 함수. 서비스명을 바꿔도 이전 판정·증적 이력이 이어지도록 |
 | 033 | 최초 릴리스에서 만들어진 설치 보정. 로그인 잠금 열(`users.failed_login_count`, `users.locked_until`)과 인덱스 3개를 다시 적용합니다. 001은 이미 적용됨으로 기록되어 건너뛰기 때문에, 이후 001에 추가된 것들이 그 설치에는 닿지 않았습니다 |
 | 034 | 방문 추적 설정 행(`settings.analytics`). 꺼짐(`enabled=false`)으로 심어지므로 적용해도 화면과 정책은 그대로입니다 |
+| 035 | 자동 로그인(silent SSO). 진행 중인 SSO 로그인이 `prompt=none` 시도였는지(`oidc_states.silent`)와 OIDC 설정의 `auto_login` 키. 꺼짐(`false`)으로 심어지므로 적용해도 로그인 화면은 그대로입니다 |
 
 **001을 고치지 마십시오.** 001은 최초 릴리스가 `schema.sql`을 적용한 뒤 기록한 번호이기도 합니다. 그 설치의 `schema_migrations`에는 이미 1이 있으므로 001은 영원히 건너뜁니다 — 001에 무언가를 더해도 그런 데이터베이스에는 닿지 않습니다. 기본 스키마를 바꿔야 하면 새 번호 파일로 같은 내용을 한 번 더 적용하십시오. `TestUpgradingTheFirstReleaseReachesTheSameSchema`가 최초 릴리스 스키마(`internal/store/testdata/v1_schema.sql`)를 올려 보고 신규 설치와 다르면 빌드를 실패시킵니다.
 
