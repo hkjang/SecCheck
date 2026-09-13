@@ -247,7 +247,7 @@ func (s *Store) SchemaDrift(ctx context.Context, dsn string) (missing, unexpecte
 	if err != nil {
 		return nil, nil, err
 	}
-	scratch := "seccheck_expected_" + NewID()[:12]
+	scratch := scratchSchemaName()
 	if _, err = s.Pool.Exec(ctx, `CREATE SCHEMA `+scratch); err != nil {
 		return nil, nil, fmt.Errorf("create a scratch schema to build the expected one in: %w", err)
 	}
@@ -563,6 +563,18 @@ func (s *Store) Log(ctx context.Context, level, requestID, component, message st
 		slog.Error("application log could not be stored", "level", level, "component", component, "message", message,
 			"fields", string(b), "request_id", requestID, "error", err)
 	}
+}
+
+// scratchSchemaName builds the name of the throwaway schema the expected
+// database is migrated into. It goes into CREATE SCHEMA unquoted, so it has to
+// be a bare identifier: hex only.
+//
+// NewID returns a UUID and its ninth character is always a hyphen, so a prefix
+// of one made a name Postgres refused every time — CREATE SCHEMA failed with a
+// syntax error on every run. The database tests skip without a DSN, so nothing
+// said so until CI ran with one.
+func scratchSchemaName() string {
+	return "seccheck_expected_" + strings.ReplaceAll(NewID(), "-", "")[:12]
 }
 
 func NewID() string {
