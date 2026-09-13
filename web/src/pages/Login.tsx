@@ -1,6 +1,7 @@
 import { FormEvent, useEffect, useRef, useState } from 'react'
 import { ArrowRight, KeyRound, Shield, Smartphone } from 'lucide-react'
 import { post, setCSRF, errorMessage, ApiError } from '../lib/api'
+import { safeReturnTo } from '../lib/silentSso'
 import { User } from '../lib/types'
 import { Button, Field } from '../components/ui'
 
@@ -33,6 +34,10 @@ export default function Login({ config, expired, onLogin }: { config: { service_
     url.searchParams.delete('error')
     window.history.replaceState({}, '', url.toString())
   }, [ssoError])
+  // The SSO button carries the place the person was going, so a deep link
+  // survives the round trip; after a refused silent attempt that place is in
+  // the address of the login screen itself.
+  const returnTo = window.location.pathname === '/login' ? safeReturnTo(new URLSearchParams(window.location.search).get('return_to') || '/') : safeReturnTo(window.location.pathname + window.location.search + window.location.hash)
   const totpRef = useRef<HTMLInputElement>(null)
   useEffect(() => { if (needsTotp) totpRef.current?.focus() }, [needsTotp])
   const submit = async (e: FormEvent) => {
@@ -56,6 +61,6 @@ export default function Login({ config, expired, onLogin }: { config: { service_
       {needsTotp && <Field label="일회용 코드" required help="인증 앱에 표시된 6자리 숫자" error={error}><input ref={totpRef} className="input" inputMode="numeric" autoComplete="one-time-code" maxLength={6} placeholder="000000" value={totp} onChange={e => setTotp(e.target.value.replace(/\D/g, ''))} /></Field>}
       <Button variant="primary" disabled={busy || !username || !password || (needsTotp && totp.length < 6)}>{busy ? '로그인 중…' : needsTotp ? <><Smartphone size={16} /> 코드 확인</> : <>로그인 <ArrowRight size={16} /></>}</Button>
     </form>
-    {config.oidc_enabled && <><div className="login-separator">또는</div><a className="button" href="/api/v1/auth/oidc/start"><KeyRound size={16} /> 사내 SSO로 로그인</a></>}</div><div className="login-version">{config.service_name} v{config.version}</div></section>
+    {config.oidc_enabled && <><div className="login-separator">또는</div><a className="button" href={`/api/v1/auth/oidc/start?return_to=${encodeURIComponent(returnTo)}`}><KeyRound size={16} /> 사내 SSO로 로그인</a></>}</div><div className="login-version">{config.service_name} v{config.version}</div></section>
     <section className="login-visual"><h2>Excel 업무를 넘어<br />추적 가능한 Security Control로.</h2><p>템플릿 버전과 제출 스냅샷을 분리하고, 모든 작성·검토·승인 행위를 감사 가능한 이력으로 보존합니다.</p><div className="visual-flow"><div className="flow-node">심의 요청</div><span className="flow-arrow">→</span><div className="flow-node">체크리스트 작성</div><span className="flow-arrow">→</span><div className="flow-node">검토 · 승인</div></div></section></div>
 }

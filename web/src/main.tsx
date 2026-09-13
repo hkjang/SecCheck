@@ -1,8 +1,9 @@
 import React, { createContext, useContext, useEffect, useState } from 'react'
 import ReactDOM from 'react-dom/client'
-import { BrowserRouter, Navigate, Route, Routes } from 'react-router-dom'
+import { BrowserRouter, Navigate, Route, Routes, useNavigate } from 'react-router-dom'
 import './styles.css'
 import { get, onSessionEvent, post, setCSRF } from './lib/api'
+import { beginSilentSso, clearSilentSso, markSignedOut, safeReturnTo, shouldAttemptSilentSso } from './lib/silentSso'
 import { AuthValue, TextLimits, UploadRules, User } from './lib/types'
 import { LimitsContext, Loading, ToastProvider, setDisplayTimezone } from './components/ui'
 import Layout from './components/Layout'
@@ -34,20 +35,40 @@ const AuthContext = createContext<AuthValue | null>(null)
 export function useAuth() { const value = useContext(AuthContext); if (!value) throw new Error('Auth context missing'); return value }
 
 function App() {
-  const [publicConfig, setPublicConfig] = useState({ service_name: 'SecCheck', version: 'dev', oidc_enabled: false, timezone: '' })
+  const [publicConfig, setPublicConfig] = useState({ service_name: 'SecCheck', version: 'dev', oidc_enabled: false, oidc_auto_login: false, timezone: '' })
+  // Whether to try signing in silently is decided from the public config, so
+  // the login screen waits for that answer instead of flashing before it.
+  const [configReady, setConfigReady] = useState(false)
   const [me, setMe] = useState<{ user: User; version: string; totp_enrollment_required?: boolean; password_change_required?: boolean; upload?: UploadRules; limits?: TextLimits; session?: { idle_timeout_minutes?: number } } | null | undefined>(undefined)
-  const refresh = async () => { try { const value = await get<{ user: User; csrf_token: string; version: string; totp_enrollment_required?: boolean; password_change_required?: boolean; timezone?: string; upload?: UploadRules; limits?: TextLimits; session?: { idle_timeout_minutes?: number } }>('/api/v1/me'); setCSRF(value.csrf_token); setDisplayTimezone(value.timezone || ''); setMe(value) } catch { setCSRF(''); setMe(null) } }
+  const refresh = async () => { try { const value = await get<{ user: User; csrf_token: string; version: string; totp_enrollment_required?: boolean; password_change_required?: boolean; timezone?: string; upload?: UploadRules; limits?: TextLimits; session?: { idle_timeout_minutes?: number } }>('/api/v1/me'); setCSRF(value.csrf_token); setDisplayTimezone(value.timezone || ''); clearSilentSso(); setMe(value) } catch { setCSRF(''); setMe(null) } }
   const [expired, setExpired] = useState(false)
-  useEffect(() => { get<typeof publicConfig>('/api/v1/public/config').then(value => { setDisplayTimezone(value.timezone || ''); setPublicConfig(value) }).catch(() => undefined); refresh() }, [])
+  const [silent, setSilent] = useState(false)
+  const navigate = useNavigate()
+  useEffect(() => { get<typeof publicConfig>('/api/v1/public/config').then(value => { setDisplayTimezone(value.timezone || ''); setPublicConfig(value) }).catch(() => undefined).finally(() => setConfigReady(true)); refresh() }, [])
   // Returning to the sign-in screen is the shell's job, so a screen that hits
-  // an ended session does not have to know what to do about it.
+  // an ended session does not have to know what to do about it. A session the
+  // server ended is treated like a sign-out: signing the person straight back
+  // in through the provider would make the idle timeout an administrator set
+  // here mean nothing.
   useEffect(() => onSessionEvent(event => {
-    if (event === 'expired') { setCSRF(''); setExpired(true); setMe(null) }
+    if (event === 'expired') { setCSRF(''); markSignedOut(); setExpired(true); setMe(null) }
     else refresh()
   }), [])
-  if (me === undefined) return <Loading />
-  if (!me) return <Login config={publicConfig} expired={expired} onLogin={(user) => { setExpired(false); setMe({ user, version: publicConfig.version }); void refresh() }} />
-  const logout = async () => { try { await post('/api/v1/auth/logout') } finally { setCSRF(''); setMe(null) } }
+  // With auto_login on, somebody who still has a provider session is signed
+  // in without seeing the login screen. The rules in silentSso.ts make sure
+  // this happens at most once per tab, never right after a sign-out, and
+  // never again once the provider has said no.
+  useEffect(() => {
+    if (me === null && configReady && shouldAttemptSilentSso(publicConfig)) { setSilent(true); beginSilentSso() }
+  }, [me, configReady])
+  if (me === undefined || !configReady || silent) return <Loading />
+  if (!me) return <Login config={publicConfig} expired={expired} onLogin={(user) => {
+    setExpired(false); setMe({ user, version: publicConfig.version }); void refresh()
+    // A refused silent attempt lands on /login carrying the place the person
+    // was going; a sign-in from there should end up at that place.
+    if (window.location.pathname === '/login') navigate(safeReturnTo(new URLSearchParams(window.location.search).get('return_to') || '/'), { replace: true })
+  }} />
+  const logout = async () => { try { await post('/api/v1/auth/logout') } finally { setCSRF(''); markSignedOut(); setMe(null) } }
   // Policy can require a second factor before anything else is reachable, so
   // the router collapses to the enrolment screen until it exists.
   // A password an administrator typed is a shared secret until it is replaced,

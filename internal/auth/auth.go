@@ -142,6 +142,10 @@ type OIDCSettings struct {
 		Group string `json:"group"`
 		Role  string `json:"role"`
 	} `json:"role_mappings"`
+	// AutoLogin lets the browser sign a visitor in without a login screen
+	// when the identity provider still holds a session for them, by asking
+	// the provider with prompt=none. Off unless an administrator turns it on.
+	AutoLogin    bool   `json:"auto_login"`
 	ClientSecret string `json:"client_secret,omitempty"`
 }
 
@@ -480,7 +484,25 @@ func (a *Service) Discover(ctx context.Context, issuer string) (Provider, error)
 	return p, nil
 }
 
-func (a *Service) BeginOIDC(ctx context.Context, returnTo string) (string, error) {
+// SafeReturnTo reports whether a place to go back to after signing in stays
+// inside this service. Only an absolute path is accepted: a leading "//" or
+// "/\" is read by browsers as another host, which would turn the sign-in
+// round trip into a way of sending people elsewhere.
+func SafeReturnTo(value string) bool {
+	if value == "" || !strings.HasPrefix(value, "/") || strings.HasPrefix(value, "//") || strings.HasPrefix(value, "/\\") || strings.ContainsAny(value, "\r\n") {
+		return false
+	}
+	parsed, err := url.Parse(value)
+	return err == nil && !parsed.IsAbs() && parsed.Host == ""
+}
+
+// BeginOIDC returns the provider address the browser is sent to. With silent
+// set, and only when the administrator has turned auto_login on, the request
+// carries prompt=none: the provider answers from a session it already holds
+// or comes straight back with login_required, and never draws a screen. The
+// setting is checked here rather than trusted from the address bar, so nobody
+// can change the flow by appending ?prompt=none themselves.
+func (a *Service) BeginOIDC(ctx context.Context, returnTo string, silent bool) (string, error) {
 	cfg, err := a.OIDCConfig(ctx)
 	if err != nil {
 		return "", err
@@ -488,6 +510,7 @@ func (a *Service) BeginOIDC(ctx context.Context, returnTo string) (string, error
 	if !cfg.Enabled {
 		return "", errors.New("OIDC is disabled")
 	}
+	silent = silent && cfg.AutoLogin
 	p, err := a.Discover(ctx, cfg.Issuer)
 	if err != nil {
 		return "", err
@@ -497,15 +520,36 @@ func (a *Service) BeginOIDC(ctx context.Context, returnTo string) (string, error
 	verifier, _ := cryptox.Token(48)
 	h := sha256.Sum256([]byte(state))
 	challenge := sha256.Sum256([]byte(verifier))
-	if !strings.HasPrefix(returnTo, "/") {
+	if !SafeReturnTo(returnTo) {
 		returnTo = "/"
 	}
-	_, err = a.Store.Pool.Exec(ctx, `INSERT INTO oidc_states(state_hash,nonce,code_verifier,return_to,expires_at) VALUES($1,$2,$3,$4,now()+interval '10 minutes')`, h[:], nonce, verifier, returnTo)
+	_, err = a.Store.Pool.Exec(ctx, `INSERT INTO oidc_states(state_hash,nonce,code_verifier,return_to,silent,expires_at) VALUES($1,$2,$3,$4,$5,now()+interval '10 minutes')`, h[:], nonce, verifier, returnTo, silent)
 	if err != nil {
 		return "", err
 	}
 	q := url.Values{"response_type": {"code"}, "client_id": {cfg.ClientID}, "redirect_uri": {cfg.RedirectURL}, "scope": {strings.Join(cfg.Scopes, " ")}, "state": {state}, "nonce": {nonce}, "code_challenge": {base64.RawURLEncoding.EncodeToString(challenge[:])}, "code_challenge_method": {"S256"}}
+	if silent {
+		q.Set("prompt", "none")
+	}
 	return p.AuthorizationEndpoint + "?" + q.Encode(), nil
+}
+
+// AbandonOIDC forgets a sign-in the provider answered with an error instead of
+// a code, and reports whether that sign-in was a silent one along with where
+// it meant to return to. A silent attempt that comes back refused is the
+// ordinary answer for somebody with no provider session, not a failure.
+func (a *Service) AbandonOIDC(ctx context.Context, state string) (silent bool, returnTo string) {
+	if state == "" {
+		return false, "/"
+	}
+	h := sha256.Sum256([]byte(state))
+	if err := a.Store.Pool.QueryRow(ctx, `DELETE FROM oidc_states WHERE state_hash=$1 RETURNING silent,return_to`, h[:]).Scan(&silent, &returnTo); err != nil {
+		return false, "/"
+	}
+	if !SafeReturnTo(returnTo) {
+		returnTo = "/"
+	}
+	return silent, returnTo
 }
 
 func (a *Service) CompleteOIDC(ctx context.Context, state, code, ip, userAgent string) (store.User, string, string, time.Time, string, error) {
@@ -615,6 +659,9 @@ func (a *Service) CompleteOIDC(ctx context.Context, state, code, ip, userAgent s
 			return u, "", "", time.Time{}, "", err
 		}
 		u, _ = a.Store.GetUser(ctx, u.ID)
+	}
+	if !SafeReturnTo(returnTo) {
+		returnTo = "/"
 	}
 	token, csrf, expires, err := a.NewSession(ctx, u.ID, ip, userAgent)
 	return u, token, csrf, expires, returnTo, err
