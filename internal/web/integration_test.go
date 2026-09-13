@@ -450,8 +450,8 @@ func TestAuditChainVerificationIsIncrementalAndDetectsTampering(t *testing.T) {
 
 	// Tampering with a stored payload has to be caught by the full pass, and
 	// it must reach the administrators rather than only the caller.
-	if res := admin.do(http.MethodPut, "/api/v1/admin/settings/notification", map[string]any{
-		"email_enabled": true, "smtp_host": "smtp.internal", "smtp_port": 25, "smtp_username": "", "smtp_tls_mode": "none", "from": "seccheck@example.test", "digest_hour": 8,
+	if res := admin.do(http.MethodPut, "/api/v1/admin/settings/mail", map[string]any{
+		"enabled": true, "smtp_host": "smtp.internal", "smtp_port": 25, "username": "", "security": "none", "from_address": "seccheck@example.test", "digest_hour": 8,
 	}); res.status != http.StatusOK {
 		t.Fatalf("enable e-mail: %d %s", res.status, res.body)
 	}
@@ -602,8 +602,8 @@ func TestNotificationPreferencesGovernEmailButNeverTheRecord(t *testing.T) {
 	reviewer := h.login("prefreviewer")
 	// E-mail has to be on globally for the per-user preference to matter.
 	admin := h.login(adminOf(h))
-	if res := admin.do(http.MethodPut, "/api/v1/admin/settings/notification", map[string]any{
-		"email_enabled": true, "smtp_host": "smtp.internal", "smtp_port": 25, "smtp_username": "", "smtp_tls_mode": "none", "from": "seccheck@example.test", "digest_hour": 8,
+	if res := admin.do(http.MethodPut, "/api/v1/admin/settings/mail", map[string]any{
+		"enabled": true, "smtp_host": "smtp.internal", "smtp_port": 25, "username": "", "security": "none", "from_address": "seccheck@example.test", "digest_hour": 8,
 	}); res.status != http.StatusOK {
 		t.Fatalf("enable e-mail: %d %s", res.status, res.body)
 	}
@@ -700,14 +700,14 @@ func TestSMTPTestEndpointAcceptsAnEmptyBody(t *testing.T) {
 	// expected outcome; what matters is that the request itself is accepted
 	// rather than rejected for having no JSON body, which is what the console
 	// sends.
-	res := admin.do(http.MethodPost, "/api/v1/admin/settings/notification/test", nil)
+	res := admin.do(http.MethodPost, "/api/v1/admin/settings/mail/test", nil)
 	if res.errorCode() == "INVALID_JSON" {
 		t.Fatalf("an empty body was rejected: %s", res.body)
 	}
 	if res.status != http.StatusBadGateway && res.status != http.StatusOK {
 		t.Fatalf("unexpected status %d: %s", res.status, res.body)
 	}
-	if res := admin.do(http.MethodPost, "/api/v1/admin/settings/notification/test", map[string]string{"recipient": "not-an-address"}); res.status == http.StatusOK {
+	if res := admin.do(http.MethodPost, "/api/v1/admin/settings/mail/test", map[string]string{"recipient": "not-an-address"}); res.status == http.StatusOK {
 		t.Error("an invalid recipient was accepted")
 	}
 }
@@ -828,7 +828,7 @@ func TestConfiguredTimezoneReachesTheClients(t *testing.T) {
 	h := newHarness(t)
 	admin := h.login(adminOf(h))
 	if res := admin.do(http.MethodPut, "/api/v1/admin/settings/general", map[string]any{
-		"service_name": "SecCheck", "timezone": "Asia/Seoul", "session_minutes": 480, "retention_days": 1825, "base_url": "",
+		"service_name": "SecCheck", "timezone": "Asia/Seoul", "session_minutes": 480, "retention_days": 1825,
 	}); res.status != http.StatusOK {
 		t.Fatalf("save timezone: %d %s", res.status, res.body)
 	}
@@ -840,7 +840,7 @@ func TestConfiguredTimezoneReachesTheClients(t *testing.T) {
 		t.Errorf("public config reported timezone %v", zone)
 	}
 	if res := admin.do(http.MethodPut, "/api/v1/admin/settings/general", map[string]any{
-		"service_name": "SecCheck", "timezone": "Mars/Olympus", "session_minutes": 480, "retention_days": 1825, "base_url": "",
+		"service_name": "SecCheck", "timezone": "Mars/Olympus", "session_minutes": 480, "retention_days": 1825,
 	}); res.status != http.StatusUnprocessableEntity {
 		t.Errorf("an unknown zone name was accepted: %d %s", res.status, res.body)
 	}
@@ -1440,7 +1440,7 @@ func TestSettingChangesApplyImmediately(t *testing.T) {
 	// A cache that outlives the save makes an administrator think the setting
 	// did not work, so the change has to be live on the very next request.
 	if res := admin.do(http.MethodPut, "/api/v1/admin/settings/general", map[string]any{
-		"service_name": "SecCheck", "timezone": "Asia/Seoul", "session_minutes": 480, "retention_days": 1825, "base_url": "",
+		"service_name": "SecCheck", "timezone": "Asia/Seoul", "session_minutes": 480, "retention_days": 1825,
 	}); res.status != http.StatusOK {
 		t.Fatalf("save: %d %s", res.status, res.body)
 	}
@@ -1448,7 +1448,7 @@ func TestSettingChangesApplyImmediately(t *testing.T) {
 		t.Errorf("time zone still %v on the next request", zone)
 	}
 	if res := admin.do(http.MethodPut, "/api/v1/admin/settings/general", map[string]any{
-		"service_name": "SecCheck", "timezone": "UTC", "session_minutes": 480, "retention_days": 1825, "base_url": "",
+		"service_name": "SecCheck", "timezone": "UTC", "session_minutes": 480, "retention_days": 1825,
 	}); res.status != http.StatusOK {
 		t.Fatalf("save again: %d %s", res.status, res.body)
 	}

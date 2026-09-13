@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/hkjang/SecCheck/internal/mail"
 	"github.com/hkjang/SecCheck/internal/store"
 	"github.com/hkjang/SecCheck/internal/testdb"
 )
@@ -23,7 +24,7 @@ func digestWorker(t *testing.T) (*Worker, *store.Store, string) {
                 ON CONFLICT(user_id) DO UPDATE SET email_enabled=true,digest='DAILY',digest_sent_at=NULL`, userID); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := db.Pool.Exec(ctx, `UPDATE settings SET value_json = value_json || '{"email_enabled":true,"smtp_host":"smtp.internal","smtp_port":25,"smtp_from":"seccheck@example.internal","digest_hour":0}'::jsonb WHERE key='notification'`); err != nil {
+	if _, err := db.Pool.Exec(ctx, `UPDATE settings SET value_json = value_json || '{"enabled":true,"smtp_host":"smtp.internal","smtp_port":25,"from_address":"seccheck@example.internal","digest_hour":0}'::jsonb WHERE key='mail'`); err != nil {
 		t.Fatal(err)
 	}
 	return &Worker{Store: db}, db, userID
@@ -41,7 +42,7 @@ func addEvent(t *testing.T, db *store.Store, userID, event, title string) string
 func addNotification(t *testing.T, db *store.Store, userID, title string) string {
 	t.Helper()
 	id := store.NewID()
-	if _, err := db.Pool.Exec(context.Background(), `INSERT INTO notifications(id,recipient_id,event_type,title,body) VALUES($1,$2,'COMMENT_ADDED',$3,'본문')`, id, userID, title); err != nil {
+	if _, err := db.Pool.Exec(context.Background(), `INSERT INTO notifications(id,recipient_id,event_type,title,body) VALUES($1,$2,'REVIEW_ASSIGNED',$3,'본문')`, id, userID, title); err != nil {
 		t.Fatal(err)
 	}
 	return id
@@ -57,8 +58,8 @@ func TestADigestOnlyMarksWhatItActuallySent(t *testing.T) {
 
 	var arrivedLate string
 	var delivered string
-	worker.Sender = func(_ context.Context, _ emailSettings, _, subject, body string) error {
-		delivered = subject + "\n" + body
+	worker.Sender = func(_ context.Context, _ mail.Config, msg mail.Message) error {
+		delivered = msg.Subject + "\n" + msg.Body
 		// Somebody is notified while the mail is on its way out.
 		arrivedLate = addNotification(t, db, userID, "발송 중 도착한 알림")
 		return nil
@@ -92,7 +93,7 @@ func TestAFailedDigestMarksNothing(t *testing.T) {
 	worker, db, userID := digestWorker(t)
 	ctx := context.Background()
 	id := addNotification(t, db, userID, "배달 실패 알림")
-	worker.Sender = func(context.Context, emailSettings, string, string, string) error {
+	worker.Sender = func(context.Context, mail.Config, mail.Message) error {
 		return fmt.Errorf("smtp unavailable")
 	}
 	worker.sendDigests(ctx)
@@ -128,7 +129,7 @@ func TestADigestIsDueOncePerLocalDay(t *testing.T) {
 	if _, err := db.Pool.Exec(ctx, `UPDATE notification_preferences SET digest_sent_at=$2 WHERE user_id=$1`, userID, sent); err != nil {
 		t.Fatal(err)
 	}
-	due, err := worker.digestRecipients(ctx, "Asia/Seoul", later)
+	due, err := worker.digestRecipients(ctx, "Asia/Seoul", later, mail.Config{}.AllowedEvents())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -137,7 +138,7 @@ func TestADigestIsDueOncePerLocalDay(t *testing.T) {
 	}
 
 	nextMorning := time.Date(2026, 8, 23, 8, 0, 0, 0, seoul)
-	if due, err = worker.digestRecipients(ctx, "Asia/Seoul", nextMorning); err != nil {
+	if due, err = worker.digestRecipients(ctx, "Asia/Seoul", nextMorning, mail.Config{}.AllowedEvents()); err != nil {
 		t.Fatal(err)
 	}
 	if len(due) != 1 {
@@ -158,8 +159,8 @@ func TestADigestLeavesOutMutedEvents(t *testing.T) {
 	wanted := addEvent(t, db, userID, "CHANGE_REQUEST", "보완 요청 알림")
 
 	var delivered string
-	worker.Sender = func(_ context.Context, _ emailSettings, _, subject, body string) error {
-		delivered = subject + "\n" + body
+	worker.Sender = func(_ context.Context, _ mail.Config, msg mail.Message) error {
+		delivered = msg.Subject + "\n" + msg.Body
 		return nil
 	}
 	worker.sendDigests(ctx)
@@ -195,7 +196,7 @@ func TestADigestIsNotSentWhenEverythingIsMuted(t *testing.T) {
 	}
 	addEvent(t, db, userID, "COMMENT_ADDED", "코멘트 알림")
 	sent := 0
-	worker.Sender = func(_ context.Context, _ emailSettings, _, _, _ string) error {
+	worker.Sender = func(_ context.Context, _ mail.Config, _ mail.Message) error {
 		sent++
 		return nil
 	}
@@ -212,7 +213,7 @@ func TestADigestIsNotSentWhenEverythingIsMuted(t *testing.T) {
 func TestMailLandsOnTheItemTheNoticeIsAbout(t *testing.T) {
 	worker, db, userID := digestWorker(t)
 	ctx := context.Background()
-	if _, err := db.Pool.Exec(ctx, `UPDATE settings SET value_json = value_json || '{"base_url":"https://seccheck.example"}'::jsonb WHERE key='general'`); err != nil {
+	if _, err := db.Pool.Exec(ctx, `UPDATE settings SET value_json = value_json || '{"base_url":"https://seccheck.example"}'::jsonb WHERE key='mail'`); err != nil {
 		t.Fatal(err)
 	}
 	// The notice points at a real item, because the column is a foreign key --
@@ -231,7 +232,7 @@ func TestMailLandsOnTheItemTheNoticeIsAbout(t *testing.T) {
 	}
 
 	aboutItem := store.NewID()
-	if _, err := db.Pool.Exec(ctx, `INSERT INTO notifications(id,recipient_id,event_type,title,body,target_type,target_id,item_id) VALUES($1,$2,'COMMENT_ADDED','항목 코멘트','본문','REVIEW_REQUEST',$3,$4)`, aboutItem, userID, reviewID, itemID); err != nil {
+	if _, err := db.Pool.Exec(ctx, `INSERT INTO notifications(id,recipient_id,event_type,title,body,target_type,target_id,item_id) VALUES($1,$2,'CHANGE_REQUEST','항목 보완 요청','본문','REVIEW_REQUEST',$3,$4)`, aboutItem, userID, reviewID, itemID); err != nil {
 		t.Fatal(err)
 	}
 	aboutReview := store.NewID()
@@ -240,8 +241,8 @@ func TestMailLandsOnTheItemTheNoticeIsAbout(t *testing.T) {
 	}
 
 	var delivered string
-	worker.Sender = func(_ context.Context, _ emailSettings, _, subject, body string) error {
-		delivered = subject + "\n" + body
+	worker.Sender = func(_ context.Context, _ mail.Config, msg mail.Message) error {
+		delivered = msg.Subject + "\n" + msg.Body
 		return nil
 	}
 	worker.sendDigests(ctx)

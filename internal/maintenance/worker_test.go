@@ -492,7 +492,7 @@ func TestADeadlineReminderIsMailedToWhoeverWantsMailNow(t *testing.T) {
 			t.Fatalf("%s: %v", sql, err)
 		}
 	}
-	exec(`UPDATE settings SET value_json = value_json || '{"email_enabled":true,"smtp_host":"smtp.internal","smtp_port":25,"smtp_from":"seccheck@example.internal"}'::jsonb WHERE key='notification'`)
+	exec(`UPDATE settings SET value_json = value_json || '{"enabled":true,"smtp_host":"smtp.internal","smtp_port":25,"from_address":"seccheck@example.internal"}'::jsonb WHERE key='mail'`)
 	exec(`UPDATE users SET email='reviewer@example.internal' WHERE id=$1`, reviewer)
 	itemID := seedChangeRequest(t, db, reviewer)
 
