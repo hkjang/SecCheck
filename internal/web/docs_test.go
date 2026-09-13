@@ -800,6 +800,9 @@ func TestAdminGuideSettingsTablesMatchTheSeedsAndTheScreen(t *testing.T) {
 	seeded := map[string]map[string]any{}
 	insert := regexp.MustCompile(`\('(\w+)',\s*'(\{[^']*\})'::jsonb`)
 	fill := regexp.MustCompile(`UPDATE settings SET value_json = '(\{[^']*\})'::jsonb \|\| value_json WHERE key\s*=\s*'(\w+)'`)
+	// A key a later migration takes away (`value_json - 'key'`) is no longer
+	// the tab's, however it was seeded before.
+	strip := regexp.MustCompile(`UPDATE settings SET value_json = value_json - '(\w+)' WHERE key\s*=\s*'(\w+)'`)
 	remember := func(tab, literal string) {
 		var values map[string]any
 		if err := json.Unmarshal([]byte(literal), &values); err != nil {
@@ -824,6 +827,9 @@ func TestAdminGuideSettingsTablesMatchTheSeedsAndTheScreen(t *testing.T) {
 		}
 		for _, m := range fill.FindAllStringSubmatch(string(body), -1) {
 			remember(m[2], m[1])
+		}
+		for _, m := range strip.FindAllStringSubmatch(string(body), -1) {
+			delete(seeded[m[2]], m[1])
 		}
 	}
 	if len(seeded) < 5 {

@@ -221,7 +221,8 @@ func (s *Server) routes() {
 	s.handle("GET", "/api/v1/admin/settings", "관리", "관리 설정 목록", []string{"SYSTEM_ADMIN"}, false, s.listSettings)
 	s.handle("PUT", "/api/v1/admin/settings/{key}", "관리", "관리 설정 저장. 비밀값은 Master Key로 암호화", []string{"SYSTEM_ADMIN"}, false, s.updateSetting)
 	s.handle("POST", "/api/v1/admin/settings/oidc/test", "관리", "OIDC Discovery 연결 테스트", []string{"SYSTEM_ADMIN"}, false, s.testOIDC)
-	s.handle("POST", "/api/v1/admin/settings/notification/test", "관리", "SMTP 설정 테스트 메일 발송", []string{"SYSTEM_ADMIN"}, false, s.testSMTP)
+	s.handle("POST", "/api/v1/admin/settings/mail/test", "관리", "메일 설정 테스트 발송", []string{"SYSTEM_ADMIN"}, false, s.testSMTP)
+	s.handle("GET", "/api/v1/admin/mail/deliveries", "관리", "메일 발송 기록 조회", []string{"SYSTEM_ADMIN"}, false, s.listMailDeliveries)
 	s.handle("POST", "/api/v1/admin/settings/upload/test", "관리", "ClamAV 연결 테스트(clamd PING)", []string{"SYSTEM_ADMIN"}, false, s.testClamAV)
 	s.handle("GET", "/api/v1/admin/audit", "관리", "해시 체인 감사로그. 이벤트, 사용자, 기간 필터와 format=csv", []string{"SYSTEM_ADMIN", "AUDITOR"}, false, s.listAudit)
 	s.handle("GET", "/api/v1/admin/audit/verify", "관리", "해시 체인 검증. full=1이면 전체 재검증", []string{"SYSTEM_ADMIN", "AUDITOR"}, false, s.verifyAudit)
@@ -294,7 +295,10 @@ func (s *Server) require(roles []string, next http.Handler) http.Handler {
 				return
 			}
 		}
-		next.ServeHTTP(w, r.WithContext(context.WithValue(r.Context(), sessionKey, sess)))
+		// The store is told who is acting so a notification this request
+		// raises for the very person making it stays off the mail.
+		ctx := store.WithActor(context.WithValue(r.Context(), sessionKey, sess), sess.User.ID)
+		next.ServeHTTP(w, r.WithContext(ctx))
 	})
 }
 

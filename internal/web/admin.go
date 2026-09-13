@@ -14,6 +14,7 @@ import (
 
 	"github.com/hkjang/SecCheck/internal/analytics"
 	"github.com/hkjang/SecCheck/internal/auth"
+	"github.com/hkjang/SecCheck/internal/mail"
 	"github.com/hkjang/SecCheck/internal/notify"
 	"github.com/hkjang/SecCheck/internal/scanner"
 	"github.com/hkjang/SecCheck/internal/store"
@@ -362,7 +363,7 @@ func (s *Server) listSettings(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) updateSetting(w http.ResponseWriter, r *http.Request) {
 	key := r.PathValue("key")
-	allowed := map[string]bool{"general": true, "workflow": true, "upload": true, "oidc": true, "notification": true, "security": true, "analytics": true}
+	allowed := map[string]bool{"general": true, "workflow": true, "upload": true, "oidc": true, "mail": true, "security": true, "analytics": true}
 	if !allowed[key] {
 		problem(w, 404, "NOT_FOUND", "지원하지 않는 설정입니다.", nil)
 		return
@@ -376,9 +377,12 @@ func (s *Server) updateSetting(w http.ResponseWriter, r *http.Request) {
 		secret = v
 		delete(raw, "client_secret")
 	}
-	if v, ok := raw["smtp_password"].(string); ok {
+	// The relay password is sealed in the row's encrypted column and never
+	// written into the JSON, so reading the settings back can never return
+	// it; the screen only learns that one is configured.
+	if v, ok := raw["password"].(string); ok && key == mail.SettingKey {
 		secret = v
-		delete(raw, "smtp_password")
+		delete(raw, "password")
 	}
 	if err := validateSetting(key, raw); err != "" {
 		problem(w, 422, "VALIDATION_FAILED", err, nil)
@@ -434,12 +438,6 @@ func validateSetting(key string, m map[string]any) string {
 		if tz := strings.TrimSpace(stringValue(m["timezone"])); tz != "" {
 			if _, err := time.LoadLocation(tz); err != nil {
 				return "표시 시간대는 IANA 이름이어야 합니다. 예: Asia/Seoul"
-			}
-		}
-		if raw := strings.TrimSpace(stringValue(m["base_url"])); raw != "" {
-			u, err := url.Parse(raw)
-			if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
-				return "서비스 주소는 http(s)로 시작하는 완전한 URL이어야 합니다."
 			}
 		}
 	case "workflow":
@@ -528,18 +526,19 @@ func validateSetting(key string, m map[string]any) string {
 				}
 			}
 		}
-	case "notification":
-		if enabled, _ := m["email_enabled"].(bool); enabled {
-			if strings.TrimSpace(stringValue(m["smtp_host"])) == "" || strings.TrimSpace(stringValue(m["from"])) == "" {
-				return "이메일 알림 활성화 시 SMTP 호스트와 발신 주소가 필요합니다."
-			}
-			if n := numericSetting(m["smtp_port"]); n < 1 || n > 65535 {
-				return "SMTP 포트 범위를 확인하세요."
+	case mail.SettingKey:
+		b, _ := json.Marshal(m)
+		var cfg mail.Config
+		if err := json.Unmarshal(b, &cfg); err != nil {
+			return "메일 설정의 형식이 올바르지 않습니다."
+		}
+		if raw := strings.TrimSpace(stringValue(m["base_url"])); raw != "" {
+			u, err := url.Parse(raw)
+			if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
+				return "서비스 주소는 http(s)로 시작하는 완전한 URL이어야 합니다."
 			}
 		}
-		if n := numericSetting(m["digest_hour"]); n < 0 || n > 23 {
-			return "요약 발송 시각은 0~23시여야 합니다."
-		}
+		return cfg.Validate()
 	}
 	return ""
 }
@@ -976,13 +975,26 @@ func (s *Server) testSMTP(w http.ResponseWriter, r *http.Request) {
 		problem(w, 422, "VALIDATION_FAILED", "받는 주소를 입력하거나 프로필에 이메일을 등록하세요.", nil)
 		return
 	}
-	if err := notify.New(s.Store, s.Box).SendTest(r.Context(), recipient); err != nil {
-		_ = s.Store.Audit(r.Context(), auditFrom(r, "TEST_SMTP", "SETTING", "notification", nil, map[string]any{"recipient": recipient, "error": err.Error()}))
+	if err := notify.New(s.Store, s.Box).SendTest(r.Context(), session(r).User.ID, recipient); err != nil {
+		_ = s.Store.Audit(r.Context(), auditFrom(r, "TEST_SMTP", "SETTING", mail.SettingKey, nil, map[string]any{"recipient": recipient, "error": err.Error()}))
 		problem(w, 502, "SMTP_FAILED", "테스트 메일을 보내지 못했습니다: "+err.Error(), nil)
 		return
 	}
-	_ = s.Store.Audit(r.Context(), auditFrom(r, "TEST_SMTP", "SETTING", "notification", nil, map[string]any{"recipient": recipient}))
+	_ = s.Store.Audit(r.Context(), auditFrom(r, "TEST_SMTP", "SETTING", mail.SettingKey, nil, map[string]any{"recipient": recipient}))
 	jsonResponse(w, 200, map[string]any{"sent_to": recipient})
+}
+
+// listMailDeliveries shows what went out of the building: every attempt the
+// relay was asked to take, newest first, with the subject and the recipient
+// but never the body. It is the answer to "the mail never came".
+func (s *Server) listMailDeliveries(w http.ResponseWriter, r *http.Request) {
+	limit, offset := parsePage(r)
+	page, err := mail.List(r.Context(), s.Store.Pool, r.URL.Query().Get("status"), limit, offset)
+	if err != nil {
+		s.fault(w, r, "QUERY_FAILED", "메일 발송 기록을 불러오지 못했습니다.", err)
+		return
+	}
+	jsonResponse(w, 200, page)
 }
 
 func (s *Server) listJobs(w http.ResponseWriter, r *http.Request) {

@@ -63,6 +63,8 @@ Authorization: Bearer sck_a1b2c3d4_xxxxxxxxxxxxxxxxxxxxxxxxxxxx
 | :--- | :--- | :--- | :--- |
 | `POST` | `/review-requests/{id}/change-requests/bulk` | 선택 항목 일괄 보완 요청 | `SECURITY_REVIEWER` |
 | `POST` | `/admin/settings/upload/test` | ClamAV(clamd) 연결 테스트 | `SYSTEM_ADMIN` |
+| `POST` | `/admin/settings/mail/test` | 저장된 메일 설정으로 본인(또는 `recipient`)에게 테스트 메일 1통을 그 자리에서 발송. 결과는 발송 기록에도 남음 | `SYSTEM_ADMIN` |
+| `GET` | `/admin/mail/deliveries` | 메일 발송 기록. 시도마다 `event`, `recipient`, `subject`, `status`(`SENT` · `FAILED` · `SKIPPED`), `attempt`, `error`. 본문은 없음. `status`, `limit`, `offset` | `SYSTEM_ADMIN` |
 | `GET` | `/admin/users/{id}/open-work` | 계정이 아직 맡고 있는 진행 중 심의·미이행 후속조치 수 | `SYSTEM_ADMIN` |
 | `GET` | `/admin/api-keys` | 설치 전체의 API 키와 소유자·마지막 사용 시각 | `SYSTEM_ADMIN` |
 | `POST` | `/admin/api-keys/{id}/revoke` | 다른 사용자의 API 키 폐기 | `SYSTEM_ADMIN` |

@@ -2,17 +2,15 @@ package notify
 
 import (
 	"context"
-	"crypto/tls"
 	"encoding/json"
 	"errors"
 	"fmt"
-	"net"
-	"net/mail"
-	"net/smtp"
+	netmail "net/mail"
 	"strings"
 	"time"
 
 	"github.com/hkjang/SecCheck/internal/cryptox"
+	"github.com/hkjang/SecCheck/internal/mail"
 	"github.com/hkjang/SecCheck/internal/store"
 	"github.com/jackc/pgx/v5"
 )
@@ -22,26 +20,29 @@ type Worker struct {
 	Box   *cryptox.Box
 
 	// Sender delivers one message. Only the tests replace it; leaving it nil
-	// uses SMTP, which is the only thing production ever wants.
-	Sender func(ctx context.Context, cfg emailSettings, recipient, subject, body string) error
+	// uses the relay, which is the only thing production ever wants.
+	Sender mail.Sender
 }
 
-func (w *Worker) sendMail(ctx context.Context, cfg emailSettings, recipient, subject, body string) error {
-	if w.Sender != nil {
-		return w.Sender(ctx, cfg, recipient, subject, body)
+// sendMail hands one message to the relay and records the attempt either
+// way. The record is what an administrator reads when somebody says a mail
+// never came, so a failure to write it is logged rather than swallowed.
+func (w *Worker) sendMail(ctx context.Context, cfg mail.Config, d mail.Delivery, msg mail.Message) error {
+	send := w.Sender
+	if send == nil {
+		send = mail.Send
 	}
-	return send(ctx, cfg, recipient, subject, body)
+	err := send(ctx, cfg, msg)
+	d.Recipient, d.Subject = msg.To, msg.Subject
+	d.Status, d.Error = mail.Outcome(err)
+	if recordErr := mail.Record(ctx, w.Store.Pool, store.NewID(), d); recordErr != nil {
+		w.Store.Log(ctx, "ERROR", "", "notification", "mail delivery could not be recorded", map[string]any{"event": d.Event, "error": truncate(recordErr.Error(), 300)})
+	}
+	return err
 }
 
-type emailSettings struct {
-	Enabled    bool   `json:"email_enabled"`
-	Host       string `json:"smtp_host"`
-	Port       int    `json:"smtp_port"`
-	Username   string `json:"smtp_username"`
-	TLSMode    string `json:"smtp_tls_mode"`
-	From       string `json:"from"`
-	DigestHour int    `json:"digest_hour"`
-	Password   string `json:"-"`
+func (w *Worker) config(ctx context.Context) (mail.Config, error) {
+	return mail.Load(ctx, w.Store, w.Box)
 }
 
 type job struct {
@@ -100,15 +101,16 @@ type digestRecipient struct {
 // day in the container's UTC clock sent a second digest as soon as UTC rolled
 // over, which for a zone ahead of UTC falls in the middle of the reader's
 // working day -- two identical summaries, hours apart.
-func (w *Worker) digestRecipients(ctx context.Context, zone string, at time.Time) ([]digestRecipient, error) {
+func (w *Worker) digestRecipients(ctx context.Context, zone string, at time.Time, allowed []string) ([]digestRecipient, error) {
 	// A muted event stays out of the digest as well. Muting only kept an
 	// immediate mail from going out, so a reader on the daily summary was
-	// still sent every type they had asked not to hear about.
+	// still sent every type they had asked not to hear about. The same goes
+	// for a type the administrator has switched off or that is bell-only.
 	rows, err := w.Store.Pool.Query(ctx, `SELECT p.user_id,u.email,COALESCE(p.muted_events,'{}') FROM notification_preferences p JOIN users u ON u.id=p.user_id
                 WHERE p.digest='DAILY' AND p.email_enabled AND u.active AND u.email<>''
                   AND (p.digest_sent_at IS NULL OR p.digest_sent_at < date_trunc('day', $2::timestamptz AT TIME ZONE $1) AT TIME ZONE $1)
                   AND EXISTS(SELECT 1 FROM notifications n WHERE n.recipient_id=p.user_id AND n.emailed_at IS NULL
-                                AND n.event_type <> ALL(COALESCE(p.muted_events,'{}')))`, zone, at)
+                                AND n.event_type <> ALL(COALESCE(p.muted_events,'{}')) AND n.event_type = ANY($3::text[]))`, zone, at, allowed)
 	if err != nil {
 		return nil, err
 	}
@@ -124,8 +126,7 @@ func (w *Worker) digestRecipients(ctx context.Context, zone string, at time.Time
 }
 
 func (w *Worker) sendDigests(ctx context.Context) {
-	var cfg emailSettings
-	encrypted, err := w.Store.Setting(ctx, "notification", &cfg)
+	cfg, err := w.config(ctx)
 	if err != nil || !cfg.Enabled {
 		return
 	}
@@ -139,14 +140,8 @@ func (w *Worker) sendDigests(ctx context.Context) {
 	if now.In(zone).Hour() < cfg.DigestHour {
 		return
 	}
-	if encrypted != "" {
-		plain, decryptErr := w.Box.Decrypt(encrypted, []byte("setting:notification"))
-		if decryptErr != nil {
-			return
-		}
-		cfg.Password = string(plain)
-	}
-	recipients, err := w.digestRecipients(ctx, zone.String(), now)
+	allowed := cfg.AllowedEvents()
+	recipients, err := w.digestRecipients(ctx, zone.String(), now, allowed)
 	if err != nil {
 		return
 	}
@@ -156,7 +151,7 @@ func (w *Worker) sendDigests(ctx context.Context) {
 		// marked as sent. Marking every unsent notification instead swallowed
 		// anything that arrived while the digest was being delivered: it was
 		// stamped as emailed without ever appearing in one.
-		items, err := w.Store.Pool.Query(ctx, `SELECT id,title,body,created_at,COALESCE(target_type,''),COALESCE(target_id,''),COALESCE(item_id,'') FROM notifications WHERE recipient_id=$1 AND emailed_at IS NULL AND event_type <> ALL($2::text[]) ORDER BY created_at LIMIT 200`, rec.id, rec.muted)
+		items, err := w.Store.Pool.Query(ctx, `SELECT id,title,body,created_at,COALESCE(target_type,''),COALESCE(target_id,''),COALESCE(item_id,'') FROM notifications WHERE recipient_id=$1 AND emailed_at IS NULL AND event_type <> ALL($2::text[]) AND event_type = ANY($3::text[]) ORDER BY created_at LIMIT 200`, rec.id, rec.muted, allowed)
 		if err != nil {
 			continue
 		}
@@ -174,7 +169,7 @@ func (w *Worker) sendDigests(ctx context.Context) {
 			// each line carries its own way there instead of one link to the
 			// notification centre for all of them.
 			if targetType == "REVIEW_REQUEST" {
-				if link := serviceItemLink(ctx, w.Store, targetID, itemID); link != "" {
+				if link := itemLink(cfg, targetID, itemID); link != "" {
 					line += "\n" + link
 				}
 			}
@@ -185,8 +180,8 @@ func (w *Worker) sendDigests(ctx context.Context) {
 			continue
 		}
 		subject := fmt.Sprintf("[SecCheck] 알림 요약 %d건", len(lines))
-		body := strings.Join(lines, "\n\n") + "\n\n" + serviceLink(ctx, w.Store, "")
-		if err = w.sendMail(ctx, cfg, rec.email, subject, body); err != nil {
+		body := strings.Join(lines, "\n\n") + "\n\n" + cfg.Link("/notifications")
+		if err = w.sendMail(ctx, cfg, mail.Delivery{Event: mail.EventDigest, RecipientID: rec.id}, mail.Message{To: rec.email, Subject: subject, Body: body}); err != nil {
 			w.Store.Log(ctx, "ERROR", "", "notification", "digest delivery failed", map[string]any{"user_id": rec.id, "error": truncate(err.Error(), 300)})
 			continue
 		}
@@ -202,33 +197,19 @@ func (w *Worker) sendDigests(ctx context.Context) {
 	}
 }
 
-// serviceLink turns a notification target into an address people can click.
+// itemLink turns a notification target into an address people can click.
 // Without a configured base URL the e-mail simply omits the link rather than
 // guessing a hostname. A notice about one checklist item carries that item, so
 // the link opens the item rather than a review with a few hundred of them --
 // the same landing the notification centre gives.
-func serviceLink(ctx context.Context, s *store.Store, targetID string) string {
-	return serviceItemLink(ctx, s, targetID, "")
-}
-
-func serviceItemLink(ctx context.Context, s *store.Store, targetID, itemID string) string {
-	var general struct {
-		BaseURL string `json:"base_url"`
-	}
-	if _, err := s.Setting(ctx, "general", &general); err != nil {
-		return ""
-	}
-	base := strings.TrimRight(strings.TrimSpace(general.BaseURL), "/")
-	if base == "" {
-		return ""
-	}
+func itemLink(cfg mail.Config, targetID, itemID string) string {
 	if targetID == "" {
-		return base + "/notifications"
+		return cfg.Link("/notifications")
 	}
 	if itemID != "" {
-		return base + "/reviews/" + targetID + "?item=" + itemID
+		return cfg.Link("/reviews/" + targetID + "?item=" + itemID)
 	}
-	return base + "/reviews/" + targetID
+	return cfg.Link("/reviews/" + targetID)
 }
 
 func (w *Worker) claim(ctx context.Context) (job, error) {
@@ -255,38 +236,40 @@ func (w *Worker) deliver(ctx context.Context, j job) error {
 	if err := json.Unmarshal(j.Payload, &payload); err != nil || payload.NotificationID == "" {
 		return undeliverable{"invalid email job payload"}
 	}
-	var to, title, body, targetType, targetID, itemID string
-	err := w.Store.Pool.QueryRow(ctx, `SELECT u.email,n.title,n.body,n.target_type,n.target_id,COALESCE(n.item_id,'') FROM notifications n JOIN users u ON u.id=n.recipient_id WHERE n.id=$1`, payload.NotificationID).Scan(&to, &title, &body, &targetType, &targetID, &itemID)
+	var recipientID, to, event, title, body, targetType, targetID, itemID string
+	err := w.Store.Pool.QueryRow(ctx, `SELECT u.id,u.email,n.event_type,n.title,n.body,n.target_type,n.target_id,COALESCE(n.item_id,'') FROM notifications n JOIN users u ON u.id=n.recipient_id WHERE n.id=$1`, payload.NotificationID).Scan(&recipientID, &to, &event, &title, &body, &targetType, &targetID, &itemID)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return undeliverable{"the notification this job refers to no longer exists"}
 	}
 	if err != nil {
 		return err
 	}
-	if targetType == "REVIEW_REQUEST" {
-		if link := serviceItemLink(ctx, w.Store, targetID, itemID); link != "" {
-			body = body + "\n\n" + link
-		}
-	}
-	if _, err = mail.ParseAddress(to); err != nil {
-		return undeliverable{"recipient has no valid email address"}
-	}
-	var cfg emailSettings
-	encrypted, err := w.Store.Setting(ctx, "notification", &cfg)
+	cfg, err := w.config(ctx)
 	if err != nil {
 		return err
 	}
-	if !cfg.Enabled {
-		return undeliverable{"email delivery is switched off"}
-	}
-	if encrypted != "" {
-		plain, decryptErr := w.Box.Decrypt(encrypted, []byte("setting:notification"))
-		if decryptErr != nil {
-			return decryptErr
+	if targetType == "REVIEW_REQUEST" {
+		if link := itemLink(cfg, targetID, itemID); link != "" {
+			body = body + "\n\n" + link
 		}
-		cfg.Password = string(plain)
 	}
-	if err = w.sendMail(ctx, cfg, to, "[SecCheck] "+title, body); err != nil {
+	record := mail.Delivery{Event: event, RecipientID: recipientID, NotificationID: payload.NotificationID, Attempt: j.Attempt}
+	subject := "[SecCheck] " + title
+	if _, err = netmail.ParseAddress(to); err != nil {
+		return w.skip(ctx, record, to, subject, "recipient has no valid email address")
+	}
+	if !cfg.Enabled {
+		return w.skip(ctx, record, to, subject, "email delivery is switched off")
+	}
+	if !cfg.Allows(event) {
+		return w.skip(ctx, record, to, subject, "this event type is switched off")
+	}
+	if readyErr := cfg.Ready(); readyErr != nil {
+		// The switch is on but the row is incomplete. Retrying until an
+		// administrator fills it in would page them about their own gap.
+		return w.skip(ctx, record, to, subject, readyErr.Error())
+	}
+	if err = w.sendMail(ctx, cfg, record, mail.Message{To: to, Subject: subject, Body: body}); err != nil {
 		return err
 	}
 	// Retrying would send a second copy of a mail that already went out, so
@@ -297,6 +280,17 @@ func (w *Worker) deliver(ctx context.Context, j job) error {
 	}
 	w.Store.Log(ctx, "INFO", "", "notification", "email notification delivered", map[string]any{"notification_id": payload.NotificationID})
 	return nil
+}
+
+// skip records that nothing was tried, and why, and hands the reason back as
+// the undeliverable it is -- so the record can answer "it never came" even
+// when the relay was never asked.
+func (w *Worker) skip(ctx context.Context, d mail.Delivery, to, subject, reason string) error {
+	d.Recipient, d.Subject, d.Status, d.Error = to, subject, mail.StatusSkipped, reason
+	if err := mail.Record(ctx, w.Store.Pool, store.NewID(), d); err != nil {
+		w.Store.Log(ctx, "ERROR", "", "notification", "mail delivery could not be recorded", map[string]any{"event": d.Event, "error": truncate(err.Error(), 300)})
+	}
+	return undeliverable{reason}
 }
 
 // giveUp closes a job that will never succeed. The notification itself stays in
@@ -318,80 +312,6 @@ func (w *Worker) fail(ctx context.Context, j job, cause error) {
 	w.Store.Log(ctx, "ERROR", "", "notification", "email notification failed", map[string]any{"job_id": j.ID, "attempt": j.Attempt, "terminal": status == "FAILED", "error": truncate(cause.Error(), 500)})
 }
 
-func send(ctx context.Context, cfg emailSettings, recipient, subject, body string) error {
-	if cfg.Host == "" || cfg.Port < 1 || cfg.Port > 65535 || cfg.From == "" {
-		return errors.New("SMTP adapter configuration is incomplete")
-	}
-	from, err := mail.ParseAddress(cfg.From)
-	if err != nil {
-		return errors.New("SMTP from address is invalid")
-	}
-	host := strings.TrimSpace(cfg.Host)
-	addr := net.JoinHostPort(host, fmt.Sprint(cfg.Port))
-	dialer := &net.Dialer{Timeout: 10 * time.Second}
-	tlsConfig := &tls.Config{MinVersion: tls.VersionTLS12, ServerName: host}
-	var client *smtp.Client
-	if strings.EqualFold(cfg.TLSMode, "tls") {
-		conn, dialErr := tls.DialWithDialer(dialer, "tcp", addr, tlsConfig)
-		if dialErr != nil {
-			return dialErr
-		}
-		_ = conn.SetDeadline(time.Now().Add(30 * time.Second))
-		client, err = smtp.NewClient(conn, host)
-	} else {
-		conn, dialErr := dialer.DialContext(ctx, "tcp", addr)
-		if dialErr != nil {
-			return dialErr
-		}
-		_ = conn.SetDeadline(time.Now().Add(30 * time.Second))
-		client, err = smtp.NewClient(conn, host)
-		if err == nil && strings.EqualFold(cfg.TLSMode, "starttls") {
-			if ok, _ := client.Extension("STARTTLS"); !ok {
-				err = errors.New("SMTP server does not support STARTTLS")
-			} else {
-				err = client.StartTLS(tlsConfig)
-			}
-		}
-	}
-	if err != nil {
-		if client != nil {
-			_ = client.Close()
-		}
-		return err
-	}
-	defer client.Close()
-	if cfg.Username != "" {
-		if ok, _ := client.Extension("AUTH"); !ok {
-			return errors.New("SMTP server does not support authentication")
-		}
-		if err = client.Auth(smtp.PlainAuth("", cfg.Username, cfg.Password, host)); err != nil {
-			return err
-		}
-	}
-	if err = client.Mail(from.Address); err != nil {
-		return err
-	}
-	if err = client.Rcpt(recipient); err != nil {
-		return err
-	}
-	wc, err := client.Data()
-	if err != nil {
-		return err
-	}
-	message := "From: " + sanitizeHeader(from.String()) + "\r\nTo: " + sanitizeHeader(recipient) + "\r\nSubject: " + sanitizeHeader(subject) + "\r\nMIME-Version: 1.0\r\nContent-Type: text/plain; charset=UTF-8\r\n\r\n" + body
-	if _, err = wc.Write([]byte(message)); err != nil {
-		_ = wc.Close()
-		return err
-	}
-	if err = wc.Close(); err != nil {
-		return err
-	}
-	return client.Quit()
-}
-
-func sanitizeHeader(v string) string {
-	return strings.ReplaceAll(strings.ReplaceAll(v, "\r", ""), "\n", "")
-}
 func truncate(v string, n int) string {
 	if len(v) <= n {
 		return v
@@ -399,27 +319,26 @@ func truncate(v string, n int) string {
 	return v[:n]
 }
 
-// SendTest lets an administrator prove the SMTP settings before relying on
-// them, the way the OIDC discovery button proves the identity provider.
-func (w *Worker) SendTest(ctx context.Context, recipient string) error {
-	var cfg emailSettings
-	encrypted, err := w.Store.Setting(ctx, "notification", &cfg)
+// SendTest lets an administrator prove the relay settings before relying on
+// them, the way the OIDC discovery button proves the identity provider. It
+// is the one send that happens in the request, because the administrator is
+// waiting for the answer; the attempt is recorded like any other.
+func (w *Worker) SendTest(ctx context.Context, actorID, recipient string) error {
+	cfg, err := w.config(ctx)
 	if err != nil {
 		return err
 	}
-	if encrypted != "" {
-		plain, decryptErr := w.Box.Decrypt(encrypted, []byte("setting:notification"))
-		if decryptErr != nil {
-			return decryptErr
-		}
-		cfg.Password = string(plain)
-	}
-	if _, err = mail.ParseAddress(recipient); err != nil {
+	if _, err = netmail.ParseAddress(recipient); err != nil {
 		return errors.New("받는 주소가 올바르지 않습니다")
 	}
-	body := "SecCheck SMTP 설정 테스트 메일입니다. 이 메일이 도착했다면 알림 발송 경로가 정상입니다."
-	if link := serviceLink(ctx, w.Store, ""); link != "" {
+	if !cfg.Enabled {
+		return errors.New("메일 알림이 꺼져 있습니다. 켜고 저장한 뒤 다시 시도하세요")
+	}
+	body := "SecCheck 메일 설정 테스트입니다. 이 메일이 도착했다면 사내 릴레이를 통한 알림 발송 경로가 정상입니다."
+	if link := cfg.Link("/admin/settings"); link != "" {
 		body += "\n\n" + link
 	}
-	return send(ctx, cfg, recipient, "[SecCheck] SMTP 설정 테스트", body)
+	sendCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), cfg.Timeout()+5*time.Second)
+	defer cancel()
+	return w.sendMail(sendCtx, cfg, mail.Delivery{Event: mail.EventTest, RecipientID: actorID}, mail.Message{To: recipient, Subject: "[SecCheck] 메일 설정 테스트", Body: body})
 }

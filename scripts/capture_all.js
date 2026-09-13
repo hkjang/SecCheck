@@ -375,7 +375,7 @@ async function main() {
 
     await goto('/admin/settings', 'text=서비스 관리자 설정', { wait: 800 });
     await capture('admin-settings-general.png');
-    for (const [label, file] of [['검토·승인', 'admin-settings-workflow.png'], ['Keycloak OIDC', 'admin-settings-oidc.png'], ['파일 보안', 'admin-settings-upload.png'], ['접근 보안', 'admin-settings-security.png'], ['알림', 'admin-settings-notification.png']]) {
+    for (const [label, file] of [['검토·승인', 'admin-settings-workflow.png'], ['Keycloak OIDC', 'admin-settings-oidc.png'], ['파일 보안', 'admin-settings-upload.png'], ['접근 보안', 'admin-settings-security.png'], ['메일', 'admin-settings-mail.png']]) {
       const tab = page.locator(`button.tab:has-text("${label}")`).first();
       if (await tab.count()) { await tab.click(); await capture(file, { wait: 500 }); }
     }

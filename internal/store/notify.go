@@ -4,8 +4,25 @@ import (
 	"context"
 	"errors"
 
+	"github.com/hkjang/SecCheck/internal/mail"
 	"github.com/jackc/pgx/v5"
 )
+
+type actorKey struct{}
+
+// WithActor marks the context with the person whose action is being
+// recorded, so that a notification their own action produces for themselves
+// is kept on the bell and never mailed: nobody wants a message about what
+// they just did.
+func WithActor(ctx context.Context, userID string) context.Context {
+	return context.WithValue(ctx, actorKey{}, userID)
+}
+
+// ActorID returns what WithActor recorded, or "" for a background worker.
+func ActorID(ctx context.Context) string {
+	id, _ := ctx.Value(actorKey{}).(string)
+	return id
+}
 
 // Notify records a notification and, when the recipient wants mail as it
 // happens, queues the e-mail in the same transaction.
@@ -64,6 +81,11 @@ func (s *Store) notifyTx(ctx context.Context, tx pgx.Tx, recipient, event, title
 		id, recipient, event, title, body, targetType, targetID, itemID); err != nil {
 		return err
 	}
+	if recipient == ActorID(ctx) && !mail.AboutTheService(event) {
+		// Their own doing: on the bell, out of the mail and the digest.
+		_, err := tx.Exec(ctx, `UPDATE notifications SET emailed_at=now() WHERE id=$1`, id)
+		return err
+	}
 	if !s.WantsImmediateMail(ctx, tx, recipient, event) {
 		return nil
 	}
@@ -76,18 +98,17 @@ func (s *Store) notifyTx(ctx context.Context, tx pgx.Tx, recipient, event, title
 
 // WantsImmediateMail answers whether this event should be mailed now. A
 // daily-digest reader is left alone: emailed_at stays null and the digest
-// worker collects it, minus whatever they have muted.
+// worker collects it, minus whatever they have muted. An event type the
+// administrator has switched off, or one no switch covers, is never mailed.
 func (s *Store) WantsImmediateMail(ctx context.Context, tx pgx.Tx, recipient, event string) bool {
-	var cfg struct {
-		EmailEnabled bool `json:"email_enabled"`
-	}
-	if _, err := s.Setting(ctx, "notification", &cfg); err != nil || !cfg.EmailEnabled {
+	cfg, err := mail.Load(ctx, s, nil)
+	if err != nil || !cfg.Enabled || !cfg.Allows(event) {
 		return false
 	}
 	var enabled bool
 	var digest string
 	var muted []string
-	err := tx.QueryRow(ctx, `SELECT email_enabled,digest,muted_events FROM notification_preferences WHERE user_id=$1`, recipient).Scan(&enabled, &digest, &muted)
+	err = tx.QueryRow(ctx, `SELECT email_enabled,digest,muted_events FROM notification_preferences WHERE user_id=$1`, recipient).Scan(&enabled, &digest, &muted)
 	if errors.Is(err, pgx.ErrNoRows) {
 		// No preference recorded means the default: everything, immediately.
 		return true
