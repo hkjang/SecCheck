@@ -1,14 +1,22 @@
 package web
 
 import (
+	"bytes"
 	"io/fs"
 	"net/http"
 	"os"
 	"path"
 	"strings"
+	"time"
 )
 
-type SPA struct{ Dir string }
+// SPA serves the built web assets. Inject, when set, is given the app shell
+// on every page request and may return it with a tracking snippet added; it
+// gets the request so it can read the per-request nonce and the path.
+type SPA struct {
+	Dir    string
+	Inject func(r *http.Request, page []byte) []byte
+}
 
 func (s SPA) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if r.URL.Path == "/api" || strings.HasPrefix(r.URL.Path, "/api/") || r.URL.Path == "/mcp" || r.URL.Path == "/health" || r.URL.Path == "/ready" || r.URL.Path == "/metrics" {
@@ -32,7 +40,17 @@ func (s SPA) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	w.Header().Set("Cache-Control", "no-store")
-	http.ServeFile(w, r, index)
+	if s.Inject == nil {
+		http.ServeFile(w, r, index)
+		return
+	}
+	page, err := os.ReadFile(index)
+	if err != nil {
+		http.Error(w, "SecCheck web assets are not installed", http.StatusServiceUnavailable)
+		return
+	}
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	http.ServeContent(w, r, "index.html", time.Time{}, bytes.NewReader(s.Inject(r, page)))
 }
 
 func setStaticHeaders(w http.ResponseWriter, file string) {

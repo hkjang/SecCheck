@@ -18,6 +18,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/hkjang/SecCheck/internal/analytics"
 	"github.com/hkjang/SecCheck/internal/auth"
 	"github.com/hkjang/SecCheck/internal/cryptox"
 	"github.com/hkjang/SecCheck/internal/store"
@@ -51,6 +52,12 @@ type Server struct {
 	securityMu   sync.Mutex
 	securityAt   time.Time
 	securityConf runtimeSecurity
+	// Visitor tracking: the settings row cached like the security settings,
+	// and the origins the page policy has refused since the process started.
+	analyticsMu   sync.Mutex
+	analyticsAt   time.Time
+	analyticsConf analytics.Config
+	violations    *analytics.Recorder
 	// A full chain verification re-hashes every event ever written and holds a
 	// connection while it does. Several at once is a way to take the service
 	// down from a button anybody with the audit role can press twice.
@@ -82,7 +89,7 @@ const sessionKey ctxKey = "session"
 const clientIPKey ctxKey = "client_ip"
 
 func NewServer(o Options) http.Handler {
-	s := &Server{Options: o, blobs: vault.New(o.DataDir, o.Box, o.Store), mux: http.NewServeMux(), limiter: newRateLimiter(), loginLimiter: newRateLimiter()}
+	s := &Server{Options: o, blobs: vault.New(o.DataDir, o.Box, o.Store), mux: http.NewServeMux(), limiter: newRateLimiter(), loginLimiter: newRateLimiter(), violations: analytics.NewRecorder()}
 	s.routes()
 	return s.middleware(s.mux)
 }
@@ -225,12 +232,17 @@ func (s *Server) routes() {
 	s.handle("POST", "/api/v1/admin/jobs/{id}/retry", "관리", "실패한 작업 재시도", []string{"SYSTEM_ADMIN"}, false, s.retryJob)
 	s.handle("POST", "/api/v1/admin/jobs/retry-failed", "관리", "실패한 작업 일괄 재시도", []string{"SYSTEM_ADMIN"}, false, s.retryFailedJobs)
 	s.handle("GET", "/api/v1/admin/system", "관리", "버전, 스키마 버전, 데이터 규모", []string{"SYSTEM_ADMIN"}, false, s.systemInfo)
+	s.handle("GET", "/api/v1/admin/analytics/violations", "관리", "방문 추적 스니펫이 켜진 뒤 콘텐츠 보안 정책이 차단한 출처 목록", []string{"SYSTEM_ADMIN"}, false, s.listAnalyticsViolations)
+	s.handle("DELETE", "/api/v1/admin/analytics/violations", "관리", "차단된 출처 목록 비우기", []string{"SYSTEM_ADMIN"}, false, s.clearAnalyticsViolations)
+	s.handle("POST", "/api/v1/admin/analytics/allow", "관리", "차단된 출처 하나를 방문 추적 허용 출처에 추가", []string{"SYSTEM_ADMIN"}, false, s.allowAnalyticsHost)
+	s.handle("POST", "/api/v1/analytics/csp-report", "운영", "브라우저가 보내는 콘텐츠 보안 정책 위반 신고. 방문 추적이 켜진 동안만 기록", nil, true, s.receiveCSPReport)
 
 	// Machine interfaces.
 	s.handle("GET", "/api/v1/integrations", "machine", "연계 인터페이스 정보와 제공 중인 MCP 도구 목록", nil, false, s.integrationInfo)
 	s.handle("GET", "/api/openapi.json", "machine", "OpenAPI 3.1 명세", nil, false, s.openAPI)
 	s.handle("POST", "/mcp", "machine", "MCP 2026-07-28 Streamable HTTP endpoint", nil, false, s.mcp)
-	s.mux.Handle("/", SPA{Dir: s.WebDir})
+	s.mux.HandleFunc(analytics.ProxyPath+"/", s.momentoProxy)
+	s.mux.Handle("/", SPA{Dir: s.WebDir, Inject: s.inject})
 }
 
 // handle registers an endpoint and records it for the specification in one
@@ -321,6 +333,16 @@ func (s *Server) middleware(next http.Handler) http.Handler {
 		r.Header.Set("X-Request-ID", requestID)
 		w.Header().Set("X-Request-ID", requestID)
 		setSecurityHeaders(w.Header())
+		// Pages get the strict policy plus whatever the tracking snippet
+		// needs under a fresh nonce; everything else renders no document and
+		// gets a policy that allows nothing.
+		if analytics.IsNonPage(r.URL.Path) {
+			w.Header().Set("Content-Security-Policy", nonPagePolicy)
+		} else {
+			nonce := newNonce()
+			r = r.WithContext(context.WithValue(r.Context(), nonceKey, nonce))
+			w.Header().Set("Content-Security-Policy", pagePolicy(s.analyticsConfig(r.Context()), r.URL.Path, nonce))
+		}
 		security := s.runtimeSecurity(r.Context())
 		r = r.WithContext(context.WithValue(r.Context(), clientIPKey, resolveClientIP(r, security.trusted)))
 		if origin := r.Header.Get("Origin"); origin != "" && contains(security.CORSOrigins, origin) {
@@ -370,7 +392,10 @@ func setSecurityHeaders(header http.Header) {
 	header.Set("Cross-Origin-Embedder-Policy", "require-corp")
 	header.Set("Cross-Origin-Opener-Policy", "same-origin")
 	header.Set("Cross-Origin-Resource-Policy", "same-origin")
-	header.Set("Content-Security-Policy", "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data: blob:; connect-src 'self'; font-src 'self'; frame-ancestors 'none'; base-uri 'self'; form-action 'self'; object-src 'none'; upgrade-insecure-requests")
+	// The page policy itself is set per request by the middleware, because
+	// a request's nonce and the tracking snippet's origins go into it. This
+	// is the policy every response carries until then.
+	header.Set("Content-Security-Policy", pagePolicy(analytics.Config{}, "/", ""))
 }
 
 // invalidateSettingCaches is called after a setting is saved so the change is
@@ -385,6 +410,8 @@ func (s *Server) invalidateSettingCaches(key string) {
 		s.Auth.InvalidatePolicy()
 	case "general":
 		s.Store.InvalidateLocation()
+	case "analytics":
+		s.invalidateAnalyticsConfig()
 	}
 }
 

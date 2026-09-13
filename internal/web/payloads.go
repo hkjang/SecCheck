@@ -23,6 +23,7 @@ var requestPayloads = map[string][]payloadField{
 	"POST /api/v1/admin/settings/oidc/test":                                 {{"issuer", "string"}},
 	"POST /api/v1/admin/users":                                              {{"username", "string"}, {"display_name", "string"}, {"email", "string"}, {"department", "string"}, {"password", "string"}, {"roles", "[]string"}},
 	"POST /api/v1/admin/users/{id}/active":                                  {{"active", "bool"}},
+	"POST /api/v1/admin/analytics/allow":                                    {{"origin", "string"}},
 	"POST /api/v1/admin/users/{id}/password":                                {{"password", "string"}},
 	"POST /api/v1/admin/users/{id}/handover":                                {{"to_user_id", "string"}},
 	"POST /api/v1/auth/login":                                               {{"username", "string"}, {"password", "string"}, {"totp_code", "string"}},

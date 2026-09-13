@@ -12,6 +12,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/hkjang/SecCheck/internal/analytics"
 	"github.com/hkjang/SecCheck/internal/auth"
 	"github.com/hkjang/SecCheck/internal/notify"
 	"github.com/hkjang/SecCheck/internal/scanner"
@@ -361,7 +362,7 @@ func (s *Server) listSettings(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) updateSetting(w http.ResponseWriter, r *http.Request) {
 	key := r.PathValue("key")
-	allowed := map[string]bool{"general": true, "workflow": true, "upload": true, "oidc": true, "notification": true, "security": true}
+	allowed := map[string]bool{"general": true, "workflow": true, "upload": true, "oidc": true, "notification": true, "security": true, "analytics": true}
 	if !allowed[key] {
 		problem(w, 404, "NOT_FOUND", "지원하지 않는 설정입니다.", nil)
 		return
@@ -416,6 +417,13 @@ func (s *Server) updateSetting(w http.ResponseWriter, r *http.Request) {
 
 func validateSetting(key string, m map[string]any) string {
 	switch key {
+	case "analytics":
+		b, _ := json.Marshal(m)
+		var cfg analytics.Config
+		if err := json.Unmarshal(b, &cfg); err != nil {
+			return "방문 추적 설정의 형식이 올바르지 않습니다."
+		}
+		return cfg.Validate()
 	case "general":
 		if n := numericSetting(m["session_minutes"]); n < 15 || n > 10080 {
 			return "세션 시간은 15~10080분이어야 합니다."

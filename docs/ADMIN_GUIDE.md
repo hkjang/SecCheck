@@ -157,7 +157,7 @@ SECCHECK_SELFTEST_PASSWORD='<관리자 비밀번호>' docker compose exec secche
 
 ### 3-2. 서비스 설정 화면
 
-`서비스 설정` 은 여섯 탭입니다. 아래 키 이름은 `PUT /api/v1/admin/settings/{key}` 로도 같은 값을 다룰 때 쓰는 이름입니다.
+`서비스 설정` 은 일곱 탭입니다. 아래 키 이름은 `PUT /api/v1/admin/settings/{key}` 로도 같은 값을 다룰 때 쓰는 이름입니다.
 
 ![서비스 관리자 설정 — 일반: 서비스명, 서비스 주소, 표시 시간대, 세션·보존 기간](screenshots/admin-settings-general.png)
 
@@ -244,6 +244,21 @@ SECCHECK_SELFTEST_PASSWORD='<관리자 비밀번호>' docker compose exec secche
 
 `테스트 메일 보내기` 는 저장된 설정으로 본인에게 1통을 보냅니다. 운영 전에 반드시 한 번 확인하십시오.
 
+**방문 추적 (`analytics`)** — 설정 절차와 콘텐츠 보안 정책은 3-4 절.
+
+| 화면 이름 | 키 | 기본값 | 설명 |
+| :--- | :--- | :--- | :--- |
+| 방문 추적 스크립트 삽입 | `enabled` | `false` | 켜야 스크립트가 삽입되고 정책에 nonce 와 출처가 더해집니다. 새로 설치한 곳은 꺼져 있어 아무것도 달라지지 않음 |
+| 추적 도구 | `provider` | `none` | `none` · `momento` · `ga4` · `gtm` · `matomo` · `custom`. 켜져 있는데 `none` 이면 저장이 거부됨 |
+| Momento 수집기 주소 / 사이트 ID | `momento_url` / `momento_site_id` | (비어 있음) | 사내 수집기 주소(`https://…`)와 이 서비스의 사이트 ID. `momento` 일 때 둘 다 필요 |
+| 같은 오리진 프록시(/momento/*)로 수집 | `momento_proxy` | `true` | 켜 두면 브라우저는 이 서버의 `/momento/` 로만 보내고 서버가 수집기로 넘깁니다. 정책에 외부 출처가 등장하지 않음 |
+| GA4 측정 ID / GTM 컨테이너 ID | `measurement_id` | (비어 있음) | `G-…` 또는 `GTM-…`. `ga4`·`gtm` 일 때 필요 |
+| Matomo 주소 / 사이트 ID | `matomo_url` / `matomo_site_id` | (비어 있음) | `matomo` 일 때 둘 다 필요 |
+| 직접 입력 추적 코드 | `custom_snippet` | (비어 있음) | `<script>` 태그를 포함한 HTML. **8KB(8192바이트) 초과는 저장되지 않음**. 코드 안의 http(s) 주소는 자동으로 정책 출처가 됨 |
+| 추가 허용 출처 | `allowed_hosts` | (비어 있음) | 스니펫에서 읽어 내지 못한 출처. `https://host` 형식, 쉼표로 구분. 차단 목록의 `허용` 버튼이 여기에 더함 |
+| 관리 화면에서도 추적 | `include_admin` | `false` | 꺼져 있으면 `/admin` 으로 시작하는 화면으로 들어온 요청에는 넣지 않음 |
+| 삽입 위치 | `placement` | `head` | `head` 또는 `body` |
+
 ### 3-3. Keycloak OIDC 연동
 
 1. Keycloak 에서 Client 를 만듭니다: Client Type `OpenID Connect`, Client Authentication `ON`, Standard Flow `ON`, Valid Redirect URIs `https://<seccheck-host>/api/v1/auth/oidc/callback`.
@@ -259,6 +274,28 @@ SECCHECK_SELFTEST_PASSWORD='<관리자 비밀번호>' docker compose exec secche
 4. `Discovery 연결 테스트` 로 Issuer 에 닿는지 확인한 뒤 저장합니다.
 
 그룹 매핑을 하나라도 지정하면 **로그인할 때마다** IdP 그룹 기준으로 역할을 다시 맞춥니다. 그룹에서 빠지면 다음 로그인에 역할을 잃습니다. 매핑을 쓰지 않으면 최초 로그인에 기본 역할만 주고 이후에는 손대지 않으므로 퇴사자 권한 회수를 사람이 해야 합니다. `SYSTEM_ADMIN` 은 그룹으로 부여할 수 없습니다 — 디렉터리 그룹을 편집할 수 있는 사람이 감사 시스템의 관리자가 되는 경로를 만들지 않기 위해서입니다. 역할이 실제로 바뀐 로그인은 `디렉터리 역할 동기화` 감사 이벤트로, 토큰에서 읽은 그룹 목록은 서버 로그 `oidc` 구성요소의 `directory groups received` 로 남습니다.
+
+### 3-4. 방문 추적과 콘텐츠 보안 정책
+
+`서비스 설정 > 방문 추적` 은 어떤 화면이 실제로 쓰이는지 세는 스크립트를 관리자가 화면에서 붙이는 자리입니다. 기본은 꺼짐이며, 켜기 전까지 화면과 정책은 이 절이 없던 때와 같습니다.
+
+**왜 그냥 붙이면 안 되는가.** SecCheck 의 모든 화면은 `Content-Security-Policy` 헤더의 `script-src 'self'` 로 잠겨 있습니다. 이 서버가 아닌 곳에서 오는 스크립트와 화면 안에 직접 적힌 스크립트는 브라우저가 **조용히** 버립니다 — 오류 화면도, 관리자에게 오는 알림도 없고 브라우저 콘솔에만 한 줄 남습니다. 그래서 스니펫을 넣는 일의 대부분은 정책 쪽입니다. 이 서비스는 정책을 `'unsafe-inline'` 으로 풀지 않습니다. 한 번 풀면 그 화면의 모든 인라인 스크립트가 함께 허용되고, 추적을 끈 뒤에도 정책은 느슨한 채로 남기 때문입니다. 대신:
+
+1. **요청마다 nonce.** 화면을 내려 줄 때마다 128비트 난수를 만들어 스니펫의 **모든** `<script>` 태그에 `nonce="…"` 로 붙이고, 같은 값을 `script-src 'nonce-…'` 에 넣습니다. 그 요청의 스니펫만 실행되고 다른 인라인 스크립트는 그대로 막힙니다.
+2. **출처는 스니펫에서 읽어 냅니다.** 추적 도구는 자기 주소를 로더 안에 적어 둡니다. 직접 입력한 코드의 `http(s)://…` 주소를 긁어 `script-src`·`connect-src`·`img-src` 에 더하고, Momento·GA4·GTM·Matomo 는 도구가 정해진 주소를 씁니다. 그래도 막히는 것은 `추가 허용 출처` 에 손으로 더합니다.
+3. **차단된 것을 기록해 보여 줍니다.** 추적이 켜진 동안만 정책에 `report-uri /api/v1/analytics/csp-report` 를 넣어, 브라우저가 거부한 요청의 **출처와 지시어**를 받아 둡니다. 같은 차단이 화면마다 반복되므로 횟수가 아니라 서로 다른 출처만 100개까지 메모리에 남기며, 서버를 다시 시작하면 비워집니다. 탭 아래 `정책이 차단한 출처` 표에서 `허용` 을 누르면 그 출처가 `추가 허용 출처` 에 들어가고 다음 화면부터 정책에 반영됩니다. 고친 뒤 `목록 비우기` 로 아직 막히는 것이 있는지 봅니다.
+
+**붙지 않는 곳.** `/api/*`·`/mcp`·`/health`·`/ready`·`/metrics`·`/momento/*` 는 화면이 아니므로 스니펫이 들어가지 않고, 정책도 `default-src 'none'; frame-ancestors 'none'` 으로 화면보다 좁습니다. `/admin` 으로 시작하는 화면은 `관리 화면에서도 추적` 을 켰을 때만 붙습니다. 화면은 한 번 읽힌 뒤 안에서 이동하는 단일 페이지 앱이므로, 이 구분은 **처음 들어온 주소** 기준입니다 — `/admin/settings` 를 열어 둔 채 심의 화면으로 이동하면 스크립트는 없는 채이고, 대시보드에서 관리 화면으로 옮기면 있는 채입니다. 로그인 화면에도 붙지만 서비스는 아이디·비밀번호를 스크립트에 넘기지 않습니다. 도구가 화면의 입력값을 읽도록 설정되어 있지 않은지는 도구 쪽에서 확인하십시오.
+
+**Momento 를 먼저 씁니다.** Momento 는 사내 자체 호스팅 수집기라 데이터가 밖으로 나가지 않는 유일한 선택지이고, 그래서 목록의 첫 자리에 있습니다. 설정은 셋입니다.
+
+1. `추적 도구` 를 `Momento (사내)` 로 고르고 `Momento 수집기 주소`(`https://momento.company.internal` 처럼 스킴부터)와 `Momento 사이트 ID` 를 채웁니다.
+2. `같은 오리진 프록시(/momento/*)로 수집` 은 켠 채로 둡니다. 화면에는 `<script async src="/momento/tracker.js" data-site-id="…" data-environment="prd" data-contract-version="1" data-endpoint="/momento"></script>` 가 들어가고, 브라우저는 이 서버의 `/momento/…` 로만 요청하며 서버가 그것을 수집기의 같은 경로로 넘깁니다(이때 세션 쿠키·인증 헤더는 떼어 냅니다). 정책에 외부 출처가 아예 등장하지 않으므로, Reverse Proxy 나 브라우저 정책으로 외부 출처를 막아 둔 설치에서도 그대로 동작합니다. 수집기 쪽에서는 요청이 SecCheck 서버의 주소에서 오는 것으로 보입니다.
+3. `방문 추적 스크립트 삽입` 을 켜고 저장합니다. 화면을 새로 고쳐 브라우저 개발자 도구의 네트워크 탭에서 `/momento/tracker.js` 가 200 으로 오고 수집기 화면에 방문이 잡히는 것을 확인합니다.
+
+프록시를 끄면 스크립트가 수집기 주소를 직접 부르고 그 출처가 `script-src`·`connect-src`·`img-src` 에 더해집니다. 이때는 수집기가 `Cross-Origin-Resource-Policy: cross-origin` 을 응답해야 합니다 — SecCheck 화면은 `Cross-Origin-Embedder-Policy: require-corp` 를 보내므로 그 헤더 없는 외부 스크립트는 정책과 별개로 읽히지 않습니다. GA4·GTM 의 `googletagmanager.com` 은 이 헤더를 보내고, 직접 세운 Matomo 나 직접 입력한 도구는 서버 설정을 확인하십시오. 이 사유의 차단은 CSP 신고가 아니어서 `정책이 차단한 출처` 표에 나타나지 않습니다.
+
+**끄면 원래대로.** `방문 추적 스크립트 삽입` 을 끄면 다음 요청부터 스니펫이 사라지고 정책은 nonce·출처·`report-uri` 없이 처음 그대로가 됩니다. `/momento/*` 도 닫힙니다. 설정은 15초까지 캐시되지만 이 화면에서 저장하면 즉시 반영됩니다. 켜고 끄는 것과 `허용` 버튼은 모두 `UPDATE_SETTING`(대상 `analytics`)으로 감사로그에 남습니다.
 
 ---
 
@@ -354,7 +391,7 @@ SECCHECK_SELFTEST_PASSWORD='<관리자 비밀번호>' docker compose exec secche
 
 | 로그 | 어디에 | 무엇 |
 | :--- | :--- | :--- |
-| 서버 로그 | `서버 로그` 화면 (DB 저장) | 요청 ID 기반 구조화 로그. `component`(`admin`, `api`, `audit`, `auth`, `bootstrap`, `evidence`, `export`, `maintenance`, `notification`, `oidc`, `review`, `scanner`)와 필드로 검색 |
+| 서버 로그 | `서버 로그` 화면 (DB 저장) | 요청 ID 기반 구조화 로그. `component`(`admin`, `analytics`, `api`, `audit`, `auth`, `bootstrap`, `evidence`, `export`, `maintenance`, `notification`, `oidc`, `review`, `scanner`)와 필드로 검색 |
 | 컨테이너 표준 출력 | `docker compose logs seccheck` | 기동·종료, 그리고 **DB 에 기록할 수 없을 때** 밀려 나오는 줄. 로그 수집기가 함께 모으도록 구성 |
 | 감사로그 | `감사로그` 화면 | 해시 체인으로 묶인 주요 행위. 자동 삭제하지 않음 |
 
