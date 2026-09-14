@@ -335,6 +335,7 @@ docker compose exec seccheck /app/seccheck selftest --username admin --password 
 | v1.0.133 | `GET /api/v1/security-controls/{id}/impact` 응답이 **배열에서 `{items, outcomes}` 객체로** 바뀝니다. 이 응답을 읽는 연계 스크립트는 `items`를 꺼내도록 고치십시오 |
 | v1.0.134 | **비밀번호 정책이 강화됩니다.** 12자 이상은 이제 **글자 수** 기준이며(예전에는 바이트 수), 흔한 비밀번호·계정 아이디·서비스 이름 포함, 같은 문자 반복, 연속 문자는 거절됩니다(`WEAK_PASSWORD`). 계정을 자동 생성하는 연계 스크립트가 있다면 비밀번호 생성 규칙을 확인하십시오 |
 | v1.0.138 | 마이그레이션 **032** 추가(`review_requests.copied_from`, `review_lineage()`). 기존 심의에는 복사 관계가 없으므로 이전과 동일하게 서비스명으로만 이력을 찾습니다 |
+| v1.0.145 | 마이그레이션 **034**~**036** 추가. **메일 설정 행이 `notification`에서 `mail`로 바뀝니다**: `PUT /admin/settings/notification`·`POST /admin/settings/notification/test`를 쓰던 연계 스크립트는 `/admin/settings/mail`·`/admin/settings/mail/test`와 새 키 이름(`enabled`·`security`·`username`·`from_address`)으로 고치십시오. 릴레이를 설정해 둔 설치는 값과 `general.base_url`이 새 행으로 옮겨져 그대로 보내지며, 네 묶음 스위치가 모두 켜진 채 시작하고 댓글·API 키 폐기 알림은 더 이상 메일로 가지 않습니다. 시도마다 `mail_deliveries`에 기록이 남습니다 |
 | v1.0.120 | **검토자·승인자 지정 시 역할을 검증합니다.** 역할이 없는 계정이나 비활성 계정을 담당자로 넣던 연계 스크립트는 422를 받습니다(응답 `details`에 `reviewer_id`·`approver_id` 사유) |
 | v1.0.119 | **심의를 검토·판정한 사람은 같은 심의를 최종 승인할 수 없습니다**(`SELF_APPROVAL_FORBIDDEN`). 검토자와 승인자를 같은 사람으로 지정해 운영해 왔다면 그 심의는 다른 승인자에게 열리며, 1인 운영이라면 서비스 설정의 `본인 심의 처리 허용`을 켜십시오 |
 | v1.0.118 | **대시보드 집계 범위가 심의 목록과 같아집니다.** `SECURITY_REVIEWER`·`AUDITOR` 없이 `SYSTEM_ADMIN`만 가진 계정의 대시보드는 전체가 아니라 본인 업무를 보여 줍니다. 관리자에게 전체 현황이 필요하면 해당 계정에 `SECURITY_REVIEWER` 또는 `AUDITOR`를 부여하거나 리포트 화면을 사용하십시오 |
