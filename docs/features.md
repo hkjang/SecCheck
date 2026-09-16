@@ -172,16 +172,17 @@
 ![관리자 설정 - 일반](./screenshots/admin-settings-general.png)
 ![관리자 설정 - OIDC](./screenshots/admin-settings-oidc.png)
 ![관리자 설정 - 보안](./screenshots/admin-settings-security.png)
-![관리자 설정 - 알림](./screenshots/admin-settings-notification.png)
+![관리자 설정 - 메일](./screenshots/admin-settings-mail.png)
 ![관리자 설정 - 워크플로](./screenshots/admin-settings-workflow.png)
 ![관리자 설정 - 파일보안](./screenshots/admin-settings-upload.png)
 - **일반 설정**: 세션 시간, 데이터 보존 기간(일), 표시 시간대
 - **검토·승인 워크플로**: 팀장/승인자 최종 승인 프로세스 On/Off, 검토자 배정 필수 정책
 - **본인 심의 처리 금지**: 신청자 본인은 자신이 올린 심의를 검토하거나 승인할 수 없습니다(기본값). 담당자가 한 명뿐인 설치를 위해 설정에서 해제할 수 있습니다
-- **Keycloak OIDC SSO**: Issuer Discovery, Client Secret(암호화 보관), 그룹 → 역할 매핑(로그인마다 동기화, 그룹에서 빠지면 역할 회수), 연결 테스트
+- **Keycloak OIDC SSO**: Issuer Discovery, Client Secret(암호화 보관), 그룹 → 역할 매핑(로그인마다 동기화, 그룹에서 빠지면 역할 회수), 연결 테스트. `IdP 세션이 있으면 자동 로그인` 을 켜면 Keycloak 에 이미 로그인한 사람은 로그인 화면 없이 바로 들어오고, 세션이 없는 사람은 로그인 화면을 한 번만 봅니다(루프 없음)
 - **파일 보안 & ClamAV**: 최대 파일 크기, 허용 확장자 화이트리스트, ClamAV 데몬 주소 및 악성코드 차단
 - **접근 보안**: HTTPS Secure Cookie, Rate Limiting, 장기 미접속 관리자 잠금, CORS Origin
-- **알림 (SMTP)**: 호스트, 포트, STARTTLS/TLS, SMTP 인증 정보 및 발신 주소
+- **메일 (SMTP 릴레이)**: 호스트, 포트, 전송 보안(`auto`/`none`/`starttls`/`tls`), 인증(선택), 발신 주소·이름, 서비스 주소, 일일 요약 발송 시각. 보내는 이벤트는 `내 차례`·`결과`·`기한`·`장애` 네 묶음 스위치로 고르고, 본인이 한 일의 알림은 본인에게 보내지 않습니다. `테스트 메일 보내기` 와 시도마다 남는 발송 기록(성공·실패·건너뜀, 본문 없음)을 같은 탭에서 봅니다
+- **방문 추적**: 어떤 화면이 쓰이는지 세는 스크립트(Momento 사내 수집기 우선, GA4·GTM·Matomo·직접 입력)를 화면에서 붙입니다. 요청마다 nonce 를 발급해 `Content-Security-Policy` 를 `'unsafe-inline'` 없이 유지하고, 정책이 차단한 출처를 표로 보여 `허용` 한 번으로 더할 수 있습니다
 
 ---
 
