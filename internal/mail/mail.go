@@ -10,7 +10,9 @@ package mail
 
 import (
 	"context"
+	"crypto/rand"
 	"crypto/tls"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"mime"
@@ -345,8 +347,13 @@ func Send(ctx context.Context, cfg Config, msg Message) error {
 	// A Korean subject is encoded the way the From name already is, so a
 	// relay that does not speak SMTPUTF8 passes it on unharmed.
 	subject := mime.QEncoding.Encode("UTF-8", sanitizeHeader(msg.Subject))
+	// A relay that finds no Message-ID either stamps one of its own or, on
+	// some company relays, raises the spam score or refuses the mail. It is
+	// ours to add, and it has to be unique and belong to a domain that is
+	// ours: the sender's.
 	message := "From: " + sanitizeHeader(from.String()) + "\r\nTo: " + sanitizeHeader(msg.To) + "\r\nSubject: " + subject +
-		"\r\nDate: " + time.Now().Format(time.RFC1123Z) + "\r\nMIME-Version: 1.0\r\nContent-Type: text/plain; charset=UTF-8\r\n\r\n" + msg.Body
+		"\r\nDate: " + time.Now().Format(time.RFC1123Z) + "\r\nMessage-ID: " + messageID(from.Address) +
+		"\r\nMIME-Version: 1.0\r\nContent-Type: text/plain; charset=UTF-8\r\n\r\n" + msg.Body
 	if _, err = wc.Write([]byte(message)); err != nil {
 		_ = wc.Close()
 		return err
@@ -355,6 +362,26 @@ func Send(ctx context.Context, cfg Config, msg Message) error {
 		return err
 	}
 	return client.Quit()
+}
+
+// messageID builds an RFC 5322 Message-ID: 128 random bits on the left of
+// the @ and the sender's domain on the right, so two mails can never share
+// one and the identifier names a domain the relay knows to be ours.
+func messageID(fromAddress string) string {
+	var b [16]byte
+	if _, err := rand.Read(b[:]); err != nil {
+		// rand.Read failing is a broken system; a time-based identifier is
+		// still better than none, and still unique for this process.
+		return fmt.Sprintf("<%d@%s>", time.Now().UnixNano(), messageDomain(fromAddress))
+	}
+	return "<" + hex.EncodeToString(b[:]) + "@" + messageDomain(fromAddress) + ">"
+}
+
+func messageDomain(fromAddress string) string {
+	if at := strings.LastIndex(fromAddress, "@"); at >= 0 && at < len(fromAddress)-1 {
+		return fromAddress[at+1:]
+	}
+	return "seccheck.invalid"
 }
 
 func sanitizeHeader(v string) string {

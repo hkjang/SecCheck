@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"net"
+	"regexp"
 	"strings"
 	"testing"
 	"time"
@@ -242,6 +243,22 @@ func TestSendSpeaksSMTPToAPlainRelayWithoutCredentials(t *testing.T) {
 	}
 	if strings.Contains(transcript, "\nBcc:") {
 		t.Error("a header injected through the subject reached the relay")
+	}
+	// Some relays refuse or score down a mail without a Message-ID; it has
+	// to be there, unique, and in the sender's domain rather than the host's.
+	id := regexp.MustCompile(`(?m)^Message-ID: (<[0-9a-f]{32}@example\.internal>)\r?$`).FindStringSubmatch(transcript)
+	if id == nil {
+		t.Errorf("the relay did not receive a Message-ID in the sender's domain:\n%s", transcript)
+	} else if again := messageID("seccheck@example.internal"); again == id[1] {
+		t.Errorf("two mails got the same Message-ID %s", again)
+	}
+}
+
+func TestMessageIDFallsBackToAPlaceholderDomain(t *testing.T) {
+	for _, from := range []string{"", "seccheck", "seccheck@"} {
+		if got := messageID(from); !strings.HasSuffix(got, "@seccheck.invalid>") {
+			t.Errorf("messageID(%q) = %s, want the placeholder domain", from, got)
+		}
 	}
 }
 
