@@ -65,6 +65,7 @@ Authorization: Bearer sck_a1b2c3d4_xxxxxxxxxxxxxxxxxxxxxxxxxxxx
 | `POST` | `/admin/settings/upload/test` | ClamAV(clamd) 연결 테스트 | `SYSTEM_ADMIN` |
 | `POST` | `/admin/settings/mail/test` | 저장된 메일 설정으로 본인(또는 `recipient`)에게 테스트 메일 1통을 그 자리에서 발송. 결과는 발송 기록에도 남음 | `SYSTEM_ADMIN` |
 | `GET` | `/admin/mail/deliveries` | 메일 발송 기록. 시도마다 `event`, `recipient`, `subject`, `status`(`SENT` · `FAILED` · `SKIPPED`), `attempt`, `error`. 본문은 없음. `status`, `limit`, `offset` | `SYSTEM_ADMIN` |
+| `GET` | `/api/v1/integrations` | 연계 정보와 MCP 도구 목록. `mcp_oauth`(`enabled`, 켜져 있으면 `resource`·`metadata_url`·`authorization_server`·`scopes`) | 로그인 사용자 |
 | `GET` | `/admin/users/{id}/open-work` | 계정이 아직 맡고 있는 진행 중 심의·미이행 후속조치 수 | `SYSTEM_ADMIN` |
 | `GET` | `/admin/api-keys` | 설치 전체의 API 키와 소유자·마지막 사용 시각 | `SYSTEM_ADMIN` |
 | `POST` | `/admin/api-keys/{id}/revoke` | 다른 사용자의 API 키 폐기 | `SYSTEM_ADMIN` |
@@ -94,6 +95,7 @@ Authorization: Bearer sck_a1b2c3d4_xxxxxxxxxxxxxxxxxxxxxxxxxxxx
 | 코드 | 뜻 |
 | :--- | :--- |
 | `AUTHENTICATION_REQUIRED` | 세션이나 API 키가 없습니다 |
+| `MCP_OAUTH_DISABLED` | `/.well-known/oauth-protected-resource` — 이 설치는 MCP SSO 토큰을 받지 않습니다(404). 개인 키를 쓰거나 관리자가 켜야 합니다 |
 | `SESSION_REQUIRED` | 이 작업은 브라우저 세션에서만 가능합니다 |
 | `INVALID_CREDENTIALS` | 아이디 또는 비밀번호가 틀렸습니다 |
 | `LOGIN_RATE_LIMITED` | 로그인 시도가 제한 횟수를 넘었습니다 |
@@ -168,7 +170,22 @@ Authorization: Bearer sck_a1b2c3d4_xxxxxxxxxxxxxxxxxxxxxxxxxxxx
 
 - **엔드포인트**: `POST /mcp`
 - **프로토콜 버전**: MCP `2026-07-28` Stateless Streamable HTTP (구형 `2025-11-25` 호환)
-- **인증**: `Authorization: Bearer <API_KEY>`
+- **인증**: `Authorization: Bearer <API_KEY>` — 관리자가 MCP SSO 를 켠 설치에서는 같은 헤더로 Keycloak 액세스 토큰도 받습니다(아래 "키 없이 SSO 로 연결")
+
+### 🔐 키 없이 SSO 로 연결 (OAuth 2.1)
+
+관리자가 `서비스 설정 > MCP SSO` 를 켜 두었으면 개인 키를 만들 필요가 없습니다. MCP 클라이언트(Claude, Cursor 등)에 **MCP 주소 하나**(`https://<공개 주소>/mcp`)만 넣으면 됩니다 — 클라이언트가 401 응답의 `WWW-Authenticate: Bearer resource_metadata="…"` 를 따라 `GET /.well-known/oauth-protected-resource/mcp` 를 읽고, 거기 적힌 Keycloak 으로 로그인 화면을 띄워 토큰을 받아 옵니다. 이미 Keycloak 에 로그인돼 있으면 화면은 거의 보이지 않습니다. 주소는 `API · MCP 연계` 화면의 `키 없이 SSO 로 연결` 에 있습니다.
+
+- 토큰은 `/mcp` 에서만 받습니다. REST 에는 개인 키나 세션이 여전히 필요합니다.
+- **웹으로 한 번 로그인한 계정**이어야 합니다. 토큰이 계정을 만들지 않으며, 비활성 계정은 열리지 않습니다.
+- 권한은 그 계정이 가진 역할·심의 접근 범위 그대로이고, 범위(`read` / `read:write`)는 관리자의 `SSO 토큰 범위` 설정이 정합니다.
+- Keycloak 에서 로그아웃해도 이미 발급된 토큰은 만료까지 유효합니다(수명은 관리자가 짧게 둡니다).
+- 메타데이터 문서는 인증 없이, 제품 응답 봉투 없이 맨 JSON 으로 나옵니다. MCP SSO 가 꺼진 설치에서는 404(`MCP_OAUTH_DISABLED`) 입니다.
+
+```bash
+curl -s https://seccheck.example/.well-known/oauth-protected-resource/mcp
+# {"resource":"https://seccheck.example/mcp","authorization_servers":["https://keycloak.example/realms/company"],"bearer_methods_supported":["header"],"scopes_supported":["read"],"resource_name":"SecCheck MCP"}
+```
 
 ### 🛠️ 제공 도구 목록 (Tools)
 1. `seccheck.dashboard`: 대시보드 통계 및 긴급 처리 건수 조회

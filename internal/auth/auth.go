@@ -115,6 +115,9 @@ type Service struct {
 	policyAt     time.Time
 	policyLoaded bool
 	policy       SecurityPolicy
+
+	// providers caches Keycloak discovery for MCP token verification.
+	providers mcpProviders
 }
 
 type Session struct {
@@ -122,7 +125,10 @@ type Session struct {
 	User      store.User
 	ExpiresAt time.Time
 	APIKey    bool
-	Scopes    []string
+	// OAuth marks a session opened by a Keycloak access token at /mcp. It is
+	// also an APIKey session: the same machine-credential rules apply.
+	OAuth  bool
+	Scopes []string
 	// EnrollTOTP is set when policy requires this account to hold a one-time
 	// code but it has not enrolled yet. The HTTP layer then allows only the
 	// enrolment endpoints.
@@ -369,7 +375,16 @@ func (a *Service) NewSession(ctx context.Context, userID, ip, userAgent string) 
 
 func (a *Service) Authenticate(r *http.Request) (Session, error) {
 	if authz := r.Header.Get("Authorization"); strings.HasPrefix(strings.ToLower(authz), "bearer ") {
-		return a.authenticateAPIKey(r.Context(), strings.TrimSpace(authz[7:]))
+		token := strings.TrimSpace(authz[7:])
+		// One header, two kinds of credential. A key is a key wherever it
+		// is sent; a token is only ever a credential for /mcp, so on any
+		// other path it falls through to the key lookup and is refused the
+		// way a wrong key is, and an installation without SSO says nothing
+		// new.
+		if !strings.HasPrefix(token, APIKeyPrefix) && LooksLikeJWT(token) && r.URL.Path == MCPPath {
+			return a.authenticateMCPToken(r.Context(), token)
+		}
+		return a.authenticateAPIKey(r.Context(), token)
 	}
 	c, err := r.Cookie(CookieName)
 	if err != nil {

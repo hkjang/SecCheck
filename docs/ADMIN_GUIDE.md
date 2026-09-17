@@ -157,7 +157,7 @@ SECCHECK_SELFTEST_PASSWORD='<관리자 비밀번호>' docker compose exec secche
 
 ### 3-2. 서비스 설정 화면
 
-`서비스 설정` 은 일곱 탭입니다. 아래 키 이름은 `PUT /api/v1/admin/settings/{key}` 로도 같은 값을 다룰 때 쓰는 이름입니다.
+`서비스 설정` 은 여덟 탭입니다. 아래 키 이름은 `PUT /api/v1/admin/settings/{key}` 로도 같은 값을 다룰 때 쓰는 이름입니다.
 
 ![서비스 관리자 설정 — 일반: 서비스명, 서비스 주소, 표시 시간대, 세션·보존 기간](screenshots/admin-settings-general.png)
 
@@ -251,6 +251,15 @@ SECCHECK_SELFTEST_PASSWORD='<관리자 비밀번호>' docker compose exec secche
 
 `테스트 메일 보내기` 는 저장된 설정으로 본인 프로필의 이메일 주소에 1통을 보내고 결과를 그 자리에서, 그리고 아래 `메일 발송 기록` 에 남깁니다. 릴레이 설정은 한 번에 맞는 일이 드물므로 운영 전에 반드시 한 번 확인하십시오.
 
+**MCP SSO (`mcp`)** — 사내 MCP OAuth 표준의 `mcp.oauth.enabled`·`mcp.oauth.resource`·`mcp.oauth.audience`·`mcp.oauth.scopes` 에 해당합니다. 이 서비스의 설정 행은 평면 JSON 하나이므로 `mcp` 행의 `oauth_*` 키로 저장되고, 발급자·사용자명 Claim 은 `Keycloak OIDC` 탭의 값을 재사용합니다. 동작과 Keycloak 쪽 설정은 3-6 에 있습니다.
+
+| 화면 이름 | 키 | 기본값 | 설명 |
+| :--- | :--- | :--- | :--- |
+| Keycloak 토큰으로 MCP 접속 허용 | `oauth_enabled` | `false` | 꺼짐이 기본. 새로 설치한 곳은 켜기 전까지 메타데이터 문서가 404 이고 토큰은 잘못된 키와 같은 말로 거부됨. `Keycloak OIDC` 가 켜져 있고 리소스 식별자를 만들 수 있어야 저장됨 |
+| 리소스 식별자 | `oauth_resource` | (비어 있음) | 클라이언트가 실제로 접속하는 공개 주소 + `/mcp`(`https://…/mcp`). 비우면 `메일` 탭의 서비스 주소에 `/mcp` 를 붙여 씀. 요청의 `Host` 헤더로는 만들지 않음 |
+| 허용 대상 | `oauth_audience` | (비어 있음) | Audience 매퍼 없이 쓸 때 토큰의 `aud` 또는 `azp` 로 받을 클라이언트 ID. 공백·쉼표 구분 |
+| SSO 토큰 범위 | `oauth_scopes` | `read` | 토큰으로 들어온 사람에게 주는 범위. `read` · `read:write`, 공백 구분. 토큰의 `scope` 가 아니라 이 값이 정하며, 토큰이 같은 어휘를 실어 오면 교집합만 |
+
 **방문 추적 (`analytics`)** — 설정 절차와 콘텐츠 보안 정책은 3-4 절.
 
 | 화면 이름 | 키 | 기본값 | 설명 |
@@ -338,6 +347,64 @@ SECCHECK_SELFTEST_PASSWORD='<관리자 비밀번호>' docker compose exec secche
 
 **켠 뒤 확인할 것.** ① `테스트 메일 보내기` 가 `성공` 으로 기록되고 실제로 도착하는지. ② 릴레이를 끊어 놓고 심의를 하나 제출해도 제출이 평소처럼 끝나고, 발송 기록에 `실패` 가 남으며, 릴레이가 돌아오면 재시도로 `성공` 이 붙는지. ③ 다른 사람이 배정한 심의는 메일이 오고 자기가 배정한 것은 오지 않는지.
 
+---
+
+### 3-6. MCP SSO (Keycloak 토큰으로 MCP 접속)
+
+`/mcp` 는 개인 키로 들어갑니다. 이 절은 **키 체계를 그대로 둔 채** Keycloak 액세스 토큰으로도 들어올 수 있게 하는 자리이며, 사내 MCP OAuth 표준을 따릅니다. MCP 인가 규격(2025-06-18 이후)은 OAuth 2.1 이라, 켜 두면 MCP 클라이언트(Claude, Cursor 등)에 MCP 주소 하나만 주면 클라이언트가 스스로 Keycloak 로그인을 띄우고 토큰을 받아 옵니다. 이미 Keycloak 에 로그인한 사람은 화면조차 거의 보지 않습니다. 기본은 꺼짐이며, 켜기 전까지 아무것도 달라지지 않습니다.
+
+**이 서버는 리소스 서버입니다.** 로그인은 Keycloak 이 합니다. SecCheck 는 `/authorize`·`/token`·동적 클라이언트 등록을 만들지 않고, 토큰을 저장하지도 세션으로 바꾸지도 않습니다. 하는 일은 셋입니다.
+
+1. `GET /.well-known/oauth-protected-resource` 와 `GET /.well-known/oauth-protected-resource/mcp` 에서 인증 없이 맨 JSON 메타데이터(RFC 9728)를 냅니다 — `resource`(리소스 식별자), `authorization_servers`(Keycloak realm 의 issuer), `bearer_methods_supported`, `scopes_supported`. 꺼져 있으면 404 입니다.
+2. `/mcp` 의 401 에 `WWW-Authenticate: Bearer realm="SecCheck", resource_metadata="…"` 를 붙입니다(토큰이 있었는데 거부했으면 `error="invalid_token"` 도). **MCP 경로에서만** 붙고 REST 401 에는 붙지 않습니다.
+3. 같은 `Authorization: Bearer` 헤더에서 값이 `sck_` 로 시작하면 키, JWT 모양이면 토큰으로 검사합니다. 토큰은 `/mcp` 에서만 받고, REST·관리 API 는 지금처럼 키와 세션만 받습니다.
+
+**토큰 검사.** 서명(Keycloak JWKS, RS·ES·PS 계열만 — `HS*`·`none` 거부), `iss`(`Keycloak OIDC` 의 Issuer URL 과 같아야 함), `exp`·`nbf`, `typ`(`ID` 면 거부 — ID 토큰은 로그인 증거지 API 자격이 아님), `cnf`(있으면 거부 — 검증할 수 없는 소지자 증명이 묶인 토큰), `sub`(비면 거부), 그리고 **대상**. 대상은 다른 앱용 토큰이 이 앱의 `/mcp` 를 열지 못하게 하는 검사이며 다음 중 하나가 맞아야 합니다 — `aud` 에 리소스 식별자가 있다(Keycloak 에 Audience 매퍼를 둔 정식 경로), 또는 `aud` 나 `azp` 가 `허용 대상` 에 있다(매퍼 없이 쓰는 호환 경로. 실제 Keycloak 26 은 `aud` 에 `account` 만 싣고 클라이언트 ID 는 `azp` 에 담으므로 MCP 클라이언트 ID 를 여기 적으면 됩니다). 거부할 때는 본 `aud`/`azp` 와 고칠 값을 메시지에 넣습니다. JWKS 는 issuer 별로 캐시하고, 모르는 키 ID 때문에 다시 읽는 일은 초당 한 번으로 제한해 위조 토큰이 Keycloak 을 두드리지 못하게 합니다.
+
+**계정은 만들지 않습니다.** 토큰의 사용자명 Claim(`Keycloak OIDC` 탭의 값, 없으면 `sub`)으로 **웹 로그인이 이미 만든 활성 SSO 계정**만 찾습니다. 없으면 "먼저 웹으로 한 번 로그인하세요" 로 거부하고, 비활성 계정은 되살리지 않으며, 같은 아이디의 로컬 계정에는 묶지 않습니다. 토큰의 role claim 은 읽지 않습니다 — 권한은 그 계정이 SecCheck 에서 가진 역할과 심의 접근 범위 그대로이고, 범위(`read` / `read:write`)는 토큰이 아니라 `SSO 토큰 범위` 설정이 정합니다. 토큰으로 들어온 사람은 그 사람이 키로 들어왔을 때와 같은 문을 지납니다: 도구 호출은 `MCP_TOOL_CALL` 로 그 사람 이름으로 감사로그에 남습니다.
+
+**설정 순서.**
+
+1. `Keycloak OIDC` 탭이 켜져 있고 Issuer URL 이 저장되어 있어야 합니다(3-3). 발급자를 바꾸면 다음 토큰부터 새 발급자로 검사합니다.
+2. Keycloak 에서 MCP 클라이언트용 **공개(public) 클라이언트**를 만듭니다. Client authentication `OFF`, Standard Flow `ON`, PKCE `S256`, Direct Access Grants·Implicit·Service accounts `OFF`. **웹 로그인 클라이언트와 다른 클라이언트**입니다.
+3. Valid Redirect URIs 에 쓰는 MCP 클라이언트의 콜백을 정확히 적습니다 — Claude 는 `https://claude.ai/api/mcp/auth_callback`, 로컬 클라이언트는 `http://127.0.0.1:*/callback` 류. `*` 하나로 다 여는 것은 금지입니다.
+4. 정식 경로: 그 클라이언트(또는 전용 client scope)에 **Audience 매퍼**(Mapper type `Audience`) — Included Custom Audience = 리소스 식별자(`https://<공개 주소>/mcp`), Add to access token `ON`, Add to ID token `OFF`. 호환 경로: 매퍼 없이 이 서비스의 `허용 대상` 에 클라이언트 ID 를 적습니다.
+5. 액세스 토큰 수명은 짧게(5분 안팎). 이 서버는 introspection 을 하지 않으므로 **Keycloak 에서 로그아웃해도 이미 발급된 토큰은 만료까지 삽니다.**
+6. `서비스 설정 > MCP SSO` 에서 `리소스 식별자`(비우면 `메일` 탭의 서비스 주소 + `/mcp`)·`허용 대상`·`SSO 토큰 범위` 를 채우고 `Keycloak 토큰으로 MCP 접속 허용` 을 켜 저장합니다. OIDC 가 꺼져 있거나 리소스 식별자를 만들 수 없으면 저장이 거부되므로 "켰는데 조용히 꺼진" 상태는 생기지 않습니다. 화면의 `MCP 주소` 와 `메타데이터 주소` 를 복사해 사용자에게 줍니다(`API · MCP 연계` 화면에도 `키 없이 SSO 로 연결` 로 나타납니다). 설정 저장은 `UPDATE_SETTING`(대상 `mcp`)으로 감사로그에 남습니다.
+
+**켠 뒤 확인할 것.**
+
+```bash
+# 메타데이터: 200 과 맨 JSON. 꺼져 있으면 404
+curl -s https://seccheck.example.com/.well-known/oauth-protected-resource/mcp
+# {"resource":"https://seccheck.example.com/mcp","authorization_servers":["https://keycloak.example.com/realms/enterprise"],"bearer_methods_supported":["header"],"scopes_supported":["read"],"resource_name":"SecCheck MCP"}
+
+# 토큰 없는 401 이 길을 가리킨다
+curl -si -X POST https://seccheck.example.com/mcp -H 'Content-Type: application/json' \
+  -d '{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{}}' | grep -i www-authenticate
+# WWW-Authenticate: Bearer realm="SecCheck", resource_metadata="https://seccheck.example.com/.well-known/oauth-protected-resource/mcp"
+
+# Keycloak 에서 받은 액세스 토큰으로 도구 목록이 열린다
+curl -s -X POST https://seccheck.example.com/mcp -H "Authorization: Bearer $ACCESS_TOKEN" -H 'Content-Type: application/json' \
+  -d '{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{}}'
+```
+
+가능하면 실제 MCP 클라이언트에 `MCP 주소` 만 넣어 연결해 보고, 다른 앱에 로그인해 받은 토큰으로는 열리지 않는 것과 개인 키가 전과 똑같이 동작하는 것을 확인하십시오.
+
+**거부 메시지별 조치.** 거부는 모두 401 이고 메시지는 응답 본문의 `error.message` 에 있습니다. 서버 로그 `mcp_oauth` 구성요소에 같은 이유가 남습니다.
+
+| 메시지 | 뜻 | 조치 |
+| :--- | :--- | :--- |
+| `invalid API key` (토큰을 보냈는데) | MCP SSO 가 꺼져 있거나, 켜져 있어도 조건이 안 맞음(OIDC 꺼짐·리소스 식별자 없음). 꺼진 설치는 새로운 말을 흘리지 않음 | `MCP SSO` 탭을 켜고 저장. 서버 로그 `mcp_oauth` 의 `sso token refused: feature off` 에 있는 `reason` 확인 |
+| `SSO 토큰이 이 서버를 위해 발급된 것이 아닙니다(aud […], azp "…")` | 대상 검사 실패. 다른 앱용 토큰이거나 매퍼·허용 대상 미설정 | 메시지의 `azp` 값을 `허용 대상` 에 더하거나, Keycloak 클라이언트의 Audience 매퍼에 메시지의 리소스 식별자를 넣기 |
+| `SSO 액세스 토큰이 유효하지 않습니다(서명·발급자·만료)` | 서명이 다른 realm 이거나 `iss` 가 Issuer URL 과 다르거나 만료 | 클라이언트에서 다시 로그인. Issuer URL 이 토큰의 `iss` 와 글자 그대로 같은지 확인 |
+| `ID 토큰은 MCP 자격이 아닙니다` | 클라이언트가 액세스 토큰 대신 ID 토큰을 보냄 | 클라이언트 설정 확인 |
+| `소지자 증명(cnf)이 묶인 토큰은 받지 않습니다` | DPoP·mTLS 바인딩 토큰 | Keycloak 클라이언트에서 DPoP 를 끔 |
+| `이 SSO 계정은 SecCheck 에 등록되지 않았거나 비활성입니다` | 웹 로그인이 만든 활성 SSO 계정이 없음 | 사용자가 웹으로 한 번 로그인. 비활성이면 `사용자·역할` 에서 활성화 |
+| `Keycloak 발급자 정보를 읽지 못해` | 서버가 Issuer 의 discovery/JWKS 에 닿지 못함 | 서버에서 Issuer URL 로 나가는 경로·인증서 확인. `Discovery 연결 테스트` 로 확인 |
+
+---
+
 ## 4. 계정과 권한
 
 ### 4-1. 역할
@@ -403,7 +470,7 @@ SECCHECK_SELFTEST_PASSWORD='<관리자 비밀번호>' docker compose exec secche
 
 ![API · MCP 연계 — REST 명세와 MCP 도구 목록](screenshots/integrations.png)
 
-`GET /api/openapi.json` 이 OpenAPI 3.1 명세, `POST /mcp` 가 MCP `2026-07-28` Streamable HTTP 엔드포인트입니다. 인증은 API 키(`Authorization: Bearer`)입니다. 자세한 내용은 [api-guide.md](api-guide.md).
+`GET /api/openapi.json` 이 OpenAPI 3.1 명세, `POST /mcp` 가 MCP `2026-07-28` Streamable HTTP 엔드포인트입니다. 인증은 API 키(`Authorization: Bearer`)이며, 3-6 의 MCP SSO 를 켜면 `/mcp` 는 같은 헤더로 Keycloak 액세스 토큰도 받습니다. 자세한 내용은 [api-guide.md](api-guide.md).
 
 ---
 
@@ -430,7 +497,7 @@ SECCHECK_SELFTEST_PASSWORD='<관리자 비밀번호>' docker compose exec secche
 
 | 로그 | 어디에 | 무엇 |
 | :--- | :--- | :--- |
-| 서버 로그 | `서버 로그` 화면 (DB 저장) | 요청 ID 기반 구조화 로그. `component`(`admin`, `analytics`, `api`, `audit`, `auth`, `bootstrap`, `evidence`, `export`, `maintenance`, `notification`, `oidc`, `review`, `scanner`)와 필드로 검색 |
+| 서버 로그 | `서버 로그` 화면 (DB 저장) | 요청 ID 기반 구조화 로그. `component`(`admin`, `analytics`, `api`, `audit`, `auth`, `bootstrap`, `evidence`, `export`, `maintenance`, `mcp_oauth`, `notification`, `oidc`, `review`, `scanner`)와 필드로 검색 |
 | 컨테이너 표준 출력 | `docker compose logs seccheck` | 기동·종료, 그리고 **DB 에 기록할 수 없을 때** 밀려 나오는 줄. 로그 수집기가 함께 모으도록 구성 |
 | 감사로그 | `감사로그` 화면 | 해시 체인으로 묶인 주요 행위. 자동 삭제하지 않음 |
 

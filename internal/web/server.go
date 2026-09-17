@@ -242,6 +242,10 @@ func (s *Server) routes() {
 	s.handle("GET", "/api/v1/integrations", "machine", "연계 인터페이스 정보와 제공 중인 MCP 도구 목록", nil, false, s.integrationInfo)
 	s.handle("GET", "/api/openapi.json", "machine", "OpenAPI 3.1 명세", nil, false, s.openAPI)
 	s.handle("POST", "/mcp", "machine", "MCP 2026-07-28 Streamable HTTP endpoint", nil, false, s.mcp)
+	// RFC 9728: where a refused MCP client learns which authorization server
+	// to sign in at. Bare JSON, no session, 404 while MCP SSO is off.
+	s.handle("GET", protectedResourceMetadataPath, "machine", "MCP 보호 리소스 메타데이터 (RFC 9728). MCP SSO 가 켜져 있을 때만", nil, true, s.protectedResourceMetadata)
+	s.handle("GET", protectedResourceMetadataPath+auth.MCPPath, "machine", "MCP 보호 리소스 메타데이터 (RFC 9728, 경로 접미 형식)", nil, true, s.protectedResourceMetadata)
 	s.mux.HandleFunc(analytics.ProxyPath+"/", s.momentoProxy)
 	s.mux.Handle("/", SPA{Dir: s.WebDir, Inject: s.inject})
 }
@@ -261,6 +265,7 @@ func (s *Server) require(roles []string, next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		sess, err := s.Auth.Authenticate(r)
 		if err != nil {
+			s.mcpChallenge(w, r, r.Header.Get("Authorization") != "")
 			problem(w, http.StatusUnauthorized, "AUTHENTICATION_REQUIRED", err.Error(), nil)
 			return
 		}
@@ -414,6 +419,9 @@ func (s *Server) invalidateSettingCaches(key string) {
 		s.Auth.InvalidatePolicy()
 	case "general":
 		s.Store.InvalidateLocation()
+	case "oidc":
+		// A changed issuer must be discovered afresh before the next token.
+		s.Auth.InvalidateMCPProviders()
 	case "analytics":
 		s.invalidateAnalyticsConfig()
 	}
