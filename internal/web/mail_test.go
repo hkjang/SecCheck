@@ -137,6 +137,46 @@ func TestMailSettingsKeepThePasswordAndRecordTheTestSend(t *testing.T) {
 	}
 }
 
+// The test button sends where the screen says. The address box starts as
+// the administrator's own, but the bootstrap administrator often has none,
+// and the relay that accepts only one domain is found by naming an address
+// in it -- so the address in the body wins, and without either the answer
+// is a validation error rather than a delivery attempt to nobody.
+func TestTheTestMailGoesToTheAddressTheScreenNames(t *testing.T) {
+	h := newHarness(t)
+	admin := h.login(adminOf(h))
+	if res := admin.do(http.MethodPatch, "/api/v1/me", map[string]string{"display_name": "관리자", "email": "", "department": ""}); res.status != http.StatusOK {
+		t.Fatalf("clearing the profile address: %d %s", res.status, res.body)
+	}
+	if res := admin.do(http.MethodPut, "/api/v1/admin/settings/mail", map[string]any{
+		"enabled": true, "smtp_host": "127.0.0.1", "smtp_port": 1, "security": "none", "from_address": "seccheck@example.test", "timeout_seconds": 1,
+	}); res.status != http.StatusOK {
+		t.Fatalf("save: %d %s", res.status, res.body)
+	}
+
+	// No address anywhere: refused before the relay is asked, and nothing
+	// is on record.
+	if res := admin.do(http.MethodPost, "/api/v1/admin/settings/mail/test", map[string]string{"recipient": ""}); res.status != http.StatusUnprocessableEntity || res.errorCode() != "VALIDATION_FAILED" {
+		t.Fatalf("a test send with no address at all: %d %s", res.status, res.body)
+	}
+	// The address from the screen: the relay is asked (and, being dead,
+	// says no), and the record names that address.
+	res := admin.do(http.MethodPost, "/api/v1/admin/settings/mail/test", map[string]string{"recipient": "ops@example.test"})
+	if res.status != http.StatusBadGateway || res.errorCode() != "SMTP_FAILED" {
+		t.Fatalf("a test send to a named address against a dead relay: %d %s", res.status, res.body)
+	}
+	record := admin.do(http.MethodGet, "/api/v1/admin/mail/deliveries", nil)
+	var page struct {
+		Items []struct{ Event, Recipient, Status string }
+	}
+	if err := json.Unmarshal([]byte(record.body), &page); err != nil {
+		t.Fatalf("deliveries: %v: %s", err, record.body)
+	}
+	if len(page.Items) != 1 || page.Items[0].Event != "TEST" || page.Items[0].Recipient != "ops@example.test" || page.Items[0].Status != "FAILED" {
+		t.Errorf("the test send is recorded as %+v", page.Items)
+	}
+}
+
 // An installation that already sends mail keeps sending it: what the old
 // notification row and general.base_url held is carried into the new row.
 func TestTheOldNotificationRowIsCarriedIntoTheMailRow(t *testing.T) {
