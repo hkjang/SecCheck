@@ -70,7 +70,9 @@ type MCPOAuthConfig struct {
 	// Scopes are what a valid token may do, in this service's vocabulary
 	// (read, read:write). A token does not carry that vocabulary unless
 	// somebody teaches Keycloak it, so the administrator states it once.
-	Scopes        []string
+	Scopes []string
+	// UsernameClaim is the web sign-in's, as stored -- blank included -- and
+	// is read through the same usernameFromClaims the web sign-in uses.
 	UsernameClaim string
 	// Reason says why Enabled is false although the switch is on, for the log.
 	Reason string
@@ -100,10 +102,7 @@ func (a *Service) MCPOAuthConfig(ctx context.Context) MCPOAuthConfig {
 		Resource:      MCPResource(raw.OAuthResource, mailCfg.BaseURL),
 		Audiences:     SplitList(raw.OAuthAudience),
 		Scopes:        SplitList(raw.OAuthScopes),
-		UsernameClaim: strings.TrimSpace(oidcCfg.UsernameClaim),
-	}
-	if cfg.UsernameClaim == "" {
-		cfg.UsernameClaim = "preferred_username"
+		UsernameClaim: oidcCfg.UsernameClaim,
 	}
 	if len(cfg.Scopes) == 0 {
 		cfg.Scopes = []string{"read"}
@@ -249,15 +248,20 @@ var ErrMCPOAuthOff = errors.New("invalid API key")
 // MCP client and the administrator reading the log; the audience refusal in
 // particular names what the token carried and what to put where, because
 // that one message is how an operator finishes the Keycloak side.
-func (a *Service) authenticateMCPToken(ctx context.Context, token string) (Session, error) {
+//
+// Every refusal is written to the log under the request id the response
+// carries, so that an administrator handed "my token was refused" and an
+// X-Request-ID finds the reason without the token. What is logged is what
+// the token said about itself -- sub, aud, azp -- never the token.
+func (a *Service) authenticateMCPToken(ctx context.Context, requestID, token string) (Session, error) {
 	cfg := a.MCPOAuthConfig(ctx)
 	if !cfg.Enabled {
-		a.Store.Log(ctx, "INFO", "", "mcp_oauth", "sso token refused: feature off", map[string]any{"reason": cfg.Reason})
+		a.Store.Log(ctx, "INFO", requestID, "mcp_oauth", "sso token refused: feature off", map[string]any{"reason": cfg.Reason})
 		return Session{}, ErrMCPOAuthOff
 	}
 	provider, err := a.mcpProvider(ctx, cfg.Issuer)
 	if err != nil {
-		a.Store.Log(ctx, "WARN", "", "mcp_oauth", "keycloak discovery failed", map[string]any{"issuer": cfg.Issuer, "error": err.Error()})
+		a.Store.Log(ctx, "WARN", requestID, "mcp_oauth", "keycloak discovery failed", map[string]any{"issuer": cfg.Issuer, "error": err.Error()})
 		return Session{}, errors.New("Keycloak 발급자 정보를 읽지 못해 SSO 토큰을 확인할 수 없습니다. 잠시 후 다시 시도하거나 관리자에게 알리세요.")
 	}
 	// Signature, issuer and expiry, with only asymmetric algorithms accepted:
@@ -267,54 +271,61 @@ func (a *Service) authenticateMCPToken(ctx context.Context, token string) (Sessi
 	verified, err := provider.Verifier(&oidc.Config{SkipClientIDCheck: true,
 		SupportedSigningAlgs: []string{oidc.RS256, oidc.RS384, oidc.RS512, oidc.ES256, oidc.ES384, oidc.ES512, oidc.PS256, oidc.PS384, oidc.PS512}}).Verify(ctx, token)
 	if err != nil {
-		a.Store.Log(ctx, "INFO", "", "mcp_oauth", "sso token refused: verification", map[string]any{"error": err.Error()})
+		a.Store.Log(ctx, "INFO", requestID, "mcp_oauth", "sso token refused: verification", map[string]any{"error": err.Error()})
 		return Session{}, errors.New("SSO 액세스 토큰이 유효하지 않습니다(서명·발급자·만료). 클라이언트에서 다시 로그인하세요.")
 	}
 	var claims mcpAccessClaims
+	// refuse writes the reason down beside what the token said about itself,
+	// then hands the client its message. From here on the signature is
+	// good, so the token's own claims are worth naming.
+	refuse := func(why, message string, extra map[string]any) (Session, error) {
+		fields := map[string]any{"sub": verified.Subject, "aud": verified.Audience, "azp": claims.ClientID}
+		for k, v := range extra {
+			fields[k] = v
+		}
+		a.Store.Log(ctx, "INFO", requestID, "mcp_oauth", "sso token refused: "+why, fields)
+		return Session{}, errors.New(message)
+	}
 	if err := verified.Claims(&claims); err != nil {
-		return Session{}, errors.New("SSO 토큰의 내용을 읽을 수 없습니다.")
+		return refuse("claims", "SSO 토큰의 내용을 읽을 수 없습니다.", map[string]any{"error": err.Error()})
 	}
 	// An ID token proves a sign-in happened; it is not an API credential and
 	// a client that sends one has the wrong token in hand.
 	if strings.EqualFold(claims.Type, "ID") {
-		return Session{}, errors.New("ID 토큰은 MCP 자격이 아닙니다. 액세스 토큰을 보내세요.")
+		return refuse("id_token", "ID 토큰은 MCP 자격이 아닙니다. 액세스 토큰을 보내세요.", map[string]any{"typ": claims.Type})
 	}
 	if claims.NotBefore > 0 && time.Now().Unix() < claims.NotBefore {
-		return Session{}, errors.New("SSO 액세스 토큰이 아직 유효하지 않습니다(nbf).")
+		return refuse("nbf", "SSO 액세스 토큰이 아직 유효하지 않습니다(nbf).", map[string]any{"nbf": claims.NotBefore, "now": time.Now().Unix()})
 	}
 	// A token bound to a proof of possession (DPoP, mTLS) this server cannot
 	// check would be accepted as a plain bearer, which is the thing the
 	// binding exists to prevent.
 	if claims.Confirmation != nil {
-		return Session{}, errors.New("소지자 증명(cnf)이 묶인 토큰은 받지 않습니다.")
+		return refuse("cnf", "소지자 증명(cnf)이 묶인 토큰은 받지 않습니다.", map[string]any{"cnf": claims.Confirmation})
 	}
 	if strings.TrimSpace(verified.Subject) == "" {
-		return Session{}, errors.New("SSO 토큰에 sub 가 없습니다.")
+		return refuse("no_sub", "SSO 토큰에 sub 가 없습니다.", nil)
 	}
 	// Whom the token was minted for. A real Keycloak 26 puts `account` in
 	// aud and the client in azp -- the client id is not in aud whatever an
 	// ID token does -- so the administrator's list applies to both, and the
 	// plain path needs no mapper: put the MCP client's id in the list.
 	if !audienceAccepted(cfg, verified.Audience, claims.ClientID) {
-		a.Store.Log(ctx, "INFO", "", "mcp_oauth", "sso token refused: audience", map[string]any{"aud": verified.Audience, "azp": claims.ClientID, "resource": cfg.Resource, "accepted": cfg.Audiences})
+		a.Store.Log(ctx, "INFO", requestID, "mcp_oauth", "sso token refused: audience", map[string]any{"sub": verified.Subject, "aud": verified.Audience, "azp": claims.ClientID, "resource": cfg.Resource, "accepted": cfg.Audiences})
 		return Session{}, fmt.Errorf("SSO 토큰이 이 서버를 위해 발급된 것이 아닙니다(aud %v, azp %q). 관리자가 허용 대상에 %q 를 더하거나, Keycloak 클라이언트의 Audience 매퍼에 %q 를 넣어야 합니다.",
 			verified.Audience, claims.ClientID, claims.ClientID, cfg.Resource)
 	}
 	// The same lookup the web sign-in uses, without the provisioning half:
 	// the account the web sign-in made for this claim, active, and nothing
 	// else. A local account with the same username is not the same person.
-	username := ""
-	var all map[string]any
-	if verified.Claims(&all) == nil {
-		username, _ = all[cfg.UsernameClaim].(string)
-	}
-	if username == "" {
-		username = verified.Subject
-	}
+	// The claim is read the way the web sign-in reads it, so the account the
+	// web sign-in made is the one found here whatever username_claim holds.
+	all := map[string]any{}
+	_ = verified.Claims(&all)
+	username := usernameFromClaims(all, cfg.UsernameClaim)
 	u, err := a.Store.GetUserByUsername(ctx, username)
 	if errors.Is(err, pgx.ErrNoRows) || (err == nil && (u.AuthSource != "oidc" || !u.Active)) {
-		a.Store.Log(ctx, "INFO", "", "mcp_oauth", "sso token refused: no account", map[string]any{"username": username, "sub": verified.Subject})
-		return Session{}, errors.New("이 SSO 계정은 SecCheck 에 등록되지 않았거나 비활성입니다. 먼저 웹으로 한 번 로그인하세요.")
+		return refuse("no account", "이 SSO 계정은 SecCheck 에 등록되지 않았거나 비활성입니다. 먼저 웹으로 한 번 로그인하세요.", map[string]any{"username": username})
 	}
 	if err != nil {
 		return Session{}, err

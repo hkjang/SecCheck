@@ -9,6 +9,7 @@ import (
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/json"
+	"fmt"
 	"math/big"
 	"net/http"
 	"net/http/httptest"
@@ -70,7 +71,9 @@ func b64(v any) string {
 
 // sign produces a JWT with the given header and claims. alg RS256 uses the
 // realm key; HS256 signs with the realm's public modulus as the secret, which
-// is the classic confusion attack a verifier must not fall for.
+// is the classic confusion attack a verifier must not fall for; none carries
+// an arbitrary third part, because an empty one is not even the shape of a
+// token and never reaches the verifier.
 func (idp *signingIDP) sign(t *testing.T, header, claims map[string]any) string {
 	t.Helper()
 	if header["alg"] == nil {
@@ -93,6 +96,8 @@ func (idp *signingIDP) sign(t *testing.T, header, claims map[string]any) string 
 		mac := hmac.New(sha256.New, idp.key.Public().(*rsa.PublicKey).N.Bytes())
 		mac.Write([]byte(signingInput))
 		signature = mac.Sum(nil)
+	case "none":
+		signature = []byte("not-a-signature")
 	default:
 		t.Fatalf("unsupported alg %v", header["alg"])
 	}
@@ -139,6 +144,32 @@ func restWith(t *testing.T, h *harness, bearer string) response {
 	}
 	req.Header.Set("Authorization", "Bearer "+bearer)
 	return (&client{h: h}).send(req)
+}
+
+// refusalLogged is what an administrator does with "my token was refused":
+// takes the X-Request-ID off the response and looks for the mcp_oauth entry
+// under it. It returns the latest mcp_oauth entry, holds its request id to
+// the response's, and fails when the refusal left nothing behind.
+func refusalLogged(t *testing.T, h *harness, res response) (message string, fields map[string]any) {
+	t.Helper()
+	requestID := res.raw.Header.Get("X-Request-ID")
+	if requestID == "" {
+		t.Fatal("the response carries no X-Request-ID")
+	}
+	var logged string
+	var raw []byte
+	err := h.db.Pool.QueryRow(context.Background(), `SELECT message, request_id, fields FROM application_logs
+		WHERE component='mcp_oauth' ORDER BY id DESC LIMIT 1`).Scan(&message, &logged, &raw)
+	if err != nil {
+		t.Fatalf("the refusal left no mcp_oauth log entry: %v", err)
+	}
+	if logged != requestID {
+		t.Fatalf("the latest mcp_oauth entry (%q) is under request %q, not this response's %q", message, logged, requestID)
+	}
+	if err := json.Unmarshal(raw, &fields); err != nil {
+		t.Fatalf("the log entry's fields are not an object: %v", err)
+	}
+	return message, fields
 }
 
 func metadata(t *testing.T, h *harness, path string) *http.Response {
@@ -209,6 +240,12 @@ func TestAFreshInstallationTakesNoTokensAndSaysNothingNew(t *testing.T) {
 	token := mcpWith(t, h, idp.accessToken(t, publicAddress+"/mcp", nil))
 	if token.status != http.StatusUnauthorized || token.body != wrongKey.body {
 		t.Errorf("a token was refused differently from a wrong key:\n%d %s\n%d %s", token.status, token.body, wrongKey.status, wrongKey.body)
+	}
+	// The client is told nothing, so the log is the only place the reason
+	// lives: the entry under this response's request id says the feature is
+	// off and why.
+	if message, fields := refusalLogged(t, h, token); message != "sso token refused: feature off" || !strings.Contains(fmt.Sprint(fields["reason"]), "mcp.oauth.enabled") {
+		t.Errorf("the feature-off refusal is logged as %q %v", message, fields)
 	}
 	// And the key itself works as it always has.
 	if res := mcpWith(t, h, h.apiKey(admin)); res.status != http.StatusOK || !strings.Contains(res.body, "seccheck.dashboard") {
@@ -408,27 +445,87 @@ func TestTokensThatAreNotThisServersAreRefused(t *testing.T) {
 	}
 	h.ssoUser("ssomember", true)
 	resource := publicAddress + "/mcp"
+	unsigned := map[string]any{"iss": idp.server.URL, "aud": resource, "sub": "subject-mcp", "exp": time.Now().Add(time.Hour).Unix(), "typ": "Bearer", "preferred_username": "ssomember"}
 
-	cases := map[string]string{
-		"expired":        idp.accessToken(t, resource, map[string]any{"exp": time.Now().Add(-time.Minute).Unix()}),
-		"not yet valid":  idp.accessToken(t, resource, map[string]any{"nbf": time.Now().Add(time.Hour).Unix()}),
-		"other issuer":   idp.accessToken(t, resource, map[string]any{"iss": stranger.server.URL}),
-		"other key":      stranger.accessToken(t, resource, map[string]any{"iss": idp.server.URL}),
-		"ID token":       idp.accessToken(t, resource, map[string]any{"typ": "ID"}),
-		"bound token":    idp.accessToken(t, resource, map[string]any{"cnf": map[string]any{"jkt": "thumbprint"}}),
-		"no subject":     idp.accessToken(t, resource, map[string]any{"sub": ""}),
-		"no audience":    idp.accessToken(t, "account", nil),
-		"HS256":          idp.sign(t, map[string]any{"alg": "HS256", "typ": "JWT"}, map[string]any{"iss": idp.server.URL, "aud": resource, "sub": "subject-mcp", "exp": time.Now().Add(time.Hour).Unix(), "typ": "Bearer", "preferred_username": "ssomember"}),
-		"unknown person": idp.accessToken(t, resource, map[string]any{"preferred_username": "nobody", "sub": "subject-nobody"}),
+	// Each refusal is a 401 to the client and one mcp_oauth entry under the
+	// response's request id whose message or error field names the cause --
+	// which of signature, issuer, expiry, nbf and so on it was -- so that an
+	// administrator with the request id can tell them apart.
+	cases := []struct{ name, token, cause string }{
+		{"expired", idp.accessToken(t, resource, map[string]any{"exp": time.Now().Add(-time.Minute).Unix()}), "expired"},
+		{"not yet valid", idp.accessToken(t, resource, map[string]any{"nbf": time.Now().Add(time.Hour).Unix()}), "nbf"},
+		{"other issuer", idp.accessToken(t, resource, map[string]any{"iss": stranger.server.URL}), "different provider"},
+		{"other key", stranger.accessToken(t, resource, map[string]any{"iss": idp.server.URL}), "signature"},
+		{"ID token", idp.accessToken(t, resource, map[string]any{"typ": "ID"}), "id_token"},
+		{"bound token", idp.accessToken(t, resource, map[string]any{"cnf": map[string]any{"jkt": "thumbprint"}}), "cnf"},
+		{"no subject", idp.accessToken(t, resource, map[string]any{"sub": ""}), "no_sub"},
+		{"no audience", idp.accessToken(t, "account", nil), "audience"},
+		{"HS256", idp.sign(t, map[string]any{"alg": "HS256", "typ": "JWT"}, unsigned), `"HS256"`},
+		{"alg none", idp.sign(t, map[string]any{"alg": "none", "typ": "JWT"}, unsigned), `"none"`},
+		{"unknown person", idp.accessToken(t, resource, map[string]any{"preferred_username": "nobody", "sub": "subject-nobody"}), "no account"},
 	}
-	for name, token := range cases {
-		if res := mcpWith(t, h, token); res.status != http.StatusUnauthorized {
-			t.Errorf("%s token opened MCP: %d %s", name, res.status, res.body)
+	for _, c := range cases {
+		res := mcpWith(t, h, c.token)
+		if res.status != http.StatusUnauthorized {
+			t.Errorf("%s token opened MCP: %d %s", c.name, res.status, res.body)
+			continue
 		}
+		message, fields := refusalLogged(t, h, res)
+		if !strings.HasPrefix(message, "sso token refused: ") {
+			t.Errorf("%s token: the log entry is not a refusal: %q", c.name, message)
+		}
+		if detail, _ := fields["error"].(string); !strings.Contains(message, c.cause) && !strings.Contains(detail, c.cause) {
+			t.Errorf("%s token: neither the message %q nor the error %q names the cause %q", c.name, message, detail, c.cause)
+		}
+		if strings.Contains(message, c.token) || strings.Contains(fmt.Sprint(fields), c.token) {
+			t.Errorf("%s token: the log entry holds the token itself", c.name)
+		}
+	}
+	// alg=none with the signature part left empty is not even the shape of a
+	// token, so it never reaches the verifier: it is refused as a wrong key.
+	unsignedEmpty := strings.TrimSuffix(idp.sign(t, map[string]any{"alg": "none", "typ": "JWT"}, unsigned), "."+base64.RawURLEncoding.EncodeToString([]byte("not-a-signature"))) + "."
+	if res, wrongKey := mcpWith(t, h, unsignedEmpty), mcpWith(t, h, "sck_wrong"); res.status != http.StatusUnauthorized || res.body != wrongKey.body {
+		t.Errorf("alg=none with an empty signature: %d %s", res.status, res.body)
 	}
 	// The sanity check on the harness: the same shape with nothing wrong opens.
 	if res := mcpWith(t, h, idp.accessToken(t, resource, nil)); res.status != http.StatusOK {
 		t.Fatalf("the reference token was refused, so the refusals above prove nothing: %d %s", res.status, res.body)
+	}
+}
+
+// guards: authenticateMCPToken, usernameFromClaims
+func TestATokenFindsTheAccountTheWebSignInMadeWhateverTheClaimSettingHolds(t *testing.T) {
+	h := newHarness(t)
+	idp := newSigningIDP(t)
+	admin := h.login(adminOf(h))
+	h.configureSSO(idp.server.URL, false)
+	h.serviceAddress(publicAddress)
+	if res := admin.do(http.MethodPut, "/api/v1/admin/settings/mcp", map[string]any{"oauth_enabled": true, "oauth_resource": "", "oauth_audience": "", "oauth_scopes": "read"}); res.status != http.StatusOK {
+		t.Fatalf("enable: %d %s", res.status, res.body)
+	}
+	resource := publicAddress + "/mcp"
+	// With username_claim left blank the web sign-in names the account after
+	// sub. The token has to find that account, not one named after
+	// preferred_username that the web sign-in never made.
+	if _, err := h.db.Pool.Exec(context.Background(), `UPDATE settings SET value_json = value_json || '{"username_claim":""}'::jsonb WHERE key='oidc'`); err != nil {
+		t.Fatal(err)
+	}
+	h.ssoUser("subject-mcp", true)
+	if res := mcpWith(t, h, idp.accessToken(t, resource, nil)); res.status != http.StatusOK || !strings.Contains(res.body, "seccheck.dashboard") {
+		t.Errorf("with username_claim blank the account named after sub was not opened: %d %s", res.status, res.body)
+	}
+	// And the account preferred_username would have named is not.
+	h.ssoUser("ssomember", true)
+	if res := mcpWith(t, h, idp.accessToken(t, resource, map[string]any{"sub": "subject-other"})); res.status != http.StatusUnauthorized {
+		t.Errorf("with username_claim blank the token was matched by preferred_username: %d %s", res.status, res.body)
+	}
+	// A claim named in the setting but missing from the token also falls
+	// back to sub, the way the web sign-in does.
+	if _, err := h.db.Pool.Exec(context.Background(), `UPDATE settings SET value_json = value_json || '{"username_claim":"employee_id"}'::jsonb WHERE key='oidc'`); err != nil {
+		t.Fatal(err)
+	}
+	if res := mcpWith(t, h, idp.accessToken(t, resource, nil)); res.status != http.StatusOK {
+		t.Errorf("with a claim the token lacks, sub was not used: %d %s", res.status, res.body)
 	}
 }
 

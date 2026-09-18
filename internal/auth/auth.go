@@ -382,7 +382,9 @@ func (a *Service) Authenticate(r *http.Request) (Session, error) {
 		// way a wrong key is, and an installation without SSO says nothing
 		// new.
 		if !strings.HasPrefix(token, APIKeyPrefix) && LooksLikeJWT(token) && r.URL.Path == MCPPath {
-			return a.authenticateMCPToken(r.Context(), token)
+			// The middleware has stamped the request by now; every refusal
+			// logged below is found again by the same id the response carries.
+			return a.authenticateMCPToken(r.Context(), r.Header.Get("X-Request-ID"), token)
 		}
 		return a.authenticateAPIKey(r.Context(), token)
 	}
@@ -619,10 +621,7 @@ func (a *Service) CompleteOIDC(ctx context.Context, state, code, ip, userAgent s
 	if nonce == "" || subtle.ConstantTimeCompare([]byte(nonce), []byte(expectedNonce)) != 1 {
 		return store.User{}, "", "", time.Time{}, "", errors.New("OIDC nonce validation failed")
 	}
-	username, _ := claims[cfg.UsernameClaim].(string)
-	if username == "" {
-		username, _ = claims["sub"].(string)
-	}
+	username := usernameFromClaims(claims, cfg.UsernameClaim)
 	if username == "" {
 		return store.User{}, "", "", time.Time{}, "", errors.New("OIDC username claim missing")
 	}
@@ -680,6 +679,20 @@ func (a *Service) CompleteOIDC(ctx context.Context, state, code, ip, userAgent s
 	}
 	token, csrf, expires, err := a.NewSession(ctx, u.ID, ip, userAgent)
 	return u, token, csrf, expires, returnTo, err
+}
+
+// usernameFromClaims is the one reading of username_claim: the configured
+// claim, or sub when that claim is absent, empty, or not configured at all.
+// The web sign-in names an account by it and the MCP token finds the same
+// account by it, so the two must never read the setting differently -- an
+// installation with the claim left blank would otherwise make an account
+// under sub on the web and look for one under preferred_username at /mcp.
+func usernameFromClaims(claims map[string]any, claim string) string {
+	username, _ := claims[claim].(string)
+	if username == "" {
+		username, _ = claims["sub"].(string)
+	}
+	return username
 }
 
 // rolesFromGroups reads the group claim and returns the roles it maps to.
