@@ -7,6 +7,9 @@ import { useAuth } from '../main'
 type Integration = {
   api_version: string; openapi: string; mcp_endpoint: string; mcp_version: string; mcp_compatibility: string[]
   tools: { name: string; title: string; description: string; read_only: boolean }[]
+  // Set when an administrator turned MCP SSO on: the addresses to hand a
+  // client that will sign in at Keycloak instead of carrying a key.
+  mcp_oauth: { enabled: boolean; resource?: string; metadata_url?: string; authorization_server?: string; scopes?: string[] }
 }
 
 export default function Integrations() {
@@ -34,6 +37,12 @@ export default function Integrations() {
       <section className="card"><div className="card-header"><h2>Model Context Protocol</h2><Badge tone="green">{info?.mcp_version || '—'}</Badge></div><div className="card-body">
         <p className="subtle" data-sx="sx-023">최신 Stateless Streamable HTTP를 지원하며, 구형 {(info?.mcp_compatibility || []).join(', ') || '이전'} initialize 클라이언트도 호환합니다. 개인 API 키를 Authorization 헤더에 설정하세요.</p>
         <div className="field"><label>Endpoint</label><div data-sx="sx-004"><input className="input" readOnly value={endpoint} /><Button aria-label="MCP 엔드포인트 주소 복사" onClick={() => copy(endpoint)}><Copy size={14} /></Button></div></div>
+        {info?.mcp_oauth?.enabled && <div className="guide-block"><strong>키 없이 SSO 로 연결</strong>
+          <p className="subtle">이 설치는 Keycloak 액세스 토큰도 받습니다. MCP 클라이언트(Claude, Cursor 등)에 아래 주소만 넣으면 클라이언트가 401 의 안내를 따라 스스로 Keycloak 로그인을 띄우고 토큰을 받아 옵니다. 웹으로 한 번 로그인한 계정이어야 하며, 범위는 {(info.mcp_oauth.scopes || []).join(' ') || 'read'} 입니다.</p>
+          <div className="field"><label>MCP 주소 (SSO)</label><div data-sx="sx-004"><input className="input" readOnly value={info.mcp_oauth.resource || ''} /><Button aria-label="SSO 용 MCP 주소 복사" onClick={() => copy(info.mcp_oauth.resource || '')}><Copy size={14} /></Button></div></div>
+          <div className="field"><label>메타데이터 주소</label><div data-sx="sx-004"><input className="input" readOnly value={info.mcp_oauth.metadata_url || ''} /><Button aria-label="메타데이터 주소 복사" onClick={() => copy(info.mcp_oauth.metadata_url || '')}><Copy size={14} /></Button></div></div>
+          <p className="subtle">인증 서버: <code>{info.mcp_oauth.authorization_server}</code></p>
+        </div>}
         <div data-sx="sx-029"><strong data-sx="sx-018">제공 도구 {info ? `(${info.tools.length})` : ''}</strong>
           {failed ? <LoadFailed error={failed} onRetry={load} /> : !info ? <Loading /> : <div className="table-wrap"><table><caption className="sr-only">제공 중인 MCP 도구</caption><tbody>{info.tools.map(tool => <tr key={tool.name}><td><code>{tool.name}</code>{tool.read_only && <Badge tone="green">읽기 전용</Badge>}<div className="subtle">{tool.description}</div></td></tr>)}</tbody></table></div>}
         </div>

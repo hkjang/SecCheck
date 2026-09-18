@@ -363,7 +363,7 @@ func (s *Server) listSettings(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) updateSetting(w http.ResponseWriter, r *http.Request) {
 	key := r.PathValue("key")
-	allowed := map[string]bool{"general": true, "workflow": true, "upload": true, "oidc": true, "mail": true, "security": true, "analytics": true}
+	allowed := map[string]bool{"general": true, "workflow": true, "upload": true, "oidc": true, "mail": true, "security": true, "analytics": true, auth.MCPOAuthSettingKey: true}
 	if !allowed[key] {
 		problem(w, 404, "NOT_FOUND", "지원하지 않는 설정입니다.", nil)
 		return
@@ -387,6 +387,20 @@ func (s *Server) updateSetting(w http.ResponseWriter, r *http.Request) {
 	if err := validateSetting(key, raw); err != "" {
 		problem(w, 422, "VALIDATION_FAILED", err, nil)
 		return
+	}
+	// The MCP SSO switch depends on two other rows: the issuer the web
+	// sign-in holds and the service address the mail tab holds. Refusing
+	// here is better than a switch that is on and silently does nothing.
+	if key == auth.MCPOAuthSettingKey {
+		oidcCfg, _ := s.Auth.OIDCConfig(r.Context())
+		var mailCfg struct {
+			BaseURL string `json:"base_url"`
+		}
+		_, _ = s.Store.Setting(r.Context(), "mail", &mailCfg)
+		if err := auth.ValidateMCPSettings(raw, oidcCfg, mailCfg.BaseURL); err != "" {
+			problem(w, 422, "VALIDATION_FAILED", err, nil)
+			return
+		}
 	}
 	b, _ := json.Marshal(raw)
 	encrypted := ""

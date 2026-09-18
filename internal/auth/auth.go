@@ -115,6 +115,9 @@ type Service struct {
 	policyAt     time.Time
 	policyLoaded bool
 	policy       SecurityPolicy
+
+	// providers caches Keycloak discovery for MCP token verification.
+	providers mcpProviders
 }
 
 type Session struct {
@@ -122,7 +125,10 @@ type Session struct {
 	User      store.User
 	ExpiresAt time.Time
 	APIKey    bool
-	Scopes    []string
+	// OAuth marks a session opened by a Keycloak access token at /mcp. It is
+	// also an APIKey session: the same machine-credential rules apply.
+	OAuth  bool
+	Scopes []string
 	// EnrollTOTP is set when policy requires this account to hold a one-time
 	// code but it has not enrolled yet. The HTTP layer then allows only the
 	// enrolment endpoints.
@@ -369,7 +375,18 @@ func (a *Service) NewSession(ctx context.Context, userID, ip, userAgent string) 
 
 func (a *Service) Authenticate(r *http.Request) (Session, error) {
 	if authz := r.Header.Get("Authorization"); strings.HasPrefix(strings.ToLower(authz), "bearer ") {
-		return a.authenticateAPIKey(r.Context(), strings.TrimSpace(authz[7:]))
+		token := strings.TrimSpace(authz[7:])
+		// One header, two kinds of credential. A key is a key wherever it
+		// is sent; a token is only ever a credential for /mcp, so on any
+		// other path it falls through to the key lookup and is refused the
+		// way a wrong key is, and an installation without SSO says nothing
+		// new.
+		if !strings.HasPrefix(token, APIKeyPrefix) && LooksLikeJWT(token) && r.URL.Path == MCPPath {
+			// The middleware has stamped the request by now; every refusal
+			// logged below is found again by the same id the response carries.
+			return a.authenticateMCPToken(r.Context(), r.Header.Get("X-Request-ID"), token)
+		}
+		return a.authenticateAPIKey(r.Context(), token)
 	}
 	c, err := r.Cookie(CookieName)
 	if err != nil {
@@ -604,10 +621,7 @@ func (a *Service) CompleteOIDC(ctx context.Context, state, code, ip, userAgent s
 	if nonce == "" || subtle.ConstantTimeCompare([]byte(nonce), []byte(expectedNonce)) != 1 {
 		return store.User{}, "", "", time.Time{}, "", errors.New("OIDC nonce validation failed")
 	}
-	username, _ := claims[cfg.UsernameClaim].(string)
-	if username == "" {
-		username, _ = claims["sub"].(string)
-	}
+	username := usernameFromClaims(claims, cfg.UsernameClaim)
 	if username == "" {
 		return store.User{}, "", "", time.Time{}, "", errors.New("OIDC username claim missing")
 	}
@@ -665,6 +679,20 @@ func (a *Service) CompleteOIDC(ctx context.Context, state, code, ip, userAgent s
 	}
 	token, csrf, expires, err := a.NewSession(ctx, u.ID, ip, userAgent)
 	return u, token, csrf, expires, returnTo, err
+}
+
+// usernameFromClaims is the one reading of username_claim: the configured
+// claim, or sub when that claim is absent, empty, or not configured at all.
+// The web sign-in names an account by it and the MCP token finds the same
+// account by it, so the two must never read the setting differently -- an
+// installation with the claim left blank would otherwise make an account
+// under sub on the web and look for one under preferred_username at /mcp.
+func usernameFromClaims(claims map[string]any, claim string) string {
+	username, _ := claims[claim].(string)
+	if username == "" {
+		username, _ = claims["sub"].(string)
+	}
+	return username
 }
 
 // rolesFromGroups reads the group claim and returns the roles it maps to.

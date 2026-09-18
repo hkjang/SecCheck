@@ -156,6 +156,7 @@ func (s *Server) integrationInfo(w http.ResponseWriter, r *http.Request) {
 		"mcp_endpoint":      "/mcp",
 		"mcp_version":       mcpVersion,
 		"mcp_compatibility": []string{"2025-11-25"},
+		"mcp_oauth":         s.mcpOAuthInfo(r),
 		"tools":             tools,
 	})
 }

@@ -88,7 +88,7 @@ func (c Config) Active(path string) bool {
 // interface, the health probes and the collector proxy. Their policy is
 // narrower than the pages', not wider.
 func IsNonPage(path string) bool {
-	if path == "/api" || strings.HasPrefix(path, "/api/") || path == "/mcp" || path == "/health" || path == "/ready" || path == "/metrics" {
+	if path == "/api" || strings.HasPrefix(path, "/api/") || path == "/mcp" || path == "/health" || path == "/ready" || path == "/metrics" || strings.HasPrefix(path, "/.well-known/") {
 		return true
 	}
 	return path == ProxyPath || strings.HasPrefix(path, ProxyPath+"/")
