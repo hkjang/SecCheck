@@ -280,6 +280,30 @@ ZIP 내보내기는 읽을 수 없는 증적을 만나도 나머지를 계속 �
 
 릴리즈 노트 첫 머리에 **아카이브의 SHA-256과 이미지 ID**가 실립니다. 폐쇄망으로 매체를 옮긴 뒤 `sha256sum`으로 대조하고, `docker load` 후 `docker image inspect`의 ID까지 확인하십시오. 서명 검증(attestation)은 GitHub 접근이 필요하므로 오프라인에서는 이 두 값이 확인 수단입니다.
 
+### govulncheck 가 `Fixed in: N/A` 로 막힐 때
+
+`security-ci`의 `Go vulnerability scan` 단계(`govulncheck ./...`)와 `scripts/precheck.sh`의 `Go 취약점 스캔` 단계는 같은 명령이며, 판정은 Go 취약점 데이터베이스(vuln.go.dev)의 보고서가 내립니다. 출력에 `Fixed in: N/A`가 보이면 먼저 보고서 원문을 확인하십시오.
+
+```
+curl -s https://vuln.go.dev/ID/GO-XXXX-NNNN.json | jq '.modified, [.affected[] | {module: .package.name, ranges: .ranges}]'
+```
+
+`ranges` 의 `events` 에 `fixed` 가 없고 `introduced: "0"` 만 있으면 **그 모듈의 모든 버전이 영향 범위**라는 뜻입니다. 이때는 어떤 버전으로 올리거나 내려도, upstream 의 수정 커밋으로 핀해도 게이트가 초록이 되지 않습니다 — 코드의 문제가 아니라 데이터베이스 보고서의 결함이며, 보고서에 `fixed` 가 기록되는 순간 이미 핀한 버전이 그 값 이상이면 그대로 통과합니다.
+
+하지 말 것 — 다음은 모두 게이트를 속이는 것이며 반려 사유입니다.
+
+- 워크플로에서 단계를 빼거나 `continue-on-error`·`|| true` 를 붙이는 것
+- 특정 ID 를 무시하도록 스캔 명령을 감싸는 것
+- `go.mod` 에 `replace` 로 모듈 경로를 포크로 바꿔 스캐너가 다른 모듈로 보게 하는 것
+
+할 것
+
+1. 보고서가 가리키는 취약 경로(`Example traces found`)가 우리 코드에서 실제로 닿는지 확인하고, 닿으면 upstream 수정 커밋(태그가 없으면 pseudo-version)으로 핀한 뒤 그 경로를 통과하는 회귀 테스트를 둡니다. 게이트와 무관하게 실제 결함은 막아야 합니다.
+2. golang/vulndb 의 해당 보고서 이슈에 수정 버전의 근거(upstream advisory·수정 커밋)를 달거나, `data/reports/GO-XXXX-NNNN.yaml` 에 `fixed:` 를 더하는 PR 을 냅니다.
+3. 그때까지 릴리즈는 보류합니다. security-ci 가 실패한 커밋은 릴리즈 워크플로의 2번 게이트가 어차피 막습니다.
+
+사례: GO-2026-6452(excelize 의 음수 shared-string 인덱스 panic)는 upstream 이 v2.11.0 과 그 뒤 커밋 f98df08 에서 고쳤는데도 보고서에 `fixed` 가 없어 2026-09-19 의 PR 이 어떤 버전으로도 통과하지 못했습니다. 코드는 upstream 수정 커밋으로 핀하고 회귀 테스트를 두었으며, 게이트는 데이터베이스 수정(golang/vulndb#6510 등)을 기다립니다.
+
 ## 배포 자체 점검 (selftest)
 
 빌드된 image가 실제로 동작하는지 한 번에 확인합니다. 업그레이드 절차 2~3번을 사람이 눈으로 훑는 대신 종료 코드로 답하게 만드는 것이 목적입니다.

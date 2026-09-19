@@ -104,6 +104,19 @@ while read -r name pdf sources; do
   fi
 done < <(bash scripts/build_docs_pdf.sh --list)
 
+step "Go 취약점 스캔"
+# Same command as the pipeline's "Go vulnerability scan". The verdict is the
+# vulnerability database's, not ours: a report with no fixed version puts
+# every release of the module in range, and then no go.mod change makes this
+# green (GO-2026-6452 held a PR for a day that way). When it fails here, read
+# the "Fixed in:" line before touching anything -- docs/operations.md,
+# "govulncheck 가 Fixed in: N/A 로 막힐 때".
+if command -v govulncheck >/dev/null 2>&1; then
+  govulncheck ./... || fail "govulncheck 가 걸린 항목이 있습니다. CI 의 'Go vulnerability scan' 도 같은 이유로 멈춥니다."
+else
+  printf '건너뜀: govulncheck 가 없어 취약점 스캔을 돌릴 수 없습니다 (go install golang.org/x/vuln/cmd/govulncheck@latest). CI에서는 반드시 돌아갑니다.\n'
+fi
+
 step "비밀정보 스캔"
 # The scanner and its digest are read from the workflow: a second copy of the
 # pin here would drift, and then this script would be checking something the
