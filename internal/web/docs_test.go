@@ -788,21 +788,30 @@ func TestAdminGuideEnvVarTableIsEverythingTheCodeReads(t *testing.T) {
 // fallback -- so the guide is checked against both, in both directions. It had
 // filed the deleted-evidence retention under the wrong tab when this was
 // written.
-func TestAdminGuideSettingsTablesMatchTheSeedsAndTheScreen(t *testing.T) {
-	// Seeds: the first value a migration writes for a key is the default,
-	// because every later write is `'{...}'::jsonb || value_json`, which only
-	// fills keys that are still missing.
+// seededSettings reads the migrations and returns, per settings row, the keys
+// a fresh install starts with and their defaults, plus the rows a later
+// migration deleted outright.
+//
+// The first value a migration writes for a key is the default, because every
+// later write is `'{...}'::jsonb || value_json`, which only fills keys that
+// are still missing.
+func seededSettings(t *testing.T) (seeded map[string]map[string]any, retired map[string]bool) {
+	t.Helper()
 	files, err := filepath.Glob(filepath.Join("..", "..", "internal", "store", "migrations", "*.sql"))
 	if err != nil || len(files) == 0 {
 		t.Fatalf("no migrations found: %v", err)
 	}
 	sort.Strings(files)
-	seeded := map[string]map[string]any{}
+	seeded = map[string]map[string]any{}
+	retired = map[string]bool{}
 	insert := regexp.MustCompile(`\('(\w+)',\s*'(\{[^']*\})'::jsonb`)
 	fill := regexp.MustCompile(`UPDATE settings SET value_json = '(\{[^']*\})'::jsonb \|\| value_json WHERE key\s*=\s*'(\w+)'`)
 	// A key a later migration takes away (`value_json - 'key'`) is no longer
 	// the tab's, however it was seeded before.
 	strip := regexp.MustCompile(`UPDATE settings SET value_json = value_json - '(\w+)' WHERE key\s*=\s*'(\w+)'`)
+	// A row a later migration deletes (036 retired `notification` once its
+	// values had moved to `mail`) is not seeded at all, however it started.
+	drop := regexp.MustCompile(`DELETE FROM settings WHERE key\s*=\s*'(\w+)'`)
 	remember := func(tab, literal string) {
 		var values map[string]any
 		if err := json.Unmarshal([]byte(literal), &values); err != nil {
@@ -811,6 +820,7 @@ func TestAdminGuideSettingsTablesMatchTheSeedsAndTheScreen(t *testing.T) {
 		if seeded[tab] == nil {
 			seeded[tab] = map[string]any{}
 		}
+		delete(retired, tab)
 		for key, value := range values {
 			if _, done := seeded[tab][key]; !done {
 				seeded[tab][key] = value
@@ -831,10 +841,19 @@ func TestAdminGuideSettingsTablesMatchTheSeedsAndTheScreen(t *testing.T) {
 		for _, m := range strip.FindAllStringSubmatch(string(body), -1) {
 			delete(seeded[m[2]], m[1])
 		}
+		for _, m := range drop.FindAllStringSubmatch(string(body), -1) {
+			delete(seeded, m[1])
+			retired[m[1]] = true
+		}
 	}
 	if len(seeded) < 5 {
 		t.Fatalf("only %d settings tabs are seeded; the migration shape must have changed", len(seeded))
 	}
+	return seeded, retired
+}
+
+func TestAdminGuideSettingsTablesMatchTheSeedsAndTheScreen(t *testing.T) {
+	seeded, _ := seededSettings(t)
 
 	// The screen: which keys each tab edits, and what it shows when the value
 	// has never been saved.
@@ -956,6 +975,62 @@ func TestAdminGuideSettingsTablesMatchTheSeedsAndTheScreen(t *testing.T) {
 			if !documented[tab][key] {
 				t.Errorf("the %s tab edits %s and the guide never lists it", tab, key)
 			}
+		}
+	}
+}
+
+// Outside the 3-2 tables the previous test checks, the guides cite a setting
+// in prose as `<row>.<key>` (`mail.enabled`, `upload.deleted_evidence_retention_days`).
+// When a migration moves or renames a key, those citations keep pointing at
+// the old place: operations.md still said `notification.digest_hour` a
+// release after 036 had carried it into `mail`. Every cited row.key has to
+// exist in the seeds. A token whose row is neither a seeded nor a retired
+// settings row (`users.locked_until`, `compose.yaml`) is a table column or a
+// file name, not a setting, and is left alone.
+func TestEverySettingKeyTheGuidesCiteExistsInTheSeed(t *testing.T) {
+	seeded, retired := seededSettings(t)
+	// Keys the guides cite on purpose after a migration took them away, each
+	// with the reason. An entry no guide uses any more has to go, so the list
+	// cannot quietly excuse a future leftover.
+	allowed := map[string]string{
+		// 036 moved it into the mail row; the upgrade table and the migration
+		// list describe that move by its old name.
+		"general.base_url": "operations.md tells how 036 carried it into `mail`",
+	}
+	used := map[string]bool{}
+	token := regexp.MustCompile("`([a-z]+)\\.([a-z_]+)`")
+	checked := 0
+	for _, rel := range []string{"docs/ADMIN_GUIDE.md", "docs/operations.md", "docs/USER_GUIDE.md"} {
+		for i, line := range strings.Split(repoFile(t, rel), "\n") {
+			for _, m := range token.FindAllStringSubmatch(line, -1) {
+				row, key := m[1], m[2]
+				full := row + "." + key
+				if _, ok := allowed[full]; ok {
+					used[full] = true
+					continue
+				}
+				keys, isSeeded := seeded[row]
+				if !isSeeded && !retired[row] {
+					continue
+				}
+				checked++
+				if _, ok := keys[key]; ok {
+					continue
+				}
+				if retired[row] {
+					t.Errorf("%s:%d cites `%s`, and a migration deleted the %s row", rel, i+1, full, row)
+					continue
+				}
+				t.Errorf("%s:%d cites `%s`, and the %s row is never seeded with %s", rel, i+1, full, row, key)
+			}
+		}
+	}
+	if checked == 0 {
+		t.Fatal("no guide cites a settings key as `row.key`; the pattern must have changed")
+	}
+	for full, why := range allowed {
+		if !used[full] {
+			t.Errorf("no guide cites `%s` any more; drop it from the allow list (%s)", full, why)
 		}
 	}
 }
