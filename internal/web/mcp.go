@@ -216,6 +216,13 @@ func (s *Server) callMCPTool(r *http.Request, raw json.RawMessage) (any, *rpcErr
 		if !hasAnyRole(sess.User, "SYSTEM_ADMIN", "SECURITY_REVIEWER", "AUDITOR", "APPROVER") {
 			return nil, &rpcError{Code: -32001, Message: "이 도구를 사용할 권한이 없습니다."}
 		}
+		for _, key := range []string{"from", "to", "department"} {
+			if value, exists := p.Arguments[key]; exists {
+				if _, ok := value.(string); !ok {
+					return nil, &rpcError{Code: -32602, Message: key + " must be a string"}
+				}
+			}
+		}
 		data, err = s.mcpReviewReport(r, p.Arguments)
 	case "seccheck.get_review":
 		data, err = s.mcpGetReview(r, sess, stringValue(p.Arguments["review_id"]))
