@@ -234,6 +234,9 @@ func (s *Server) callMCPTool(r *http.Request, raw json.RawMessage) (any, *rpcErr
 		return nil, &rpcError{Code: -32602, Message: "Unknown tool: " + p.Name}
 	}
 	if err != nil {
+		if invalid, ok := err.(*reportFilterError); ok {
+			return mcpToolError(invalid.Error()), nil
+		}
 		if err == errForbidden {
 			return mcpToolError("권한 범위에서 대상을 찾을 수 없습니다."), nil
 		}
@@ -258,7 +261,11 @@ func (s *Server) mcpReviewReport(r *http.Request, args map[string]any) (any, err
 	}
 	scoped := r.Clone(r.Context())
 	scoped.URL.RawQuery = query.Encode()
-	return s.buildReport(scoped, reportFilter(scoped))
+	scope, invalid := reportFilter(scoped)
+	if invalid != nil {
+		return nil, invalid
+	}
+	return s.buildReport(scoped, scope)
 }
 
 func (s *Server) mcpDashboard(r *http.Request, sess auth.Session) (any, error) {

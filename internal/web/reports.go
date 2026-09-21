@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/xuri/excelize/v2"
 )
@@ -26,17 +27,44 @@ type reportScope struct {
 	followUpLimit int
 }
 
+// reportFilterError contains only safe guidance, never the submitted value.
+type reportFilterError struct {
+	details map[string]string
+}
+
+func (e *reportFilterError) Error() string {
+	return "from/to는 연도 0001~9999의 실제 날짜를 YYYY-MM-DD 형식으로 입력하고, from은 to보다 늦지 않아야 합니다."
+}
+
 // reportFilter bounds the report by creation date and optionally by
 // department. Dates are half-open on the upper bound so a whole day counts.
-func reportFilter(r *http.Request) reportScope {
+func reportFilter(r *http.Request) (reportScope, *reportFilterError) {
 	scope := reportScope{where: "TRUE"}
 	query := r.URL.Query()
-	if from := strings.TrimSpace(query.Get("from")); from != "" {
+	from, to := strings.TrimSpace(query.Get("from")), strings.TrimSpace(query.Get("to"))
+	invalid := &reportFilterError{details: map[string]string{}}
+	for _, field := range []struct{ name, value string }{{"from", from}, {"to", to}} {
+		if field.value == "" {
+			continue
+		}
+		date, err := time.Parse(time.DateOnly, field.value)
+		if err != nil || date.Year() < 1 || date.Year() > 9999 || date.Format(time.DateOnly) != field.value {
+			invalid.details[field.name] = "연도 0001~9999의 실제 날짜를 YYYY-MM-DD 형식으로 입력하세요."
+		}
+	}
+	if len(invalid.details) == 0 && from != "" && to != "" && from > to {
+		invalid.details["from"] = "시작일은 종료일보다 늦을 수 없습니다."
+		invalid.details["to"] = "종료일은 시작일보다 빠를 수 없습니다."
+	}
+	if len(invalid.details) != 0 {
+		return scope, invalid
+	}
+	if from != "" {
 		scope.args = append(scope.args, from)
 		scope.where += fmt.Sprintf(" AND r.created_at >= display_day_start($%d::date)", len(scope.args))
 		scope.from = from
 	}
-	if to := strings.TrimSpace(query.Get("to")); to != "" {
+	if to != "" {
 		scope.args = append(scope.args, to)
 		scope.where += fmt.Sprintf(" AND r.created_at < display_day_start($%d::date + 1)", len(scope.args))
 		scope.to = to
@@ -50,7 +78,7 @@ func reportFilter(r *http.Request) reportScope {
 		scope.args = append(scope.args, department)
 		scope.where += fmt.Sprintf(" AND r.department = $%d", len(scope.args))
 	}
-	return scope
+	return scope, nil
 }
 
 type reportData struct {
@@ -73,7 +101,11 @@ type reportData struct {
 }
 
 func (s *Server) reviewReport(w http.ResponseWriter, r *http.Request) {
-	scope := reportFilter(r)
+	scope, invalid := reportFilter(r)
+	if invalid != nil {
+		problem(w, http.StatusUnprocessableEntity, "VALIDATION_FAILED", invalid.Error(), invalid.details)
+		return
+	}
 	data, err := s.buildReport(r, scope)
 	if err != nil {
 		s.fault(w, r, "QUERY_FAILED", "리포트를 만들지 못했습니다.", err)
