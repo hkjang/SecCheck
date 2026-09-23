@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"net/url"
 	"strings"
 
 	"github.com/hkjang/SecCheck/internal/auth"
@@ -249,8 +250,15 @@ func mcpToolError(message string) map[string]any {
 
 // mcpReviewReport reuses the HTTP report so an agent and the console can never
 // disagree about the numbers.
+//
+// The scope is built from the tool arguments alone. Starting from the query
+// string of the POST let a caller reach keys the catalogue never advertised --
+// include_done widened the register to carried-out actions, format=xlsx raised
+// its cap to the export limit -- and none of it reached the audit record, which
+// holds the arguments. The declared schema is now the only way in, so what ran
+// is what was logged.
 func (s *Server) mcpReviewReport(r *http.Request, args map[string]any) (any, error) {
-	query := r.URL.Query()
+	query := url.Values{}
 	for _, key := range []string{"from", "to", "department"} {
 		if value := strings.TrimSpace(stringValue(args[key])); value != "" {
 			query.Set(key, value)
