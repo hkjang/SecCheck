@@ -212,8 +212,14 @@ button.table-link:hover { text-decoration: underline; }
 .login-title { font-size: 30px; margin: 0; letter-spacing: -1px; }
 .login-copy { color: var(--muted); margin: 8px 0 28px; line-height: 1.6; }
 .login-form { display: grid; gap: 15px; }
-.login-separator { display: flex; align-items: center; gap: 12px; color: #97a2af; font-size: 11px; margin: 20px 0; }
-.login-separator::before,.login-separator::after { content: ''; height: 1px; background: var(--border); flex: 1; }
+.login-sso { display: grid; gap: 7px; margin-bottom: 4px; }
+.login-sso-button { width: 100%; min-height: 44px; font-size: 14px; }
+.login-fallback-toggle { display: flex; align-items: center; gap: 8px; width: 100%; margin-top: 18px; padding: 13px 0 0; border: 0; border-top: 1px solid var(--border); background: transparent; color: var(--muted); font-size: 13px; font-weight: 600; cursor: pointer; }
+.login-fallback-toggle:hover { color: #26354a; }
+.login-fallback-toggle span { flex: 1; text-align: left; }
+.login-fallback-toggle svg:last-child { transition: transform .18s ease; }
+.login-fallback-toggle svg.flipped { transform: rotate(180deg); }
+.login-form { margin-top: 16px; }
 .login-version { position: absolute; bottom: 26px; color: #7e8b9c; font-size: 11px; }
 .login-visual { padding: clamp(35px,7vw,100px); display: flex; flex-direction: column; justify-content: center; color: white; background: radial-gradient(circle at 75% 25%,rgba(18,100,210,.26),transparent 35%), radial-gradient(circle at 30% 80%,rgba(0,173,142,.14),transparent 35%),#071522; overflow: hidden; }
 .login-visual h2 { font-size: clamp(28px,3vw,47px); line-height: 1.18; max-width: 700px; letter-spacing: -1.5px; margin: 0 0 18px; }

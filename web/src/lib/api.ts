@@ -1,5 +1,7 @@
 let csrfToken = sessionStorage.getItem('seccheck_csrf') || ''
 
+import { announcesSessionEnd, countsAsActivity } from './sessionPaths'
+
 export class ApiError extends Error {
   status: number
   code: string
@@ -31,10 +33,6 @@ export function onSessionEvent(listener: (event: SessionEvent) => void) {
 }
 function announce(event: SessionEvent) { sessionListeners.forEach(listener => listener(event)) }
 
-// Sign-in and the public config legitimately answer 401/403 to an anonymous
-// caller; those must not be read as a session ending.
-const anonymousPaths = ['/api/v1/auth/login', '/api/v1/public/config']
-
 // The inactivity timeout is measured from the last request the server counts
 // as somebody using the service -- the notification poll deliberately does not
 // count. Tracking the same moment here is what lets the shell warn before the
@@ -48,7 +46,7 @@ export async function api<T>(path: string, init: RequestInit = {}): Promise<T> {
   if (init.body && !(init.body instanceof FormData)) headers.set('Content-Type', 'application/json')
   if (csrfToken && init.method && !['GET', 'HEAD'].includes(init.method)) headers.set('X-CSRF-Token', csrfToken)
   headers.set('Accept', 'application/json')
-  if (!passivePaths.some(p => path.startsWith(p)) && !anonymousPaths.some(p => path.startsWith(p))) touchedAt = Date.now()
+  if (!passivePaths.some(p => path.startsWith(p)) && countsAsActivity(path)) touchedAt = Date.now()
   const response = await fetch(path, { ...init, headers, credentials: 'same-origin' })
   if (response.status === 204) return undefined as T
   const type = response.headers.get('content-type') || ''
@@ -56,7 +54,7 @@ export async function api<T>(path: string, init: RequestInit = {}): Promise<T> {
   if (!response.ok) {
     const problem = value?.error || {}
     const error = new ApiError(response.status, problem.code || 'REQUEST_FAILED', problem.message || String(value), problem.details)
-    if (!anonymousPaths.some(p => path.startsWith(p))) {
+    if (announcesSessionEnd(path)) {
       if (response.status === 401) { setCSRF(''); announce('expired') }
       else if (error.code === 'TOTP_ENROLLMENT_REQUIRED') announce('enrollment-required')
     }
@@ -82,7 +80,7 @@ export async function download(path: string) {
     const type = response.headers.get('content-type') || ''
     const value = type.includes('json') ? await response.json() : await response.text()
     const problem = value?.error || {}
-    if (response.status === 401) { setCSRF(''); announce('expired') }
+    if (announcesSessionEnd(path) && response.status === 401) { setCSRF(''); announce('expired') }
     throw new ApiError(response.status, problem.code || 'REQUEST_FAILED', problem.message || '파일을 내려받지 못했습니다.', problem.details)
   }
   const cappedAt = response.headers.get('X-Export-Truncated')

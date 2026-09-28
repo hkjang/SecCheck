@@ -1,4 +1,4 @@
-import React, { createContext, useContext, useEffect, useState } from 'react'
+import React, { createContext, useContext, useEffect, useRef, useState } from 'react'
 import ReactDOM from 'react-dom/client'
 import { BrowserRouter, Navigate, Route, Routes, useNavigate } from 'react-router-dom'
 import './styles.css'
@@ -35,12 +35,25 @@ const AuthContext = createContext<AuthValue | null>(null)
 export function useAuth() { const value = useContext(AuthContext); if (!value) throw new Error('Auth context missing'); return value }
 
 function App() {
-  const [publicConfig, setPublicConfig] = useState({ service_name: 'SecCheck', version: 'dev', oidc_enabled: false, oidc_auto_login: false, timezone: '' })
+  const [publicConfig, setPublicConfig] = useState({ service_name: 'SecCheck', version: 'dev', oidc_enabled: false, oidc_auto_login: false, oidc_issuer: '', timezone: '' })
   // Whether to try signing in silently is decided from the public config, so
   // the login screen waits for that answer instead of flashing before it.
   const [configReady, setConfigReady] = useState(false)
   const [me, setMe] = useState<{ user: User; version: string; totp_enrollment_required?: boolean; password_change_required?: boolean; upload?: UploadRules; limits?: TextLimits; session?: { idle_timeout_minutes?: number } } | null | undefined>(undefined)
-  const refresh = async () => { try { const value = await get<{ user: User; csrf_token: string; version: string; totp_enrollment_required?: boolean; password_change_required?: boolean; timezone?: string; upload?: UploadRules; limits?: TextLimits; session?: { idle_timeout_minutes?: number } }>('/api/v1/me'); setCSRF(value.csrf_token); setDisplayTimezone(value.timezone || ''); clearSilentSso(); setMe(value) } catch { setCSRF(''); setMe(null) } }
+  // /api/v1/me answers 401 both to somebody whose session just ended and to
+  // somebody who has never had one. Only the first is a sign-out, and only the
+  // shell can tell them apart, so it remembers whether it ever held a session.
+  const hadSession = useRef(false)
+  const refresh = async () => {
+    try {
+      const value = await get<{ user: User; csrf_token: string; version: string; totp_enrollment_required?: boolean; password_change_required?: boolean; timezone?: string; upload?: UploadRules; limits?: TextLimits; session?: { idle_timeout_minutes?: number } }>('/api/v1/me')
+      setCSRF(value.csrf_token); setDisplayTimezone(value.timezone || ''); clearSilentSso(); hadSession.current = true; setMe(value)
+    } catch {
+      setCSRF('')
+      if (hadSession.current) { hadSession.current = false; markSignedOut(); setExpired(true) }
+      setMe(null)
+    }
+  }
   const [expired, setExpired] = useState(false)
   const [silent, setSilent] = useState(false)
   const navigate = useNavigate()
